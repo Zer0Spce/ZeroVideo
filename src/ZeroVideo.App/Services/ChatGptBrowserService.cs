@@ -6,26 +6,52 @@ namespace ZeroVideo.App.Services;
 
 public sealed class ChatGptBrowserService(BrowserSession browser, AutomationProfileService profiles)
 {
-    public async Task<VideoProject> GeneratePlanAsync(VideoProject seed, ZeroVideoSettings settings, string prompt, Action<string>? log = null, CancellationToken ct = default)
+    public async Task<VideoProject> GenerateOutlineAsync(VideoProject seed, ZeroVideoSettings settings, string prompt, Action<string>? log = null, CancellationToken ct = default)
     {
-        await browser.EnsureStartedAsync(settings);
-        var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
-        var page = await browser.GetOrCreatePageAsync("chatgpt.com");
-        await page.GotoAsync(settings.ChatGptUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120000 });
-        log?.Invoke("ChatGPT opened. If login or verification is shown, complete it in the browser; ZeroVideo will never try to bypass it.");
+        for (var attempt = 1; attempt <= 2; attempt++)
+        {
+            var raw = await GenerateTextAsync(settings, prompt, log, ct);
+            try
+            {
+                var project = ParseOutline(raw, seed);
+                log?.Invoke($"Outline received: {project.Chapters.Count} chapters.");
+                return project;
+            }
+            catch (Exception ex) when (attempt == 1)
+            {
+                log?.Invoke($"Outline JSON was invalid ({ex.Message}). Retrying once with a clean chat.");
+                prompt += "\nIMPORTANT: Your previous response could not be parsed. Return one complete valid JSON object only. Do not use markdown fences.";
+            }
+        }
+        throw new InvalidDataException("ChatGPT did not return a valid outline after two attempts.");
+    }
 
-        var input = await WaitForPromptAsync(page, profile.ChatGpt.PromptInputs, ct);
-        await input.ClickAsync();
-        await input.FillAsync(prompt);
-        var assistantSelector = string.Join(",", profile.ChatGpt.AssistantMessages);
-        var before = await page.Locator(assistantSelector).CountAsync();
-        await SendAsync(page, input, profile.ChatGpt.SendButtons);
-        log?.Invoke("Waiting for ChatGPT plan...");
-
-        var text = await WaitForStableAssistantAsync(page, assistantSelector, before, ct);
-        var parsed = ParseProject(text, seed);
-        log?.Invoke($"Received {parsed.Chapters.Count} chapters / {parsed.Chapters.Sum(c => c.Scenes.Count)} scenes.");
-        return parsed;
+    public async Task<ProjectChapter> GenerateChapterAsync(VideoProject project, ProjectChapter metadata, ZeroVideoSettings settings, string prompt, Action<string>? log = null, CancellationToken ct = default)
+    {
+        for (var attempt = 1; attempt <= 2; attempt++)
+        {
+            var raw = await GenerateTextAsync(settings, prompt, log, ct);
+            try
+            {
+                var json = ExtractJson(raw);
+                var chapter = JsonSerializer.Deserialize<ProjectChapter>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? throw new InvalidDataException("Chapter JSON was empty.");
+                if (chapter.Scenes.Count == 0) throw new InvalidDataException("Chapter has no scenes.");
+                chapter.Number = metadata.Number;
+                chapter.Title = string.IsNullOrWhiteSpace(chapter.Title) ? metadata.Title : chapter.Title;
+                chapter.Purpose = string.IsNullOrWhiteSpace(chapter.Purpose) ? metadata.Purpose : chapter.Purpose;
+                chapter.TargetSeconds = chapter.TargetSeconds <= 0 ? metadata.TargetSeconds : chapter.TargetSeconds;
+                chapter.Narration = string.Join(" ", chapter.Scenes.Select(s => s.Narration.Trim()).Where(s => s.Length > 0));
+                if (string.IsNullOrWhiteSpace(chapter.Narration)) throw new InvalidDataException("Chapter narration was empty.");
+                log?.Invoke($"Chapter {chapter.Number}: {chapter.Scenes.Count} scenes / {chapter.Narration.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length} words.");
+                return chapter;
+            }
+            catch (Exception ex) when (attempt == 1)
+            {
+                log?.Invoke($"Chapter {metadata.Number} JSON was invalid ({ex.Message}). Retrying once with a clean chat.");
+                prompt += "\nIMPORTANT: Your previous response could not be parsed. Return one complete valid JSON object only, with all scenes included and no markdown fences.";
+            }
+        }
+        throw new InvalidDataException($"ChatGPT did not return valid JSON for chapter {metadata.Number} after two attempts.");
     }
 
     public async Task<string> GenerateSceneImageAsync(VideoProject project, ProjectChapter chapter, ProjectScene scene, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
@@ -68,6 +94,22 @@ Requirements: one single image only; no collage; no captions; no readable text; 
         await browser.EnsureStartedAsync(settings);
         var page = await browser.GetOrCreatePageAsync("chatgpt.com");
         await page.GotoAsync(settings.ChatGptUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120000 });
+    }
+
+    private async Task<string> GenerateTextAsync(ZeroVideoSettings settings, string prompt, Action<string>? log, CancellationToken ct)
+    {
+        await browser.EnsureStartedAsync(settings);
+        var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
+        var page = await browser.GetOrCreatePageAsync("chatgpt.com");
+        await page.GotoAsync(settings.ChatGptUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120000 });
+        log?.Invoke("ChatGPT opened. If login or verification is shown, complete it in the visible browser.");
+        var input = await WaitForPromptAsync(page, profile.ChatGpt.PromptInputs, ct);
+        await input.ClickAsync();
+        await input.FillAsync(prompt);
+        var assistantSelector = string.Join(",", profile.ChatGpt.AssistantMessages);
+        var before = await page.Locator(assistantSelector).CountAsync();
+        await SendAsync(page, input, profile.ChatGpt.SendButtons);
+        return await WaitForStableAssistantAsync(page, assistantSelector, before, ct);
     }
 
     private static async Task SendAsync(IPage page, ILocator input, IEnumerable<string> sendButtons)
@@ -132,7 +174,7 @@ Requirements: one single image only; no collage; no captions; no readable text; 
         throw new TimeoutException("ChatGPT response was not detected. Check the browser and automation selectors.");
     }
 
-    private static VideoProject ParseProject(string raw, VideoProject seed)
+    private static VideoProject ParseOutline(string raw, VideoProject seed)
     {
         var json = ExtractJson(raw);
         using var doc = JsonDocument.Parse(json);
@@ -140,6 +182,13 @@ Requirements: one single image only; no collage; no captions; no readable text; 
         seed.Title = root.TryGetProperty("title", out var title) ? title.GetString() ?? seed.Topic : seed.Topic;
         seed.Sources = root.TryGetProperty("sources", out var sources) ? sources.EnumerateArray().Select(x => x.GetString() ?? "").Where(x => x.Length > 0).ToList() : [];
         seed.Chapters = JsonSerializer.Deserialize<List<ProjectChapter>>(root.GetProperty("chapters").GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
+        if (seed.Chapters.Count == 0) throw new InvalidDataException("Outline contained no chapters.");
+        for (var i = 0; i < seed.Chapters.Count; i++)
+        {
+            seed.Chapters[i].Number = i + 1;
+            seed.Chapters[i].Scenes = [];
+            seed.Chapters[i].Narration = "";
+        }
         return seed;
     }
 

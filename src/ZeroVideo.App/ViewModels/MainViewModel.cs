@@ -42,7 +42,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         _pipeline = new PipelineService(_chat, _clip, _ffmpeg, _store);
         _preflight = new PreflightService(_runner);
         GeneratePlanCommand = new AsyncCommand(GeneratePlanAsync, () => !string.IsNullOrWhiteSpace(Topic) && Duration > 0);
-        RunPipelineCommand = new AsyncCommand(RunPipelineAsync, () => Project.Chapters.Count > 0);
+        ContinueWritingCommand = new AsyncCommand(ContinueWritingAsync, CanContinueWriting);
+        RunPipelineCommand = new AsyncCommand(RunPipelineAsync, CanBuildVideo);
         OpenChatGptCommand = new AsyncCommand(() => _chat.OpenAsync(Settings));
         OpenClipchampCommand = new AsyncCommand(() => _clip.OpenAsync(Settings));
         InstallFfmpegCommand = new AsyncCommand(InstallFfmpegAsync);
@@ -59,18 +60,19 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<string> AspectRatios { get; } = ["16:9", "9:16"];
     public ObservableCollection<string> Styles { get; } = ["Documentary explainer with fast visual variety", "VOX-inspired paper/editorial explainer", "History documentary", "Mystery / investigation", "Science explainer", "Custom"];
 
-    public string Topic { get => _topic; set { if (Set(ref _topic, value)) (GeneratePlanCommand as AsyncCommand)?.RaiseCanExecuteChanged(); } }
-    public int Duration { get => _duration; set { if (Set(ref _duration, Math.Max(1, value))) (GeneratePlanCommand as AsyncCommand)?.RaiseCanExecuteChanged(); } }
+    public string Topic { get => _topic; set { if (Set(ref _topic, value)) RefreshCommands(); } }
+    public int Duration { get => _duration; set { if (Set(ref _duration, Math.Max(1, value))) RefreshCommands(); } }
     public string AspectRatio { get => _aspectRatio; set => Set(ref _aspectRatio, value); }
     public string Style { get => _style; set => Set(ref _style, value); }
     public string Status { get => _status; set => Set(ref _status, value); }
     public double Progress { get => _progress; set => Set(ref _progress, value); }
-    public string ProjectDirectory { get => _projectDirectory; set { if (Set(ref _projectDirectory, value)) (OpenProjectFolderCommand as AsyncCommand)?.RaiseCanExecuteChanged(); } }
-    public VideoProject Project { get => _project; private set { Set(ref _project, value); Raise(nameof(Chapters)); (RunPipelineCommand as AsyncCommand)?.RaiseCanExecuteChanged(); } }
+    public string ProjectDirectory { get => _projectDirectory; set { if (Set(ref _projectDirectory, value)) RefreshCommands(); } }
+    public VideoProject Project { get => _project; private set { Set(ref _project, value); Raise(nameof(Chapters)); RefreshCommands(); } }
     public IEnumerable<ProjectChapter> Chapters => Project.Chapters;
     public ZeroVideoSettings Settings { get => _settings; private set => Set(ref _settings, value); }
 
     public ICommand GeneratePlanCommand { get; }
+    public ICommand ContinueWritingCommand { get; }
     public ICommand RunPipelineCommand { get; }
     public ICommand OpenChatGptCommand { get; }
     public ICommand OpenClipchampCommand { get; }
@@ -93,20 +95,54 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     {
         try
         {
-            Status = "Generating plan with ChatGPT..."; Progress = 5;
+            Status = "Creating master outline with ChatGPT..."; Progress = 3;
             var seed = new VideoProject
             {
                 Topic = Topic.Trim(), Title = Topic.Trim(), TargetMinutes = Duration, AspectRatio = AspectRatio,
                 Style = Style, Options = Project.Options
             };
-            var prompt = _promptBuilder.Build(seed);
-            Project = await _chat.GeneratePlanAsync(seed, Settings, prompt, Log, _cts.Token);
+            var outlinePrompt = _promptBuilder.BuildOutline(seed);
+            Project = await _chat.GenerateOutlineAsync(seed, Settings, outlinePrompt, Log, _cts.Token);
             ProjectDirectory = await _store.SaveAsync(Project, Settings.ProjectsRoot);
-            Raise(nameof(Chapters));
-            Progress = 25; Status = $"Plan ready: {Project.Chapters.Count} chapters";
-            Log($"Project saved to {ProjectDirectory}");
+            Progress = 5;
+            Log($"Outline checkpoint saved to {ProjectDirectory}");
+            await WriteMissingChaptersAsync();
         }
         catch (Exception ex) { Fail(ex); }
+    }
+
+    private async Task ContinueWritingAsync()
+    {
+        try { await WriteMissingChaptersAsync(); }
+        catch (Exception ex) { Fail(ex); }
+    }
+
+    private async Task WriteMissingChaptersAsync()
+    {
+        if (Project.Chapters.Count == 0) throw new InvalidOperationException("No outline is loaded.");
+        if (string.IsNullOrWhiteSpace(Project.ProjectDirectory)) ProjectDirectory = await _store.SaveAsync(Project, Settings.ProjectsRoot);
+
+        var count = Project.Chapters.Count;
+        for (var i = 0; i < count; i++)
+        {
+            _cts.Token.ThrowIfCancellationRequested();
+            if (IsComplete(Project.Chapters[i])) continue;
+
+            var metadata = Project.Chapters[i];
+            Status = $"Writing chapter {i + 1}/{count}: {metadata.Title}";
+            Log(Status);
+            var prompt = _promptBuilder.BuildChapter(Project, metadata, i);
+            Project.Chapters[i] = await _chat.GenerateChapterAsync(Project, metadata, Settings, prompt, Log, _cts.Token);
+            await _store.SaveAsync(Project, Settings.ProjectsRoot);
+            Progress = 5 + ((i + 1) / (double)count * 20.0);
+            Raise(nameof(Chapters));
+            RefreshCommands();
+            Log($"Chapter {i + 1} checkpoint saved.");
+        }
+
+        Status = CanBuildVideo() ? $"Script ready: {count} chapters" : "Script paused — use Resume writing";
+        if (CanBuildVideo()) Progress = 25;
+        RefreshCommands();
     }
 
     private async Task RunPipelineAsync()
@@ -170,7 +206,20 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         if (dialog.ShowDialog() != true) return;
         Project = await _store.LoadAsync(dialog.FileName);
         Topic = Project.Topic; Duration = Project.TargetMinutes; AspectRatio = Project.AspectRatio; Style = Project.Style; ProjectDirectory = Project.ProjectDirectory;
-        Raise(nameof(Chapters)); Status = "Project loaded"; Log($"Loaded {Project.Title}");
+        Raise(nameof(Chapters)); Status = CanBuildVideo() ? "Project loaded — ready to build" : "Project loaded — writing can resume"; Log($"Loaded {Project.Title}");
+        RefreshCommands();
+    }
+
+    private bool CanContinueWriting() => Project.Chapters.Count > 0 && Project.Chapters.Any(c => !IsComplete(c));
+    private bool CanBuildVideo() => Project.Chapters.Count > 0 && Project.Chapters.All(IsComplete);
+    private static bool IsComplete(ProjectChapter chapter) => chapter.Scenes.Count > 0 && !string.IsNullOrWhiteSpace(chapter.Narration);
+
+    private void RefreshCommands()
+    {
+        (GeneratePlanCommand as AsyncCommand)?.RaiseCanExecuteChanged();
+        (ContinueWritingCommand as AsyncCommand)?.RaiseCanExecuteChanged();
+        (RunPipelineCommand as AsyncCommand)?.RaiseCanExecuteChanged();
+        (OpenProjectFolderCommand as AsyncCommand)?.RaiseCanExecuteChanged();
     }
 
     private void Log(string message)
@@ -184,7 +233,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void Fail(Exception ex)
     {
-        Status = "Stopped: " + ex.Message; Log("ERROR: " + ex); MessageBox.Show(ex.Message, "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Warning);
+        Status = "Stopped: " + ex.Message; Log("ERROR: " + ex); MessageBox.Show(ex.Message, "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Warning); RefreshCommands();
     }
 
     public async ValueTask DisposeAsync() { _cts.Cancel(); _cts.Dispose(); await _browser.DisposeAsync(); }

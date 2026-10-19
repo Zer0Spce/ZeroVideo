@@ -4,54 +4,107 @@ namespace ZeroVideo.App.Services;
 
 public sealed class PromptBuilder
 {
-    public string Build(VideoProject p)
+    public string BuildOutline(VideoProject p)
     {
-        var targetWordsLow = p.TargetMinutes * 125;
-        var targetWordsHigh = p.TargetMinutes * 150;
-        var chapterCount = Math.Clamp((int)Math.Round(p.TargetMinutes / 2.5), 3, 16);
+        var chapterCount = Math.Clamp((int)Math.Ceiling(p.TargetMinutes / 3.0), 2, 40);
+        var totalSeconds = p.TargetMinutes * 60;
         return $$"""
-You are the planning engine for ZeroVideo, a long-form YouTube production application.
+You are the senior story producer for ZeroVideo, a Windows application that creates long-form YouTube videos.
 
 TOPIC: {{p.Topic}}
-TARGET LENGTH: {{p.TargetMinutes}} minutes
+TARGET LENGTH: {{p.TargetMinutes}} minutes ({{totalSeconds}} seconds)
 ASPECT RATIO: {{p.AspectRatio}}
 STYLE: {{p.Style}}
 LANGUAGE: {{p.Language}}
-TARGET NARRATION: approximately {{targetWordsLow}}-{{targetWordsHigh}} words total
-TARGET CHAPTERS: approximately {{chapterCount}}
+TARGET CHAPTER COUNT: approximately {{chapterCount}}
 
-Create a factual, engaging long-form video plan. Use a strong hook, progressive reveals, varied pacing, and a memorable ending. Do not repeat facts simply to fill time. Keep continuity between chapters. If the topic is current, explicitly distinguish confirmed facts from claims or uncertainty. Never fabricate sources.
+Create ONLY the master outline. Do not write the full narration yet.
 
-Break the narration into chapters suitable for separate text-to-speech jobs. Each chapter should normally be 60-180 seconds. Break each chapter into visual scenes averaging 4-10 seconds, varying timing naturally. Visual queries should be concise search phrases; imagePrompt should describe an original visual when stock/archive material is unavailable. ShotDirection should be practical editing direction such as slow push in, pan left, map zoom, document highlight, or hold.
+Requirements:
+- Strong hook and clear narrative progression.
+- Each chapter introduces genuinely new information; no filler or repeated facts.
+- Plan reveals and transitions so later chapters build on earlier ones.
+- Keep most chapters around 2-4 minutes so they can be generated and voiced independently.
+- Chapter targetSeconds should add up close to {{totalSeconds}} seconds.
+- If the topic is current or factual, do not invent claims or sources. When genuinely known, include useful source URLs or source names; otherwise leave sources empty.
+- Avoid generic chapter names like "More Information".
 
-Return ONLY valid JSON. No markdown fences and no commentary. Use exactly this shape:
+Return ONLY valid JSON, no markdown and no commentary, using exactly this shape:
 {
-  "title": "...",
-  "sources": ["source names or URLs only when genuinely known; otherwise leave empty"],
+  "title": "video title",
+  "sources": ["source URL or source name"],
   "chapters": [
     {
       "number": 1,
-      "title": "...",
-      "purpose": "...",
-      "narration": "complete chapter narration",
-      "targetSeconds": 120,
-      "scenes": [
-        {
-          "number": 1,
-          "role": "hook|setup|detail|evidence|transition|reveal|ending",
-          "narration": "the exact narration covered by this scene",
-          "visualType": "archive|broll|photo|map|document|graphic|generated",
-          "visualQuery": "2-8 word search query",
-          "imagePrompt": "original visual prompt without text or logos",
-          "shotDirection": "editing motion",
-          "targetSeconds": 6
-        }
-      ]
+      "title": "chapter title",
+      "purpose": "what new information this chapter contributes",
+      "targetSeconds": 150
     }
   ]
 }
-
-Every chapter narration must equal the content represented by that chapter's scene narrations in the same order. Use double quotes and JSON-safe text.
 """;
     }
+
+    public string BuildChapter(VideoProject p, ProjectChapter chapter, int chapterIndex)
+    {
+        var lowWords = Math.Max(100, (int)Math.Round(chapter.TargetSeconds / 60.0 * 125));
+        var highWords = Math.Max(lowWords + 40, (int)Math.Round(chapter.TargetSeconds / 60.0 * 150));
+        var previous = chapterIndex > 0 ? p.Chapters[chapterIndex - 1].Title : "none — this is the opening chapter";
+        var next = chapterIndex + 1 < p.Chapters.Count ? p.Chapters[chapterIndex + 1].Title : "none — this is the final chapter";
+        var outline = string.Join(" | ", p.Chapters.Select(c => $"{c.Number}. {c.Title}"));
+        return $$"""
+You are writing ONE chapter of a long-form ZeroVideo YouTube project. Do not write any other chapter.
+
+VIDEO TOPIC: {{p.Topic}}
+VIDEO TITLE: {{p.Title}}
+VIDEO STYLE: {{p.Style}}
+LANGUAGE: {{p.Language}}
+ASPECT RATIO: {{p.AspectRatio}}
+OVERALL OUTLINE: {{outline}}
+
+CHAPTER NUMBER: {{chapter.Number}}
+CHAPTER TITLE: {{chapter.Title}}
+CHAPTER PURPOSE: {{chapter.Purpose}}
+TARGET DURATION: {{chapter.TargetSeconds}} seconds
+TARGET SPOKEN WORDS: approximately {{lowWords}}-{{highWords}} words
+PREVIOUS CHAPTER: {{previous}}
+NEXT CHAPTER: {{next}}
+
+Write an engaging, natural narration for only this chapter, but return it split into visual scenes. The narration must flow continuously when all scene narration fields are joined in order.
+
+Requirements:
+- Do not repeat material that belongs to earlier chapters.
+- Set up the next chapter naturally without summarizing the whole video.
+- Every scene must advance the narration.
+- Vary visual changes naturally, usually around 6-12 seconds each; longer holds are allowed when justified.
+- visualQuery must be a concise 2-8 word search phrase.
+- imagePrompt must describe an original still visual with no captions, readable text, logos, UI, or watermarks.
+- shotDirection must be practical, such as slow push in, pan left, map zoom, document highlight, parallax, or hold.
+- Use visualType from: archive, broll, photo, map, document, graphic, generated.
+- Use role from: hook, setup, detail, evidence, transition, reveal, ending.
+- Do not fabricate specific quotes, documents, statistics, or events.
+
+Return ONLY valid JSON, no markdown and no commentary. Do NOT duplicate the narration in a separate chapter-level narration field. Use exactly:
+{
+  "number": {{chapter.Number}},
+  "title": "{{Escape(chapter.Title)}}",
+  "purpose": "{{Escape(chapter.Purpose)}}",
+  "targetSeconds": {{chapter.TargetSeconds}},
+  "scenes": [
+    {
+      "number": 1,
+      "role": "setup",
+      "narration": "spoken narration for this scene",
+      "visualType": "broll",
+      "visualQuery": "short search phrase",
+      "imagePrompt": "original scene visual prompt",
+      "shotDirection": "slow push in",
+      "targetSeconds": 8
+    }
+  ]
+}
+""";
+    }
+
+    private static string Escape(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
 }

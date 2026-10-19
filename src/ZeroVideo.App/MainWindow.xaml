@@ -17,8 +17,8 @@
               <StackPanel><Label Content="LENGTH (MIN)"/><ComboBox ItemsSource="{Binding Durations}" IsEditable="True" Text="{Binding Duration, UpdateSourceTrigger=LostFocus}"/></StackPanel>
               <StackPanel Grid.Column="2"><Label Content="FORMAT"/><ComboBox ItemsSource="{Binding AspectRatios}" SelectedItem="{Binding AspectRatio}"/></StackPanel>
             </Grid>
-            <TextBlock Text="You can type any custom duration, including 60+ minutes." Foreground="{StaticResource Muted}" FontSize="11" Margin="0,4,0,0"/>
-            <Label Content="STORY / EDIT STYLE" Margin="0,10,0,0"/><ComboBox ItemsSource="{Binding Styles}" SelectedItem="{Binding Style}"/>
+            <TextBlock Text="Type any custom duration, including 60+ minutes." Foreground="{StaticResource Muted}" FontSize="11" Margin="0,4,0,0"/>
+            <Label Content="STORY / EDIT STYLE" Margin="0,10,0,0"/><ComboBox ItemsSource="{Binding Styles}" IsEditable="True" Text="{Binding Style, UpdateSourceTrigger=PropertyChanged}"/>
             <Separator Margin="0,16" Background="#314052"/>
             <TextBlock Text="Output options" FontWeight="SemiBold"/>
             <CheckBox Content="Generate missing visuals with ChatGPT" IsChecked="{Binding Project.Options.GenerateMissingVisuals}"/>
@@ -27,12 +27,12 @@
             <CheckBox Content="Automatic pan / zoom motion" IsChecked="{Binding Project.Options.AddMotion}"/>
             <CheckBox Content="Mix background music" IsChecked="{Binding Project.Options.AddBackgroundMusic}"/>
             <CheckBox Content="Sound effect hooks (when scene file exists)" IsChecked="{Binding Project.Options.AddSoundEffects}"/>
-            <TextBlock Margin="0,14,0,4" Foreground="{StaticResource Muted}" TextWrapping="Wrap">ZeroVideo plans the long-form video in ChatGPT, can generate missing scene stills through the same signed-in browser session, creates chapter-sized Clipchamp TTS jobs, then renders the final video with FFmpeg.</TextBlock>
-            <WrapPanel Margin="0,14,0,0"><Button Style="{StaticResource PrimaryButton}" Command="{Binding GeneratePlanCommand}" Content="1. Generate project"/><Button Style="{StaticResource PrimaryButton}" Command="{Binding RunPipelineCommand}" Content="2. Build video"/></WrapPanel>
+            <TextBlock Margin="0,14,0,4" Foreground="{StaticResource Muted}" TextWrapping="Wrap">ZeroVideo creates a master outline first, writes and checkpoints each chapter separately, then can generate missing scene stills, create chapter-sized Clipchamp TTS, and render the long-form video with FFmpeg.</TextBlock>
+            <WrapPanel Margin="0,14,0,0"><Button Style="{StaticResource PrimaryButton}" Command="{Binding GeneratePlanCommand}" Content="1. Generate project"/><Button Style="{StaticResource SecondaryButton}" Command="{Binding ContinueWritingCommand}" Content="Resume writing"/><Button Style="{StaticResource PrimaryButton}" Command="{Binding RunPipelineCommand}" Content="2. Build video"/></WrapPanel>
           </StackPanel></ScrollViewer>
 
           <Grid Grid.Column="2"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="180"/></Grid.RowDefinitions>
-            <StackPanel><TextBlock Text="Project plan" FontSize="20" FontWeight="SemiBold"/><TextBlock Text="Generated visuals and your own media are stored in the project media folder. Manual files named c01-s001.jpg, c01-s002.mp4, etc. take precedence when already present." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,10"/></StackPanel>
+            <StackPanel><TextBlock Text="Project plan" FontSize="20" FontWeight="SemiBold"/><TextBlock Text="Every completed chapter is saved immediately. If generation stops midway, load the project and use Resume writing. Existing media named c01-s001.jpg, c01-s002.mp4, etc. is reused." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,10"/></StackPanel>
             <DataGrid Grid.Row="1" ItemsSource="{Binding Chapters}" AutoGenerateColumns="False" IsReadOnly="True" AlternationCount="2">
               <DataGrid.Columns><DataGridTextColumn Header="#" Binding="{Binding Number}" Width="45"/><DataGridTextColumn Header="Chapter" Binding="{Binding Title}" Width="2*"/><DataGridTextColumn Header="Purpose" Binding="{Binding Purpose}" Width="3*"/><DataGridTextColumn Header="Seconds" Binding="{Binding TargetSeconds}" Width="75"/><DataGridTextColumn Header="Scenes" Binding="{Binding Scenes.Count}" Width="65"/></DataGrid.Columns>
             </DataGrid>
