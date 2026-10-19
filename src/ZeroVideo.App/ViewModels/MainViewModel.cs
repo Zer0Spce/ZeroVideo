@@ -44,8 +44,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         GeneratePlanCommand = new AsyncCommand(GeneratePlanAsync, () => !string.IsNullOrWhiteSpace(Topic) && Duration > 0);
         ContinueWritingCommand = new AsyncCommand(ContinueWritingAsync, CanContinueWriting);
         RunPipelineCommand = new AsyncCommand(RunPipelineAsync, CanBuildVideo);
-        OpenChatGptCommand = new AsyncCommand(() => _chat.OpenAsync(Settings));
-        OpenClipchampCommand = new AsyncCommand(() => _clip.OpenAsync(Settings));
+        OpenChatGptCommand = new AsyncCommand(() => _browser.OpenManualAsync(Settings, Settings.ChatGptUrl));
+        OpenClipchampCommand = new AsyncCommand(() => _browser.OpenManualAsync(Settings, Settings.ClipchampUrl));
         InstallFfmpegCommand = new AsyncCommand(InstallFfmpegAsync);
         SaveSettingsCommand = new AsyncCommand(SaveSettingsAsync);
         RunPreflightCommand = new AsyncCommand(RunPreflightAsync);
@@ -87,7 +87,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     {
         Settings = await _settingsService.LoadAsync();
         Log("ZeroVideo initialized.");
-        Log("First run: use Automation > Open ChatGPT and Open Clipchamp to sign in once.");
+        Log("First run: use Automation > Open ChatGPT and Open Clipchamp to sign in normally, then close that Edge window before generating or building.");
         Raise(nameof(Settings));
     }
 
