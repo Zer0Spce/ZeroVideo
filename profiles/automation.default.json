@@ -2,8 +2,14 @@
   "chatGpt": {
     "promptInputs": ["#prompt-textarea", "textarea[placeholder*='Ask']", "[contenteditable='true']"],
     "sendButtons": ["[data-testid='send-button']", "button[aria-label*='Send']"],
-    "stopButtons": ["[data-testid='stop-button']", "button[aria-label*='Stop']"],
-    "assistantMessages": ["[data-message-author-role='assistant']"],
+    "stopButtons": ["[data-testid='stop-button']", "button[aria-label*='Stop']", "button[data-testid*='stop']"],
+    "assistantMessages": [
+      "[data-message-author-role='assistant']",
+      "main article[data-testid^='conversation-turn-']",
+      "main [data-testid^='conversation-turn-']",
+      "main .markdown",
+      "main [class*='markdown']"
+    ],
     "generatedImages": ["[data-message-author-role='assistant'] img", "article[data-testid*='conversation-turn'] img"]
   },
   "clipchamp": {
