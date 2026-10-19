@@ -42,7 +42,7 @@ public sealed class BrowserSession : IAsyncDisposable
         startInfo.ArgumentList.Add("--no-first-run");
         startInfo.ArgumentList.Add(url);
 
-        Process.Start(startInfo)
+        _ = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Microsoft Edge could not be started.");
 
         return Task.CompletedTask;
