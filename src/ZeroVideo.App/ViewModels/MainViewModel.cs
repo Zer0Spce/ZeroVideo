@@ -33,6 +33,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private string _status = "Ready";
     private double _progress;
     private string _projectDirectory = "";
+    private bool _newChat;
 
     public MainViewModel()
     {
@@ -44,8 +45,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         GeneratePlanCommand = new AsyncCommand(GeneratePlanAsync, () => !string.IsNullOrWhiteSpace(Topic) && Duration > 0);
         ContinueWritingCommand = new AsyncCommand(ContinueWritingAsync, CanContinueWriting);
         RunPipelineCommand = new AsyncCommand(RunPipelineAsync, CanBuildVideo);
-        OpenChatGptCommand = new AsyncCommand(() => _browser.OpenManualAsync(Settings, Settings.ChatGptUrl));
-        OpenClipchampCommand = new AsyncCommand(() => _browser.OpenManualAsync(Settings, Settings.ClipchampUrl));
+        OpenChatGptCommand = new AsyncCommand(() => _chat.OpenAsync(Settings));
+        OpenClipchampCommand = new AsyncCommand(() => _clip.OpenAsync(Settings));
         InstallFfmpegCommand = new AsyncCommand(InstallFfmpegAsync);
         SaveSettingsCommand = new AsyncCommand(SaveSettingsAsync);
         RunPreflightCommand = new AsyncCommand(RunPreflightAsync);
@@ -66,6 +67,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public string Style { get => _style; set => Set(ref _style, value); }
     public string Status { get => _status; set => Set(ref _status, value); }
     public double Progress { get => _progress; set => Set(ref _progress, value); }
+    public bool NewChat { get => _newChat; set => Set(ref _newChat, value); }
     public string ProjectDirectory { get => _projectDirectory; set { if (Set(ref _projectDirectory, value)) RefreshCommands(); } }
     public VideoProject Project { get => _project; private set { Set(ref _project, value); Raise(nameof(Chapters)); RefreshCommands(); } }
     public IEnumerable<ProjectChapter> Chapters => Project.Chapters;
@@ -87,7 +89,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     {
         Settings = await _settingsService.LoadAsync();
         Log("ZeroVideo initialized.");
-        Log("First run: use Automation > Open ChatGPT and Open Clipchamp to sign in normally, then close that Edge window before generating or building.");
+        Log("Use Automation > Open ChatGPT / Open Clipchamp to sign in normally. Generation automatically hands that dedicated Edge profile over to automation.");
         Raise(nameof(Settings));
     }
 
@@ -95,6 +97,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     {
         try
         {
+            ArmNewChatIfRequested();
             Status = "Creating master outline with ChatGPT..."; Progress = 3;
             var seed = new VideoProject
             {
@@ -113,7 +116,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private async Task ContinueWritingAsync()
     {
-        try { await WriteMissingChaptersAsync(); }
+        try
+        {
+            ArmNewChatIfRequested();
+            await WriteMissingChaptersAsync();
+        }
         catch (Exception ex) { Fail(ex); }
     }
 
@@ -137,7 +144,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             Progress = 5 + ((i + 1) / (double)count * 20.0);
             Raise(nameof(Chapters));
             RefreshCommands();
-            Log($"Chapter {i + 1} checkpoint saved.");
+            Log($"Chapter {i + 1} checkpoint saved. ChatGPT chat: {Project.ChatGptConversationUrl ?? "pending"}");
         }
 
         Status = CanBuildVideo() ? $"Script ready: {count} chapters" : "Script paused — use Resume writing";
@@ -149,6 +156,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     {
         try
         {
+            ArmNewChatIfRequested();
             Status = "Running long-form pipeline...";
             var p = new Progress<double>(x => Progress = x);
             var output = await _pipeline.RunAsync(Project, Settings, Log, p, _cts.Token);
@@ -156,6 +164,14 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             MessageBox.Show($"Video finished:\n{output}", "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex) { Fail(ex); }
+    }
+
+    private void ArmNewChatIfRequested()
+    {
+        if (!NewChat) return;
+        _chat.RequestNewChat();
+        NewChat = false;
+        Log("New Chat requested: the next ChatGPT operation will start fresh, then ZeroVideo will reuse that chat for all following work.");
     }
 
     private async Task RunPreflightAsync()
@@ -206,7 +222,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         if (dialog.ShowDialog() != true) return;
         Project = await _store.LoadAsync(dialog.FileName);
         Topic = Project.Topic; Duration = Project.TargetMinutes; AspectRatio = Project.AspectRatio; Style = Project.Style; ProjectDirectory = Project.ProjectDirectory;
+        NewChat = false;
         Raise(nameof(Chapters)); Status = CanBuildVideo() ? "Project loaded — ready to build" : "Project loaded — writing can resume"; Log($"Loaded {Project.Title}");
+        if (!string.IsNullOrWhiteSpace(Project.ChatGptConversationUrl)) Log("Saved ChatGPT project chat will be reused.");
         RefreshCommands();
     }
 

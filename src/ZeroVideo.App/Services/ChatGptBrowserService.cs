@@ -6,11 +6,19 @@ namespace ZeroVideo.App.Services;
 
 public sealed class ChatGptBrowserService(BrowserSession browser, AutomationProfileService profiles)
 {
+    private bool _newChatRequested;
+
+    /// <summary>
+    /// One-shot request. The next ChatGPT operation starts a fresh conversation,
+    /// then all later ZeroVideo work continues in that same conversation.
+    /// </summary>
+    public void RequestNewChat() => _newChatRequested = true;
+
     public async Task<VideoProject> GenerateOutlineAsync(VideoProject seed, ZeroVideoSettings settings, string prompt, Action<string>? log = null, CancellationToken ct = default)
     {
         for (var attempt = 1; attempt <= 2; attempt++)
         {
-            var raw = await GenerateTextAsync(settings, prompt, log, ct);
+            var raw = await GenerateTextAsync(seed, settings, prompt, log, ct);
             try
             {
                 var project = ParseOutline(raw, seed);
@@ -19,7 +27,7 @@ public sealed class ChatGptBrowserService(BrowserSession browser, AutomationProf
             }
             catch (Exception ex) when (attempt == 1)
             {
-                log?.Invoke($"Outline JSON was invalid ({ex.Message}). Retrying once with a clean chat.");
+                log?.Invoke($"Outline JSON was invalid ({ex.Message}). Retrying in the same project chat.");
                 prompt += "\nIMPORTANT: Your previous response could not be parsed. Return one complete valid JSON object only. Do not use markdown fences.";
             }
         }
@@ -30,7 +38,7 @@ public sealed class ChatGptBrowserService(BrowserSession browser, AutomationProf
     {
         for (var attempt = 1; attempt <= 2; attempt++)
         {
-            var raw = await GenerateTextAsync(settings, prompt, log, ct);
+            var raw = await GenerateTextAsync(project, settings, prompt, log, ct);
             try
             {
                 var json = ExtractJson(raw);
@@ -47,7 +55,7 @@ public sealed class ChatGptBrowserService(BrowserSession browser, AutomationProf
             }
             catch (Exception ex) when (attempt == 1)
             {
-                log?.Invoke($"Chapter {metadata.Number} JSON was invalid ({ex.Message}). Retrying once with a clean chat.");
+                log?.Invoke($"Chapter {metadata.Number} JSON was invalid ({ex.Message}). Retrying in the same project chat.");
                 prompt += "\nIMPORTANT: Your previous response could not be parsed. Return one complete valid JSON object only, with all scenes included and no markdown fences.";
             }
         }
@@ -56,12 +64,10 @@ public sealed class ChatGptBrowserService(BrowserSession browser, AutomationProf
 
     public async Task<string> GenerateSceneImageAsync(VideoProject project, ProjectChapter chapter, ProjectScene scene, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
-        await browser.EnsureStartedAsync(settings);
         var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
         if (profile.ChatGpt.GeneratedImages.Count == 0) throw new InvalidOperationException("No ChatGPT generated-image selectors are configured.");
 
-        var page = await browser.GetOrCreatePageAsync("chatgpt.com");
-        await page.GotoAsync(settings.ChatGptUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120000 });
+        var page = await GetProjectPageAsync(project, settings, log, ct);
         var input = await WaitForPromptAsync(page, profile.ChatGpt.PromptInputs, ct);
         var imageSelector = string.Join(",", profile.ChatGpt.GeneratedImages);
         var before = await page.Locator(imageSelector).CountAsync();
@@ -79,9 +85,10 @@ Requirements: one single image only; no collage; no captions; no readable text; 
         await input.ClickAsync();
         await input.FillAsync(prompt);
         await SendAsync(page, input, profile.ChatGpt.SendButtons);
-        log?.Invoke($"Scene {chapter.Number}.{scene.Number}: waiting for ChatGPT visual...");
+        log?.Invoke($"Scene {chapter.Number}.{scene.Number}: waiting for ChatGPT visual in the project chat...");
 
         var image = await WaitForNewImageAsync(page, imageSelector, before, ct);
+        RememberConversation(project, page);
         var destination = ProjectMedia.GeneratedImagePath(project, chapter, scene);
         await image.ScreenshotAsync(new() { Path = destination, Type = ScreenshotType.Png });
         scene.MediaPath = destination;
@@ -89,27 +96,78 @@ Requirements: one single image only; no collage; no captions; no readable text; 
         return destination;
     }
 
-    public async Task OpenAsync(ZeroVideoSettings settings)
-    {
-        await browser.EnsureStartedAsync(settings);
-        var page = await browser.GetOrCreatePageAsync("chatgpt.com");
-        await page.GotoAsync(settings.ChatGptUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120000 });
-    }
+    public Task OpenAsync(ZeroVideoSettings settings)
+        => browser.OpenManualAsync(settings, settings.ChatGptUrl);
 
-    private async Task<string> GenerateTextAsync(ZeroVideoSettings settings, string prompt, Action<string>? log, CancellationToken ct)
+    private async Task<string> GenerateTextAsync(VideoProject project, ZeroVideoSettings settings, string prompt, Action<string>? log, CancellationToken ct)
     {
-        await browser.EnsureStartedAsync(settings);
         var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
-        var page = await browser.GetOrCreatePageAsync("chatgpt.com");
-        await page.GotoAsync(settings.ChatGptUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120000 });
-        log?.Invoke("ChatGPT opened. If login or verification is shown, complete it in the visible browser.");
+        var page = await GetProjectPageAsync(project, settings, log, ct);
         var input = await WaitForPromptAsync(page, profile.ChatGpt.PromptInputs, ct);
         await input.ClickAsync();
         await input.FillAsync(prompt);
         var assistantSelector = string.Join(",", profile.ChatGpt.AssistantMessages);
         var before = await page.Locator(assistantSelector).CountAsync();
         await SendAsync(page, input, profile.ChatGpt.SendButtons);
-        return await WaitForStableAssistantAsync(page, assistantSelector, before, ct);
+        var response = await WaitForStableAssistantAsync(page, assistantSelector, before, ct);
+        RememberConversation(project, page);
+        return response;
+    }
+
+    private async Task<IPage> GetProjectPageAsync(VideoProject project, ZeroVideoSettings settings, Action<string>? log, CancellationToken ct)
+    {
+        await browser.EnsureStartedAsync(settings);
+        var page = await browser.GetOrCreatePageAsync("chatgpt.com");
+
+        if (_newChatRequested)
+        {
+            _newChatRequested = false;
+            project.ChatGptConversationUrl = null;
+            log?.Invoke("ChatGPT: starting a new project chat. All following ChatGPT work will reuse it.");
+            await page.GotoAsync(settings.ChatGptUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120000 });
+        }
+        else if (!string.IsNullOrWhiteSpace(project.ChatGptConversationUrl))
+        {
+            if (!UrlsMatch(page.Url, project.ChatGptConversationUrl))
+            {
+                log?.Invoke("ChatGPT: reopening the saved project chat.");
+                await page.GotoAsync(project.ChatGptConversationUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120000 });
+            }
+            else
+            {
+                log?.Invoke("ChatGPT: continuing the same project chat.");
+            }
+        }
+        else
+        {
+            // A project without a saved conversation must not accidentally inherit a chat
+            // left open by another project. Start from ChatGPT's new-chat page once.
+            if (page.Url.Contains("/c/", StringComparison.OrdinalIgnoreCase) ||
+                !page.Url.Contains("chatgpt.com", StringComparison.OrdinalIgnoreCase))
+            {
+                await page.GotoAsync(settings.ChatGptUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120000 });
+            }
+            log?.Invoke("ChatGPT: creating the single chat for this project.");
+        }
+
+        ct.ThrowIfCancellationRequested();
+        return page;
+    }
+
+    private static bool UrlsMatch(string current, string saved)
+    {
+        if (string.IsNullOrWhiteSpace(current) || string.IsNullOrWhiteSpace(saved)) return false;
+        return string.Equals(current.TrimEnd('/'), saved.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void RememberConversation(VideoProject project, IPage page)
+    {
+        var url = page.Url;
+        if (url.Contains("chatgpt.com", StringComparison.OrdinalIgnoreCase) &&
+            url.Contains("/c/", StringComparison.OrdinalIgnoreCase))
+        {
+            project.ChatGptConversationUrl = url;
+        }
     }
 
     private static async Task SendAsync(IPage page, ILocator input, IEnumerable<string> sendButtons)
