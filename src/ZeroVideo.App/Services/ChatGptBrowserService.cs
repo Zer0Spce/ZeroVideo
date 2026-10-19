@@ -68,7 +68,6 @@ public sealed class ChatGptBrowserService(BrowserSession browser, AutomationProf
         if (profile.ChatGpt.GeneratedImages.Count == 0) throw new InvalidOperationException("No ChatGPT generated-image selectors are configured.");
 
         var page = await GetProjectPageAsync(project, settings, log, ct);
-        var input = await WaitForPromptAsync(page, profile.ChatGpt.PromptInputs, ct);
         var imageSelector = string.Join(",", profile.ChatGpt.GeneratedImages);
         var before = await page.Locator(imageSelector).CountAsync();
         var ratioWords = project.AspectRatio == "9:16" ? "vertical 9:16" : "widescreen 16:9";
@@ -82,9 +81,9 @@ VIDEO STYLE: {project.Style}
 
 Requirements: one single image only; no collage; no captions; no readable text; no logos; no watermark; no UI; visually clear at YouTube resolution. Keep the subject and era accurate to the scene. Do not add unrelated people or objects.
 """;
-        await input.ClickAsync();
-        await input.FillAsync(prompt);
-        await SendAsync(page, input, profile.ChatGpt.SendButtons);
+
+        await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, prompt, ct);
+        await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
         log?.Invoke($"Scene {chapter.Number}.{scene.Number}: waiting for ChatGPT visual in the project chat...");
 
         var image = await WaitForNewImageAsync(page, imageSelector, before, ct);
@@ -103,12 +102,14 @@ Requirements: one single image only; no collage; no captions; no readable text; 
     {
         var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
         var page = await GetProjectPageAsync(project, settings, log, ct);
-        var input = await WaitForPromptAsync(page, profile.ChatGpt.PromptInputs, ct);
-        await input.ClickAsync();
-        await input.FillAsync(prompt);
+
+        log?.Invoke("ChatGPT: waiting for the live composer...");
+        await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, prompt, ct);
+
         var assistantSelector = string.Join(",", profile.ChatGpt.AssistantMessages);
         var before = await page.Locator(assistantSelector).CountAsync();
-        await SendAsync(page, input, profile.ChatGpt.SendButtons);
+        await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
+
         var response = await WaitForStableAssistantAsync(page, assistantSelector, before, ct);
         RememberConversation(project, page);
         return response;
@@ -170,23 +171,6 @@ Requirements: one single image only; no collage; no captions; no readable text; 
         }
     }
 
-    private static async Task SendAsync(IPage page, ILocator input, IEnumerable<string> sendButtons)
-    {
-        var send = await BrowserLocator.FirstVisibleAsync(page, sendButtons, 1500);
-        if (send is not null) await send.ClickAsync(); else await input.PressAsync("Enter");
-    }
-
-    private static async Task<ILocator> WaitForPromptAsync(IPage page, IEnumerable<string> selectors, CancellationToken ct)
-    {
-        while (!ct.IsCancellationRequested)
-        {
-            var locator = await BrowserLocator.FirstVisibleAsync(page, selectors, 1200);
-            if (locator is not null) return locator;
-            await Task.Delay(1000, ct);
-        }
-        throw new OperationCanceledException(ct);
-    }
-
     private static async Task<ILocator> WaitForNewImageAsync(IPage page, string selector, int previousCount, CancellationToken ct)
     {
         var started = DateTime.UtcNow;
@@ -217,19 +201,26 @@ Requirements: one single image only; no collage; no captions; no readable text; 
         var started = DateTime.UtcNow;
         while (!ct.IsCancellationRequested && DateTime.UtcNow - started < TimeSpan.FromMinutes(12))
         {
-            var messages = page.Locator(selector);
-            var count = await messages.CountAsync();
-            if (count > previousCount || count > 0)
+            try
             {
-                var current = (await messages.Last.InnerTextAsync()).Trim();
-                if (current.Length > 20 && current == last) stable++; else stable = 0;
-                last = current;
-                if (stable >= 3) return current;
+                var messages = page.Locator(selector);
+                var count = await messages.CountAsync();
+                if (count > previousCount || count > 0)
+                {
+                    var current = (await messages.Last.InnerTextAsync()).Trim();
+                    if (current.Length > 20 && current == last) stable++; else stable = 0;
+                    last = current;
+                    if (stable >= 3) return current;
+                }
+            }
+            catch
+            {
+                // The conversation turn can also be replaced while streaming. Re-query it.
             }
             await Task.Delay(2000, ct);
         }
         if (!string.IsNullOrWhiteSpace(last)) return last;
-        throw new TimeoutException("ChatGPT response was not detected. Check the browser and automation selectors.");
+        throw new TimeoutException("ChatGPT response was not detected. Check the visible browser and automation selectors.");
     }
 
     private static VideoProject ParseOutline(string raw, VideoProject seed)
