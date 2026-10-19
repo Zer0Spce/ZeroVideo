@@ -27,6 +27,8 @@ public sealed class ProjectOptions
     public bool AddBackgroundMusic { get; set; }
     public bool AddSoundEffects { get; set; }
     public bool AvoidRepeatedVisuals { get; set; } = true;
+    public bool GenerateMissingVisuals { get; set; } = true;
+    public int MaxGeneratedVisuals { get; set; } = 120;
     public string? BackgroundMusicPath { get; set; }
     public double BackgroundMusicVolume { get; set; } = 0.10;
 }

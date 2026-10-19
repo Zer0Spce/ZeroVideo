@@ -12,6 +12,7 @@ public class SelectorSet
     public List<string> SendButtons { get; set; } = [];
     public List<string> StopButtons { get; set; } = [];
     public List<string> AssistantMessages { get; set; } = [];
+    public List<string> GeneratedImages { get; set; } = [];
 }
 
 public sealed class ClipchampSelectorSet

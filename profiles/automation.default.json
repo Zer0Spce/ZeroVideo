@@ -3,15 +3,16 @@
     "promptInputs": ["#prompt-textarea", "textarea[placeholder*='Ask']", "[contenteditable='true']"],
     "sendButtons": ["[data-testid='send-button']", "button[aria-label*='Send']"],
     "stopButtons": ["[data-testid='stop-button']", "button[aria-label*='Stop']"],
-    "assistantMessages": ["[data-message-author-role='assistant']"]
+    "assistantMessages": ["[data-message-author-role='assistant']"],
+    "generatedImages": ["[data-message-author-role='assistant'] img", "article[data-testid*='conversation-turn'] img"]
   },
   "clipchamp": {
     "newVideoButtons": ["text=Create a new video", "text=New video", "button:has-text('Create')"],
     "recordCreateButtons": ["text=Record & create", "button:has-text('Record & create')"],
     "textToSpeechButtons": ["text=Text to speech", "button:has-text('Text to speech')"],
     "scriptInputs": ["textarea", "[contenteditable='true']"],
-    "languageControls": ["button:has-text('Language')"],
-    "voiceControls": ["button:has-text('Voice')"],
+    "languageControls": ["button:has-text('Language')", "[aria-label*='language' i]"],
+    "voiceControls": ["button:has-text('Voice')", "[aria-label*='voice' i]"],
     "saveButtons": ["button:has-text('Save')"],
     "exportButtons": ["button:has-text('Export')"],
     "audioOnlyButtons": ["text=Audio only", "text=Audio-only"],

@@ -19,6 +19,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly ProcessRunner _runner = new();
     private readonly DependencyService _dependencies = new();
     private readonly CancellationTokenSource _cts = new();
+    private readonly ChatGptBrowserService _chat;
+    private readonly ClipchampTtsService _clip;
+    private readonly FfmpegService _ffmpeg;
+    private readonly PipelineService _pipeline;
+    private readonly PreflightService _preflight;
     private ZeroVideoSettings _settings = new();
     private VideoProject _project = new();
     private string _topic = "";
@@ -34,30 +39,28 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         _chat = new ChatGptBrowserService(_browser, _profiles);
         _clip = new ClipchampTtsService(_browser, _profiles);
         _ffmpeg = new FfmpegService(_runner);
-        _pipeline = new PipelineService(_clip, _ffmpeg, _store);
-        GeneratePlanCommand = new AsyncCommand(GeneratePlanAsync, () => !string.IsNullOrWhiteSpace(Topic));
+        _pipeline = new PipelineService(_chat, _clip, _ffmpeg, _store);
+        _preflight = new PreflightService(_runner);
+        GeneratePlanCommand = new AsyncCommand(GeneratePlanAsync, () => !string.IsNullOrWhiteSpace(Topic) && Duration > 0);
         RunPipelineCommand = new AsyncCommand(RunPipelineAsync, () => Project.Chapters.Count > 0);
         OpenChatGptCommand = new AsyncCommand(() => _chat.OpenAsync(Settings));
         OpenClipchampCommand = new AsyncCommand(() => _clip.OpenAsync(Settings));
         InstallFfmpegCommand = new AsyncCommand(InstallFfmpegAsync);
         SaveSettingsCommand = new AsyncCommand(SaveSettingsAsync);
+        RunPreflightCommand = new AsyncCommand(RunPreflightAsync);
         OpenProjectFolderCommand = new AsyncCommand(OpenProjectFolderAsync, () => Directory.Exists(ProjectDirectory));
         LoadProjectCommand = new AsyncCommand(LoadProjectAsync);
         CancelCommand = new RelayCommand(() => _cts.Cancel());
     }
 
-    private readonly ChatGptBrowserService _chat;
-    private readonly ClipchampTtsService _clip;
-    private readonly FfmpegService _ffmpeg;
-    private readonly PipelineService _pipeline;
-
     public ObservableCollection<string> Logs { get; } = [];
-    public ObservableCollection<int> Durations { get; } = [5, 10, 15, 20, 30, 45, 60];
+    public ObservableCollection<string> PreflightLines { get; } = [];
+    public ObservableCollection<int> Durations { get; } = [5, 10, 15, 20, 30, 45, 60, 90, 120];
     public ObservableCollection<string> AspectRatios { get; } = ["16:9", "9:16"];
     public ObservableCollection<string> Styles { get; } = ["Documentary explainer with fast visual variety", "VOX-inspired paper/editorial explainer", "History documentary", "Mystery / investigation", "Science explainer", "Custom"];
 
     public string Topic { get => _topic; set { if (Set(ref _topic, value)) (GeneratePlanCommand as AsyncCommand)?.RaiseCanExecuteChanged(); } }
-    public int Duration { get => _duration; set => Set(ref _duration, value); }
+    public int Duration { get => _duration; set { if (Set(ref _duration, Math.Max(1, value))) (GeneratePlanCommand as AsyncCommand)?.RaiseCanExecuteChanged(); } }
     public string AspectRatio { get => _aspectRatio; set => Set(ref _aspectRatio, value); }
     public string Style { get => _style; set => Set(ref _style, value); }
     public string Status { get => _status; set => Set(ref _status, value); }
@@ -73,6 +76,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public ICommand OpenClipchampCommand { get; }
     public ICommand InstallFfmpegCommand { get; }
     public ICommand SaveSettingsCommand { get; }
+    public ICommand RunPreflightCommand { get; }
     public ICommand OpenProjectFolderCommand { get; }
     public ICommand LoadProjectCommand { get; }
     public ICommand CancelCommand { get; }
@@ -90,7 +94,11 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         try
         {
             Status = "Generating plan with ChatGPT..."; Progress = 5;
-            var seed = new VideoProject { Topic = Topic.Trim(), Title = Topic.Trim(), TargetMinutes = Duration, AspectRatio = AspectRatio, Style = Style };
+            var seed = new VideoProject
+            {
+                Topic = Topic.Trim(), Title = Topic.Trim(), TargetMinutes = Duration, AspectRatio = AspectRatio,
+                Style = Style, Options = Project.Options
+            };
             var prompt = _promptBuilder.Build(seed);
             Project = await _chat.GeneratePlanAsync(seed, Settings, prompt, Log, _cts.Token);
             ProjectDirectory = await _store.SaveAsync(Project, Settings.ProjectsRoot);
@@ -110,6 +118,23 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             var output = await _pipeline.RunAsync(Project, Settings, Log, p, _cts.Token);
             Status = "Finished"; Progress = 100; Log($"FINAL VIDEO: {output}");
             MessageBox.Show($"Video finished:\n{output}", "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex) { Fail(ex); }
+    }
+
+    private async Task RunPreflightAsync()
+    {
+        try
+        {
+            Status = "Checking system...";
+            PreflightLines.Clear();
+            var checks = await _preflight.RunAsync(Settings, _cts.Token);
+            foreach (var check in checks)
+            {
+                var line = $"{(check.Passed ? "PASS" : "FAIL")}  {check.Name} — {check.Detail}";
+                PreflightLines.Add(line); Log(line);
+            }
+            Status = checks.All(x => x.Passed) ? "System ready" : "Setup needs attention";
         }
         catch (Exception ex) { Fail(ex); }
     }

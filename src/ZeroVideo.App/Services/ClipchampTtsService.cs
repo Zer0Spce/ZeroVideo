@@ -28,6 +28,9 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
             await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.RecordCreateButtons, "Record & create", 5000);
             await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.TextToSpeechButtons, "Text to speech", 5000);
 
+            await TryChooseAsync(page, profile.Clipchamp.LanguageControls, settings.ClipchampLanguage, "language", log);
+            await TryChooseAsync(page, profile.Clipchamp.VoiceControls, settings.ClipchampVoice, "voice", log);
+
             var input = await BrowserLocator.FirstVisibleAsync(page, profile.Clipchamp.ScriptInputs, 5000) ?? throw new InvalidOperationException("Could not find Clipchamp TTS script input.");
             await input.FillAsync(chapter.Narration);
             await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.SaveButtons, "Clipchamp TTS Save", 5000);
@@ -68,6 +71,22 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
             try { await page.ScreenshotAsync(new() { Path = shot, FullPage = true }); } catch { }
             throw new InvalidOperationException($"Clipchamp automation stopped safely: {ex.Message} Diagnostic: {shot}", ex);
         }
+    }
+
+    private static async Task TryChooseAsync(IPage page, IEnumerable<string> controls, string value, string label, Action<string>? log)
+    {
+        if (string.IsNullOrWhiteSpace(value) || controls.Count() == 0) return;
+        var control = await BrowserLocator.FirstVisibleAsync(page, controls, 1800);
+        if (control is null) { log?.Invoke($"Clipchamp {label} selector not found; keeping current selection."); return; }
+        try
+        {
+            await control.ClickAsync();
+            var option = page.GetByText(value, new() { Exact = true }).Last;
+            await option.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 2500 });
+            await option.ClickAsync();
+            log?.Invoke($"Clipchamp {label}: {value}");
+        }
+        catch { log?.Invoke($"Clipchamp could not select {label} '{value}'; keeping current selection."); }
     }
 
     private static string? FindRecentDownload(string pattern, TimeSpan maxAge)
