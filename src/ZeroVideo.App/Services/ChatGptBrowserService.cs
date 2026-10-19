@@ -106,6 +106,9 @@ Requirements: one single image only; no collage; no captions; no readable text; 
         log?.Invoke("ChatGPT: waiting for the live composer...");
         await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, prompt, ct);
 
+        // Capture whatever JSON is already visible after the prompt is entered but before
+        // sending. This prevents the JSON schema in ZeroVideo's own prompt from being
+        // mistaken for ChatGPT's new answer after it becomes a user turn.
         var baseline = await TryReadLatestResponseAsync(page, profile.ChatGpt.AssistantMessages) ?? "";
         await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
         log?.Invoke("ChatGPT: prompt sent; waiting for the finished response...");
@@ -220,10 +223,11 @@ Requirements: one single image only; no collage; no captions; no readable text; 
             var isGenerating = await AnyVisibleAsync(page, stopSelectors);
             sawGeneration |= isGenerating;
 
+            // This returns the latest VALID JSON object, not raw turn text. It first tries
+            // assistant/turn selectors, then falls back to the complete visible <main> text.
             var current = await TryReadLatestResponseAsync(page, configuredResponseSelectors);
             if (!string.IsNullOrWhiteSpace(current) &&
-                !string.Equals(current, baseline, StringComparison.Ordinal) &&
-                LooksLikeJsonResponse(current))
+                !string.Equals(current, baseline, StringComparison.Ordinal))
             {
                 if (string.Equals(current, last, StringComparison.Ordinal))
                     stableSamples++;
@@ -233,39 +237,34 @@ Requirements: one single image only; no collage; no captions; no readable text; 
                     stableSamples = 0;
                 }
 
-                // Two identical samples plus no visible Stop control is enough to treat
-                // the answer as complete. This also works if the site's assistant-role
-                // attribute changes, because TryReadLatestResponseAsync has turn fallbacks.
+                // Once a new valid JSON object is stable and ChatGPT is no longer showing
+                // a Stop control, the response is finished.
                 if (!isGenerating && stableSamples >= 1)
                     return current;
             }
-            else if (!string.IsNullOrWhiteSpace(current) && current != last)
-            {
-                // Keep this for diagnostics/fallback, but do not accept a user prompt or
-                // partially rendered non-JSON turn as the assistant result.
-                last = current;
-                stableSamples = 0;
-            }
 
-            if (sawGeneration && !isGenerating && !string.IsNullOrWhiteSpace(last) && LooksLikeJsonResponse(last))
+            if (sawGeneration && !isGenerating && !string.IsNullOrWhiteSpace(last))
             {
-                // Give the DOM one extra beat after streaming stops, then re-read it.
-                await Task.Delay(1200, ct);
+                // Give the DOM one final beat after streaming ends and prefer the newest
+                // valid JSON object visible on the page.
+                await Task.Delay(1000, ct);
                 var finalRead = await TryReadLatestResponseAsync(page, configuredResponseSelectors);
-                if (!string.IsNullOrWhiteSpace(finalRead) && LooksLikeJsonResponse(finalRead))
+                if (!string.IsNullOrWhiteSpace(finalRead) &&
+                    !string.Equals(finalRead, baseline, StringComparison.Ordinal))
                     return finalRead;
             }
 
-            await Task.Delay(1500, ct);
+            await Task.Delay(1200, ct);
         }
 
-        if (!string.IsNullOrWhiteSpace(last) && LooksLikeJsonResponse(last))
+        if (!string.IsNullOrWhiteSpace(last) &&
+            !string.Equals(last, baseline, StringComparison.Ordinal))
         {
-            log?.Invoke("ChatGPT: response detector timed out, but a complete JSON-looking answer was visible; using it.");
+            log?.Invoke("ChatGPT: completion controls were inconclusive, but a new valid JSON response was visible; using it.");
             return last;
         }
 
-        throw new TimeoutException("ChatGPT finished in the browser, but ZeroVideo could not read the response. The ChatGPT response selectors may need updating.");
+        throw new TimeoutException("ChatGPT finished in the browser, but ZeroVideo could not find a new valid JSON response in the visible conversation.");
     }
 
     private static async Task<string?> TryReadLatestResponseAsync(IPage page, IEnumerable<string> configuredSelectors)
@@ -279,6 +278,8 @@ Requirements: one single image only; no collage; no captions; no readable text; 
             "main [class*='markdown']"
         };
 
+        // Prefer the most specific message/turn nodes. Read newest to oldest and return
+        // only text that actually contains a complete parseable JSON object.
         foreach (var selector in configuredSelectors.Concat(fallbacks).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct())
         {
             try
@@ -289,8 +290,21 @@ Requirements: one single image only; no collage; no captions; no readable text; 
                 {
                     var item = items.Nth(i);
                     if (!await item.IsVisibleAsync()) continue;
+
+                    // If a generic conversation-turn selector clearly points at a user turn,
+                    // skip it. The page-level fallback below still protects us when role
+                    // attributes disappear entirely.
+                    try
+                    {
+                        if (await item.Locator("[data-message-author-role='user']").CountAsync() > 0 &&
+                            await item.Locator("[data-message-author-role='assistant']").CountAsync() == 0)
+                            continue;
+                    }
+                    catch { }
+
                     var text = (await item.InnerTextAsync()).Trim();
-                    if (!string.IsNullOrWhiteSpace(text)) return text;
+                    var json = TryExtractLastValidJsonObject(text);
+                    if (json is not null) return json;
                 }
             }
             catch
@@ -298,6 +312,22 @@ Requirements: one single image only; no collage; no captions; no readable text; 
                 // ChatGPT can replace conversation turns while streaming; always re-query.
             }
         }
+
+        // Last-resort DOM-independent fallback: inspect everything visibly rendered in
+        // ChatGPT's main conversation region and take the LAST complete valid JSON object.
+        // Baseline capture before Send prevents the JSON schema in our user prompt from
+        // being mistaken for a new assistant response.
+        try
+        {
+            var main = page.Locator("main").First;
+            if (await main.CountAsync() > 0 && await main.IsVisibleAsync())
+            {
+                var text = await main.InnerTextAsync();
+                var json = TryExtractLastValidJsonObject(text);
+                if (json is not null) return json;
+            }
+        }
+        catch { }
 
         return null;
     }
@@ -320,16 +350,77 @@ Requirements: one single image only; no collage; no captions; no readable text; 
         return false;
     }
 
-    private static bool LooksLikeJsonResponse(string text)
+    /// <summary>
+    /// Finds complete balanced JSON objects inside arbitrary UI text and returns the last
+    /// one that JsonDocument can actually parse. Braces inside quoted JSON strings are
+    /// ignored, so long prompts and escaped text do not confuse the scanner.
+    /// </summary>
+    private static string? TryExtractLastValidJsonObject(string? text)
     {
-        var value = text.Trim();
-        if (value.StartsWith("```", StringComparison.Ordinal))
+        if (string.IsNullOrWhiteSpace(text)) return null;
+
+        string? lastValid = null;
+        var depth = 0;
+        var start = -1;
+        var inString = false;
+        var escaped = false;
+
+        for (var i = 0; i < text.Length; i++)
         {
-            var newline = value.IndexOf('\n');
-            if (newline >= 0) value = value[(newline + 1)..].TrimStart();
+            var ch = text[i];
+
+            if (inString)
+            {
+                if (escaped)
+                {
+                    escaped = false;
+                    continue;
+                }
+                if (ch == '\\')
+                {
+                    escaped = true;
+                    continue;
+                }
+                if (ch == '"') inString = false;
+                continue;
+            }
+
+            if (ch == '"')
+            {
+                if (depth > 0) inString = true;
+                continue;
+            }
+
+            if (ch == '{')
+            {
+                if (depth == 0) start = i;
+                depth++;
+                continue;
+            }
+
+            if (ch != '}' || depth <= 0) continue;
+
+            depth--;
+            if (depth != 0 || start < 0) continue;
+
+            var candidate = text[start..(i + 1)].Trim();
+            try
+            {
+                using var doc = JsonDocument.Parse(candidate);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                    lastValid = candidate;
+            }
+            catch
+            {
+                // Not valid JSON; continue scanning for a later object.
+            }
+
+            start = -1;
+            inString = false;
+            escaped = false;
         }
 
-        return value.StartsWith("{", StringComparison.Ordinal) && value.Contains('}');
+        return lastValid;
     }
 
     private static VideoProject ParseOutline(string raw, VideoProject seed)
@@ -352,16 +443,8 @@ Requirements: one single image only; no collage; no captions; no readable text; 
 
     private static string ExtractJson(string raw)
     {
-        raw = raw.Trim();
-        if (raw.StartsWith("```"))
-        {
-            var firstNewLine = raw.IndexOf('\n');
-            var lastFence = raw.LastIndexOf("```", StringComparison.Ordinal);
-            if (firstNewLine >= 0 && lastFence > firstNewLine) raw = raw[(firstNewLine + 1)..lastFence].Trim();
-        }
-        var start = raw.IndexOf('{');
-        var end = raw.LastIndexOf('}');
-        if (start < 0 || end <= start) throw new InvalidDataException("ChatGPT did not return a JSON object.");
-        return raw[start..(end + 1)];
+        var json = TryExtractLastValidJsonObject(raw);
+        if (json is null) throw new InvalidDataException("ChatGPT did not return a valid JSON object.");
+        return json;
     }
 }
