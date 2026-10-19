@@ -65,31 +65,47 @@ public sealed class ChatGptBrowserService(BrowserSession browser, AutomationProf
     public async Task<string> GenerateSceneImageAsync(VideoProject project, ProjectChapter chapter, ProjectScene scene, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
         var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
-        if (profile.ChatGpt.GeneratedImages.Count == 0) throw new InvalidOperationException("No ChatGPT generated-image selectors are configured.");
-
         var page = await GetProjectPageAsync(project, settings, log, ct);
-        var imageSelector = string.Join(",", profile.ChatGpt.GeneratedImages);
-        var before = await page.Locator(imageSelector).CountAsync();
+        var baseline = await CaptureImageBaselineAsync(page, profile.ChatGpt.GeneratedImages);
         var ratioWords = project.AspectRatio == "9:16" ? "vertical 9:16" : "widescreen 16:9";
+        var styleRules = VisualStylePresets.GetPrompt(project.Style);
         var prompt = $"""
-Create ONE original {ratioWords} documentary-style still image for this video scene.
+Create ONE original {ratioWords} still image for this video scene.
 TOPIC: {project.Topic}
 SCENE NARRATION: {scene.Narration}
 VISUAL DIRECTION: {scene.ImagePrompt}
 SEARCH/REFERENCE IDEA: {scene.VisualQuery}
 VIDEO STYLE: {project.Style}
+STYLE RULES: {styleRules}
 
-Requirements: one single image only; no collage; no captions; no readable text; no logos; no watermark; no UI; visually clear at YouTube resolution. Keep the subject and era accurate to the scene. Do not add unrelated people or objects.
+Requirements:
+- Follow the STYLE RULES exactly and keep the visual style consistent with the project.
+- One single image only; no multi-panel layout.
+- No captions, no readable text, no logos, no watermark, and no UI.
+- Visually clear at YouTube resolution.
+- Keep the subject and era accurate to the scene.
+- Do not add unrelated people or objects.
+- If this is Stickman explainer, ALL people and characters must be stickmen; realistic humans are forbidden.
+- If this is Cartoon, Hand-drawn, or Whiteboard explainer, do not drift into photorealistic human imagery.
 """;
 
         await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, prompt, ct);
         await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
         log?.Invoke($"Scene {chapter.Number}.{scene.Number}: waiting for ChatGPT visual in the project chat...");
 
-        var image = await WaitForNewImageAsync(page, imageSelector, before, ct);
-        RememberConversation(project, page);
         var destination = ProjectMedia.GeneratedImagePath(project, chapter, scene);
-        await image.ScreenshotAsync(new() { Path = destination, Type = ScreenshotType.Png });
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        await WaitForGeneratedImageAndSaveAsync(
+            page,
+            profile.ChatGpt.GeneratedImages,
+            profile.ChatGpt.StopButtons,
+            baseline,
+            destination,
+            $"Scene {chapter.Number}.{scene.Number}",
+            log,
+            ct);
+
+        RememberConversation(project, page);
         scene.MediaPath = destination;
         log?.Invoke($"Scene {chapter.Number}.{scene.Number}: visual saved.");
         return destination;
@@ -182,27 +198,182 @@ Requirements: one single image only; no collage; no captions; no readable text; 
         }
     }
 
-    private static async Task<ILocator> WaitForNewImageAsync(IPage page, string selector, int previousCount, CancellationToken ct)
+    private static async Task<ImageBaseline> CaptureImageBaselineAsync(IPage page, IEnumerable<string> configuredSelectors)
+    {
+        var candidates = await GetLargeImageCandidatesAsync(page, configuredSelectors);
+        return new ImageBaseline(
+            candidates.Select(x => x.Fingerprint).ToHashSet(StringComparer.Ordinal),
+            candidates.Count);
+    }
+
+    private static async Task WaitForGeneratedImageAndSaveAsync(
+        IPage page,
+        IEnumerable<string> configuredImageSelectors,
+        IEnumerable<string> stopSelectors,
+        ImageBaseline baseline,
+        string destination,
+        string sceneLabel,
+        Action<string>? log,
+        CancellationToken ct)
     {
         var started = DateTime.UtcNow;
-        while (!ct.IsCancellationRequested && DateTime.UtcNow - started < TimeSpan.FromMinutes(8))
+        var sawGeneration = false;
+        string? lastFingerprint = null;
+        var stableSamples = 0;
+        ImageCandidate? lastFresh = null;
+
+        while (!ct.IsCancellationRequested && DateTime.UtcNow - started < TimeSpan.FromMinutes(10))
         {
-            var images = page.Locator(selector);
-            var count = await images.CountAsync();
-            if (count > previousCount)
+            var isGenerating = await AnyVisibleAsync(page, stopSelectors);
+            sawGeneration |= isGenerating;
+            var candidates = await GetLargeImageCandidatesAsync(page, configuredImageSelectors);
+
+            var fresh = candidates.LastOrDefault(x => !baseline.Fingerprints.Contains(x.Fingerprint));
+            if (fresh is null && candidates.Count > baseline.CandidateCount)
+                fresh = candidates.LastOrDefault();
+
+            if (fresh is not null)
             {
-                var latest = images.Last;
-                try
+                lastFresh = fresh;
+                if (string.Equals(lastFingerprint, fresh.Fingerprint, StringComparison.Ordinal))
+                    stableSamples++;
+                else
                 {
-                    await latest.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 5000 });
-                    var box = await latest.BoundingBoxAsync();
-                    if (box is not null && box.Width >= 200 && box.Height >= 200) return latest;
+                    lastFingerprint = fresh.Fingerprint;
+                    stableSamples = 0;
                 }
-                catch { }
+
+                // ChatGPT sometimes never exposes a reliable Stop button for image jobs.
+                // A new large image that survives two scans is sufficient when no generation
+                // control is visible.
+                if (!isGenerating && stableSamples >= 1)
+                {
+                    if (await TrySaveImageCandidateAsync(fresh, destination))
+                    {
+                        log?.Invoke($"{sceneLabel}: generated image detected and captured.");
+                        return;
+                    }
+                    stableSamples = 0;
+                }
             }
-            await Task.Delay(2500, ct);
+
+            if (sawGeneration && !isGenerating)
+            {
+                await Task.Delay(900, ct);
+                var finalCandidates = await GetLargeImageCandidatesAsync(page, configuredImageSelectors);
+                var finalFresh = finalCandidates.LastOrDefault(x => !baseline.Fingerprints.Contains(x.Fingerprint));
+                if (finalFresh is null && finalCandidates.Count > baseline.CandidateCount)
+                    finalFresh = finalCandidates.LastOrDefault();
+
+                if (finalFresh is not null && await TrySaveImageCandidateAsync(finalFresh, destination))
+                {
+                    log?.Invoke($"{sceneLabel}: image generation finished; captured final visual.");
+                    return;
+                }
+            }
+
+            await Task.Delay(1200, ct);
         }
-        throw new TimeoutException("ChatGPT image generation did not produce a detectable image. Check the visible browser and image selectors.");
+
+        if (lastFresh is not null && await TrySaveImageCandidateAsync(lastFresh, destination))
+        {
+            log?.Invoke($"{sceneLabel}: generation controls were inconclusive, but a new image was visible and was captured.");
+            return;
+        }
+
+        throw new TimeoutException("ChatGPT generated the scene prompt, but ZeroVideo could not detect a new large image. Check the visible ChatGPT conversation.");
+    }
+
+    private static async Task<List<ImageCandidate>> GetLargeImageCandidatesAsync(IPage page, IEnumerable<string> configuredSelectors)
+    {
+        // main img is deliberately first: it follows actual DOM order and is much more
+        // resilient than ChatGPT's internal class/test-id names. Configured selectors remain
+        // useful as fallbacks when the image is rendered outside <main>.
+        var selectors = new[]
+        {
+            "main img",
+            "main figure img",
+            "main article img",
+            "main [data-testid^='conversation-turn-'] img",
+            "[data-message-author-role='assistant'] img"
+        }
+        .Concat(configuredSelectors)
+        .Where(s => !string.IsNullOrWhiteSpace(s))
+        .Distinct()
+        .ToList();
+
+        var result = new List<ImageCandidate>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var selector in selectors)
+        {
+            try
+            {
+                var items = page.Locator(selector);
+                var count = await items.CountAsync();
+                for (var i = 0; i < count; i++)
+                {
+                    try
+                    {
+                        var item = items.Nth(i);
+                        if (!await item.IsVisibleAsync()) continue;
+                        var box = await item.BoundingBoxAsync();
+                        if (box is null || box.Width < 180 || box.Height < 120 || box.Width * box.Height < 30000) continue;
+
+                        var naturalWidth = await item.EvaluateAsync<int>("el => el.naturalWidth || 0");
+                        var naturalHeight = await item.EvaluateAsync<int>("el => el.naturalHeight || 0");
+                        if (naturalWidth < 256 || naturalHeight < 128) continue;
+
+                        var src = await item.EvaluateAsync<string>("el => el.currentSrc || el.src || ''");
+                        var alt = await item.GetAttributeAsync("alt") ?? "";
+                        var sourceKey = src.Length > 320
+                            ? $"{src.Length}:{src.GetHashCode(StringComparison.Ordinal)}"
+                            : src;
+                        var fingerprint = !string.IsNullOrWhiteSpace(sourceKey)
+                            ? $"src:{sourceKey}|alt:{alt}"
+                            : $"nosrc:{alt}|{Math.Round(box.Width)}x{Math.Round(box.Height)}|{i}";
+
+                        if (!seen.Add(fingerprint)) continue;
+                        result.Add(new ImageCandidate(item, fingerprint, box.Width * box.Height));
+                    }
+                    catch
+                    {
+                        // ChatGPT can replace image nodes while they are being generated.
+                        // Re-scan on the next polling pass instead of failing the whole job.
+                    }
+                }
+            }
+            catch
+            {
+                // A selector can become invalid/stale as ChatGPT evolves; other selectors
+                // and the main img fallback continue to work.
+            }
+        }
+
+        return result;
+    }
+
+    private static async Task<bool> TrySaveImageCandidateAsync(ImageCandidate candidate, string destination)
+    {
+        try
+        {
+            await candidate.Locator.ScrollIntoViewIfNeededAsync(new() { Timeout = 5000 });
+            var box = await candidate.Locator.BoundingBoxAsync();
+            if (box is null || box.Width < 180 || box.Height < 120) return false;
+            await candidate.Locator.ScreenshotAsync(new()
+            {
+                Path = destination,
+                Type = ScreenshotType.Png,
+                Timeout = 15000
+            });
+            return File.Exists(destination) && new FileInfo(destination).Length > 10_000;
+        }
+        catch
+        {
+            // The image node may have been replaced between detection and capture. The
+            // caller re-queries the DOM and tries the current node on the next pass.
+            return false;
+        }
     }
 
     private static async Task<string> WaitForCompletedResponseAsync(
@@ -447,4 +618,7 @@ Requirements: one single image only; no collage; no captions; no readable text; 
         if (json is null) throw new InvalidDataException("ChatGPT did not return a valid JSON object.");
         return json;
     }
+
+    private sealed record ImageCandidate(ILocator Locator, string Fingerprint, double Area);
+    private sealed record ImageBaseline(HashSet<string> Fingerprints, int CandidateCount);
 }

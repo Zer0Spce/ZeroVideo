@@ -52,12 +52,14 @@ Return ONLY valid JSON, no markdown and no commentary, using exactly this shape:
         var previous = chapterIndex > 0 ? p.Chapters[chapterIndex - 1].Title : "none — this is the opening chapter";
         var next = chapterIndex + 1 < p.Chapters.Count ? p.Chapters[chapterIndex + 1].Title : "none — this is the final chapter";
         var outline = string.Join(" | ", p.Chapters.Select(c => $"{c.Number}. {c.Title}"));
+        var styleRules = VisualStylePresets.GetPrompt(p.Style);
         return $$"""
 You are writing ONE chapter of a long-form ZeroVideo YouTube project. Do not write any other chapter.
 
 VIDEO TOPIC: {{p.Topic}}
 VIDEO TITLE: {{p.Title}}
 VIDEO STYLE: {{p.Style}}
+VISUAL STYLE RULES: {{styleRules}}
 LANGUAGE: {{p.Language}}
 ASPECT RATIO: {{p.AspectRatio}}
 OVERALL OUTLINE: {{outline}}
@@ -78,7 +80,10 @@ Requirements:
 - Every scene must advance the narration.
 - Vary visual changes naturally, usually around 6-12 seconds each; longer holds are allowed when justified.
 - visualQuery must be a concise 2-8 word search phrase.
-- imagePrompt must describe an original still visual with no captions, readable text, logos, UI, or watermarks.
+- imagePrompt must explicitly follow the VISUAL STYLE RULES above and describe one original still visual with no captions, readable text, logos, UI, or watermarks.
+- Keep the selected visual style consistent across every scene in this project.
+- If the selected style is Stickman explainer, every human/character in every imagePrompt must be a stickman and realistic people are forbidden.
+- If the selected style is Cartoon, Hand-drawn, or Whiteboard explainer, do not drift into photorealistic human imagery.
 - shotDirection must be practical, such as slow push in, pan left, map zoom, document highlight, parallax, or hold.
 - Use visualType from: archive, broll, photo, map, document, graphic, generated.
 - Use role from: hook, setup, detail, evidence, transition, reveal, ending.
@@ -97,7 +102,7 @@ Return ONLY valid JSON, no markdown and no commentary. Do NOT duplicate the narr
       "narration": "spoken narration for this scene",
       "visualType": "broll",
       "visualQuery": "short search phrase",
-      "imagePrompt": "original scene visual prompt",
+      "imagePrompt": "original scene visual prompt following the selected style",
       "shotDirection": "slow push in",
       "targetSeconds": 8
     }

@@ -10,7 +10,14 @@
       "main .markdown",
       "main [class*='markdown']"
     ],
-    "generatedImages": ["[data-message-author-role='assistant'] img", "article[data-testid*='conversation-turn'] img"]
+    "generatedImages": [
+      "main img",
+      "main figure img",
+      "main article img",
+      "main [data-testid^='conversation-turn-'] img",
+      "[data-message-author-role='assistant'] img",
+      "article[data-testid*='conversation-turn'] img"
+    ]
   },
   "clipchamp": {
     "newVideoButtons": ["text=Create a new video", "text=New video", "button:has-text('Create')"],
