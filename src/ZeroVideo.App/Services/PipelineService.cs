@@ -37,23 +37,114 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
     private async Task GenerateMissingVisualsAsync(VideoProject project, ZeroVideoSettings settings, Action<string>? log, IProgress<double>? progress, CancellationToken ct)
     {
         var all = project.Chapters.SelectMany(c => c.Scenes.Select(s => (Chapter: c, Scene: s))).ToList();
-        var missing = all.Where(x => ProjectMedia.Find(project, x.Chapter, x.Scene) is null).Take(Math.Max(0, project.Options.MaxGeneratedVisuals)).ToList();
-        if (missing.Count == 0) { log?.Invoke("Visual pass: all scene media already exists."); return; }
+        var missing = all.Where(x => ProjectMedia.Find(project, x.Chapter, x.Scene) is null)
+            .Take(Math.Max(0, project.Options.MaxGeneratedVisuals))
+            .ToList();
+
+        if (missing.Count == 0)
+        {
+            log?.Invoke("Visual pass: all scene media already exists.");
+            return;
+        }
+
         log?.Invoke($"Visual pass: generating {missing.Count} missing scene image(s) with ChatGPT.");
+        log?.Invoke("Visual pass is resumable: every successful image is checkpointed immediately.");
+
+        var failedScenes = new List<string>();
+        var consecutiveFailures = 0;
+        var processed = 0;
 
         for (var i = 0; i < missing.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
             var (chapter, scene) = missing[i];
             var existing = ProjectMedia.Find(project, chapter, scene);
-            if (existing is not null) { scene.MediaPath = existing; continue; }
-            await chat.GenerateSceneImageAsync(project, chapter, scene, settings, log, ct);
+            if (existing is not null)
+            {
+                scene.MediaPath = existing;
+                consecutiveFailures = 0;
+                processed++;
+                continue;
+            }
+
+            var succeeded = await TryGenerateSceneVisualAsync(project, chapter, scene, settings, log, ct);
+            processed++;
+
+            if (succeeded)
+            {
+                consecutiveFailures = 0;
+            }
+            else
+            {
+                consecutiveFailures++;
+                failedScenes.Add($"{chapter.Number}.{scene.Number}");
+                log?.Invoke($"Scene {chapter.Number}.{scene.Number}: left missing after retries. It can be generated on the next Resume/Build run.");
+            }
+
             await store.SaveAsync(project, settings.ProjectsRoot);
-            progress?.Report(25 + ((i + 1) / (double)missing.Count * 40.0));
+            progress?.Report(25 + (processed / (double)missing.Count * 40.0));
+
+            // A run of failures usually means ChatGPT has hit an image-generation limit,
+            // the page UI has changed, or the service is temporarily unavailable. Do not
+            // burn dozens more prompts. Stop only the visual pass; the project remains safe
+            // and can resume later from the first still-missing scene.
+            if (consecutiveFailures >= 3)
+            {
+                log?.Invoke("Visual pass paused after 3 consecutive failed scenes. Completed images are preserved; rerun Build later to resume missing visuals.");
+                break;
+            }
         }
 
         var remaining = all.Count(x => ProjectMedia.Find(project, x.Chapter, x.Scene) is null);
-        if (remaining > 0) log?.Invoke($"Visual pass reached its configured limit; {remaining} scene(s) remain and will use placeholders unless media is supplied.");
+        if (failedScenes.Count > 0)
+            log?.Invoke($"Visual pass completed with {failedScenes.Count} scene failure(s) this run: {string.Join(", ", failedScenes)}.");
+
+        if (remaining > 0)
+            log?.Invoke($"Visual pass: {remaining} scene(s) still have no media. ZeroVideo will preserve the project and can resume them on the next Build run.");
+        else
+            log?.Invoke("Visual pass: every scene now has media.");
+    }
+
+    private async Task<bool> TryGenerateSceneVisualAsync(
+        VideoProject project,
+        ProjectChapter chapter,
+        ProjectScene scene,
+        ZeroVideoSettings settings,
+        Action<string>? log,
+        CancellationToken ct)
+    {
+        const int maxAttempts = 3;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                if (attempt > 1)
+                    log?.Invoke($"Scene {chapter.Number}.{scene.Number}: retry {attempt}/{maxAttempts}...");
+
+                await chat.GenerateSceneImageAsync(project, chapter, scene, settings, log, ct);
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke($"Scene {chapter.Number}.{scene.Number}: image attempt {attempt}/{maxAttempts} failed — {ex.Message}");
+                await store.SaveAsync(project, settings.ProjectsRoot);
+
+                if (attempt >= maxAttempts) return false;
+
+                // Give ChatGPT a little time to settle after a transient render/detection
+                // failure. Longer delay on each retry avoids hammering the same conversation.
+                await Task.Delay(TimeSpan.FromSeconds(4 * attempt), ct);
+            }
+        }
+
+        return false;
     }
 
     private static void AdoptExistingAudio(VideoProject project, ProjectChapter chapter)
