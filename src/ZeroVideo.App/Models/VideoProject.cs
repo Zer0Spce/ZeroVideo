@@ -12,6 +12,7 @@ public sealed class VideoProject
     public string Style { get; set; } = "Documentary explainer";
     public string Language { get; set; } = "English";
     public string Voice { get; set; } = "";
+    public string? ChatGptConversationUrl { get; set; }
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
     public List<ProjectChapter> Chapters { get; set; } = [];

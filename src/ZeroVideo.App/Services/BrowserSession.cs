@@ -9,28 +9,25 @@ namespace ZeroVideo.App.Services;
 public sealed class BrowserSession : IAsyncDisposable
 {
     private const string PortStateFileName = "ZeroVideoDevToolsPort.txt";
+    private const string ManualPidStateFileName = "ZeroVideoManualEdgePid.txt";
 
     private IPlaywright? _playwright;
     private IBrowser? _browser;
     private IBrowserContext? _context;
-    private Process? _edgeProcess;
+    private Process? _automationEdgeProcess;
+    private Process? _manualEdgeProcess;
 
     public IBrowserContext Context => _context ?? throw new InvalidOperationException("Browser not started.");
 
     /// <summary>
     /// Opens the real installed Microsoft Edge without Playwright or remote debugging.
-    /// This is the only mode intended for account sign-in, OAuth, CAPTCHA, or verification.
-    /// The user signs in normally, then closes the browser before starting automation.
+    /// Login, OAuth, CAPTCHA and verification happen only in this normal user-controlled window.
     /// </summary>
-    public Task OpenManualAsync(ZeroVideoSettings settings, string url)
+    public async Task OpenManualAsync(ZeroVideoSettings settings, string url)
     {
-        if (_context is not null)
-        {
-            throw new InvalidOperationException(
-                "Automation Edge is already connected. Close the current ZeroVideo Edge window and restart ZeroVideo before doing a manual sign-in.");
-        }
-
+        await StopAutomationAsync();
         Directory.CreateDirectory(settings.EdgeUserDataDirectory);
+
         var edgePath = FindEdgeExecutable();
         var startInfo = new ProcessStartInfo(edgePath)
         {
@@ -40,12 +37,30 @@ public sealed class BrowserSession : IAsyncDisposable
         startInfo.ArgumentList.Add($"--user-data-dir={settings.EdgeUserDataDirectory}");
         startInfo.ArgumentList.Add("--start-maximized");
         startInfo.ArgumentList.Add("--no-first-run");
+        startInfo.ArgumentList.Add("--no-default-browser-check");
+        startInfo.ArgumentList.Add("--disable-background-mode");
         startInfo.ArgumentList.Add(url);
 
-        _ = Process.Start(startInfo)
+        var launched = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Microsoft Edge could not be started.");
 
-        return Task.CompletedTask;
+        // Keep the first long-lived process as the owner of this dedicated manual session.
+        if (_manualEdgeProcess is null || HasExited(_manualEdgeProcess))
+            _manualEdgeProcess = launched;
+        else
+            launched.Dispose();
+
+        try
+        {
+            var pid = _manualEdgeProcess is not null && !HasExited(_manualEdgeProcess)
+                ? _manualEdgeProcess.Id
+                : launched.Id;
+            await File.WriteAllTextAsync(Path.Combine(settings.EdgeUserDataDirectory, ManualPidStateFileName), pid.ToString());
+        }
+        catch
+        {
+            // The in-memory process reference is enough for the current session.
+        }
     }
 
     public async Task EnsureStartedAsync(ZeroVideoSettings settings)
@@ -53,6 +68,11 @@ public sealed class BrowserSession : IAsyncDisposable
         if (_context is not null) return;
 
         Directory.CreateDirectory(settings.EdgeUserDataDirectory);
+
+        // If the user left the normal sign-in window open, perform the handoff automatically.
+        // Only the dedicated ZeroVideo Edge process we started is closed; everyday Edge is untouched.
+        await CloseManualEdgeForHandoffAsync(settings.EdgeUserDataDirectory);
+
         var endpoint = await EnsureAutomationEdgeStartedAsync(settings.EdgeUserDataDirectory);
 
         _playwright = await Playwright.CreateAsync();
@@ -71,6 +91,54 @@ public sealed class BrowserSession : IAsyncDisposable
             p.Url.Contains(hostContains, StringComparison.OrdinalIgnoreCase));
 
         return existing ?? await Context.NewPageAsync();
+    }
+
+    private async Task CloseManualEdgeForHandoffAsync(string userDataDirectory)
+    {
+        var pidState = Path.Combine(userDataDirectory, ManualPidStateFileName);
+        Process? process = null;
+
+        if (_manualEdgeProcess is not null && !HasExited(_manualEdgeProcess))
+        {
+            process = _manualEdgeProcess;
+        }
+        else
+        {
+            try
+            {
+                if (File.Exists(pidState) && int.TryParse(File.ReadAllText(pidState).Trim(), out var pid))
+                    process = Process.GetProcessById(pid);
+            }
+            catch
+            {
+                process = null;
+            }
+        }
+
+        if (process is not null && !HasExited(process))
+        {
+            try { process.CloseMainWindow(); } catch { }
+
+            for (var i = 0; i < 24 && !HasExited(process); i++)
+                await Task.Delay(125);
+
+            if (!HasExited(process))
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                    await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch { }
+            }
+        }
+
+        try { process?.Dispose(); } catch { }
+        _manualEdgeProcess = null;
+        TryDelete(pidState);
+
+        // Give Chromium enough time to flush cookies/session state and release the profile lock.
+        await Task.Delay(900);
     }
 
     private async Task<string> EnsureAutomationEdgeStartedAsync(string userDataDirectory)
@@ -92,24 +160,23 @@ public sealed class BrowserSession : IAsyncDisposable
             UseShellExecute = false
         };
 
-        // Account sign-in is deliberately NOT performed in this mode. Open ChatGPT /
-        // Open Clipchamp first, sign in in the normal Edge window, then close it.
-        // Automation reuses that dedicated profile afterward.
         startInfo.ArgumentList.Add($"--remote-debugging-port={port}");
         startInfo.ArgumentList.Add($"--user-data-dir={userDataDirectory}");
         startInfo.ArgumentList.Add("--start-maximized");
         startInfo.ArgumentList.Add("--no-first-run");
+        startInfo.ArgumentList.Add("--no-default-browser-check");
+        startInfo.ArgumentList.Add("--disable-background-mode");
         startInfo.ArgumentList.Add("https://chatgpt.com/");
 
-        _edgeProcess = Process.Start(startInfo)
+        _automationEdgeProcess = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Microsoft Edge could not be started.");
 
         for (var i = 0; i < 120; i++)
         {
-            if (_edgeProcess.HasExited)
+            if (HasExited(_automationEdgeProcess))
             {
                 throw new InvalidOperationException(
-                    "ZeroVideo could not start its automation browser. A manual ZeroVideo Edge window may still be open. Finish signing in, close that Edge window completely, then try again.");
+                    "ZeroVideo could not start its automation browser. Reopen ChatGPT from the Automation tab, confirm you are signed in, then try again.");
             }
 
             if (await IsEndpointAliveAsync(endpoint))
@@ -123,7 +190,28 @@ public sealed class BrowserSession : IAsyncDisposable
 
         TryDelete(portStateFile);
         throw new TimeoutException(
-            "ZeroVideo started Microsoft Edge but could not attach to it. Close all Edge windows using the ZeroVideo profile, reopen ZeroVideo, and try again.");
+            "ZeroVideo started Microsoft Edge but could not attach to it. Reopen ChatGPT from the Automation tab and try again.");
+    }
+
+    private async Task StopAutomationAsync()
+    {
+        _context = null;
+        _browser = null;
+        _playwright?.Dispose();
+        _playwright = null;
+
+        if (_automationEdgeProcess is not null && !HasExited(_automationEdgeProcess))
+        {
+            try
+            {
+                _automationEdgeProcess.Kill(entireProcessTree: true);
+                await _automationEdgeProcess.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch { }
+        }
+
+        try { _automationEdgeProcess?.Dispose(); } catch { }
+        _automationEdgeProcess = null;
     }
 
     private static string? TryReadSavedEndpoint(string portStateFile)
@@ -141,16 +229,19 @@ public sealed class BrowserSession : IAsyncDisposable
         }
     }
 
+    private static bool HasExited(Process process)
+    {
+        try { return process.HasExited; }
+        catch { return true; }
+    }
+
     private static void TryDelete(string path)
     {
         try
         {
             if (File.Exists(path)) File.Delete(path);
         }
-        catch
-        {
-            // A stale state file is non-fatal; the connection checks below are authoritative.
-        }
+        catch { }
     }
 
     private static int FindAvailableLoopbackPort()
@@ -203,15 +294,10 @@ public sealed class BrowserSession : IAsyncDisposable
         return edgePath;
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        // Disconnect the automation client without forcing the visible Edge process to
-        // close. The user can close it normally and the dedicated profile remains signed in.
-        _context = null;
-        _browser = null;
-        _playwright?.Dispose();
-        _playwright = null;
-        _edgeProcess = null;
-        return ValueTask.CompletedTask;
+        await StopAutomationAsync();
+        try { _manualEdgeProcess?.Dispose(); } catch { }
+        _manualEdgeProcess = null;
     }
 }

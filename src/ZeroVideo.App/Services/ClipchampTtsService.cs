@@ -5,12 +5,8 @@ namespace ZeroVideo.App.Services;
 
 public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfileService profiles)
 {
-    public async Task OpenAsync(ZeroVideoSettings settings)
-    {
-        await browser.EnsureStartedAsync(settings);
-        var page = await browser.GetOrCreatePageAsync("clipchamp");
-        await page.GotoAsync(settings.ClipchampUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120000 });
-    }
+    public Task OpenAsync(ZeroVideoSettings settings)
+        => browser.OpenManualAsync(settings, settings.ClipchampUrl);
 
     public async Task<string> GenerateChapterAsync(ProjectChapter chapter, VideoProject project, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
