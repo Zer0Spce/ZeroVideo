@@ -106,12 +106,20 @@ Requirements: one single image only; no collage; no captions; no readable text; 
         log?.Invoke("ChatGPT: waiting for the live composer...");
         await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, prompt, ct);
 
-        var assistantSelector = string.Join(",", profile.ChatGpt.AssistantMessages);
-        var before = await page.Locator(assistantSelector).CountAsync();
+        var baseline = await TryReadLatestResponseAsync(page, profile.ChatGpt.AssistantMessages) ?? "";
         await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
+        log?.Invoke("ChatGPT: prompt sent; waiting for the finished response...");
 
-        var response = await WaitForStableAssistantAsync(page, assistantSelector, before, ct);
+        var response = await WaitForCompletedResponseAsync(
+            page,
+            profile.ChatGpt.AssistantMessages,
+            profile.ChatGpt.StopButtons,
+            baseline,
+            log,
+            ct);
+
         RememberConversation(project, page);
+        log?.Invoke("ChatGPT: finished response detected.");
         return response;
     }
 
@@ -194,33 +202,134 @@ Requirements: one single image only; no collage; no captions; no readable text; 
         throw new TimeoutException("ChatGPT image generation did not produce a detectable image. Check the visible browser and image selectors.");
     }
 
-    private static async Task<string> WaitForStableAssistantAsync(IPage page, string selector, int previousCount, CancellationToken ct)
+    private static async Task<string> WaitForCompletedResponseAsync(
+        IPage page,
+        IEnumerable<string> configuredResponseSelectors,
+        IEnumerable<string> stopSelectors,
+        string baseline,
+        Action<string>? log,
+        CancellationToken ct)
     {
         string last = "";
-        var stable = 0;
+        var stableSamples = 0;
+        var sawGeneration = false;
         var started = DateTime.UtcNow;
+
         while (!ct.IsCancellationRequested && DateTime.UtcNow - started < TimeSpan.FromMinutes(12))
+        {
+            var isGenerating = await AnyVisibleAsync(page, stopSelectors);
+            sawGeneration |= isGenerating;
+
+            var current = await TryReadLatestResponseAsync(page, configuredResponseSelectors);
+            if (!string.IsNullOrWhiteSpace(current) &&
+                !string.Equals(current, baseline, StringComparison.Ordinal) &&
+                LooksLikeJsonResponse(current))
+            {
+                if (string.Equals(current, last, StringComparison.Ordinal))
+                    stableSamples++;
+                else
+                {
+                    last = current;
+                    stableSamples = 0;
+                }
+
+                // Two identical samples plus no visible Stop control is enough to treat
+                // the answer as complete. This also works if the site's assistant-role
+                // attribute changes, because TryReadLatestResponseAsync has turn fallbacks.
+                if (!isGenerating && stableSamples >= 1)
+                    return current;
+            }
+            else if (!string.IsNullOrWhiteSpace(current) && current != last)
+            {
+                // Keep this for diagnostics/fallback, but do not accept a user prompt or
+                // partially rendered non-JSON turn as the assistant result.
+                last = current;
+                stableSamples = 0;
+            }
+
+            if (sawGeneration && !isGenerating && !string.IsNullOrWhiteSpace(last) && LooksLikeJsonResponse(last))
+            {
+                // Give the DOM one extra beat after streaming stops, then re-read it.
+                await Task.Delay(1200, ct);
+                var finalRead = await TryReadLatestResponseAsync(page, configuredResponseSelectors);
+                if (!string.IsNullOrWhiteSpace(finalRead) && LooksLikeJsonResponse(finalRead))
+                    return finalRead;
+            }
+
+            await Task.Delay(1500, ct);
+        }
+
+        if (!string.IsNullOrWhiteSpace(last) && LooksLikeJsonResponse(last))
+        {
+            log?.Invoke("ChatGPT: response detector timed out, but a complete JSON-looking answer was visible; using it.");
+            return last;
+        }
+
+        throw new TimeoutException("ChatGPT finished in the browser, but ZeroVideo could not read the response. The ChatGPT response selectors may need updating.");
+    }
+
+    private static async Task<string?> TryReadLatestResponseAsync(IPage page, IEnumerable<string> configuredSelectors)
+    {
+        var fallbacks = new[]
+        {
+            "[data-message-author-role='assistant']",
+            "main article[data-testid^='conversation-turn-']",
+            "main [data-testid^='conversation-turn-']",
+            "main .markdown",
+            "main [class*='markdown']"
+        };
+
+        foreach (var selector in configuredSelectors.Concat(fallbacks).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct())
         {
             try
             {
-                var messages = page.Locator(selector);
-                var count = await messages.CountAsync();
-                if (count > previousCount || count > 0)
+                var items = page.Locator(selector);
+                var count = await items.CountAsync();
+                for (var i = count - 1; i >= 0; i--)
                 {
-                    var current = (await messages.Last.InnerTextAsync()).Trim();
-                    if (current.Length > 20 && current == last) stable++; else stable = 0;
-                    last = current;
-                    if (stable >= 3) return current;
+                    var item = items.Nth(i);
+                    if (!await item.IsVisibleAsync()) continue;
+                    var text = (await item.InnerTextAsync()).Trim();
+                    if (!string.IsNullOrWhiteSpace(text)) return text;
                 }
             }
             catch
             {
-                // The conversation turn can also be replaced while streaming. Re-query it.
+                // ChatGPT can replace conversation turns while streaming; always re-query.
             }
-            await Task.Delay(2000, ct);
         }
-        if (!string.IsNullOrWhiteSpace(last)) return last;
-        throw new TimeoutException("ChatGPT response was not detected. Check the visible browser and automation selectors.");
+
+        return null;
+    }
+
+    private static async Task<bool> AnyVisibleAsync(IPage page, IEnumerable<string> selectors)
+    {
+        foreach (var selector in selectors.Where(s => !string.IsNullOrWhiteSpace(s)))
+        {
+            try
+            {
+                var items = page.Locator(selector);
+                var count = await items.CountAsync();
+                for (var i = count - 1; i >= 0; i--)
+                {
+                    if (await items.Nth(i).IsVisibleAsync()) return true;
+                }
+            }
+            catch { }
+        }
+        return false;
+    }
+
+    private static bool LooksLikeJsonResponse(string text)
+    {
+        var value = text.Trim();
+        if (value.StartsWith("```", StringComparison.Ordinal))
+        {
+            var newline = value.IndexOf('\n');
+            if (newline >= 0) value = value[(newline + 1)..].TrimStart();
+        }
+
+        return value.StartsWith("{", StringComparison.Ordinal) && value.Contains('}');
     }
 
     private static VideoProject ParseOutline(string raw, VideoProject seed)
