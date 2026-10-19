@@ -1,0 +1,69 @@
+<Window x:Class="ZeroVideo.App.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="ZeroVideo" Width="1280" Height="820" MinWidth="1080" MinHeight="700" WindowStartupLocation="CenterScreen">
+  <Grid Margin="22">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <Grid Grid.Row="0" Margin="0,0,0,16">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <StackPanel><TextBlock Text="ZEROVIDEO" FontSize="28" FontWeight="Bold" Foreground="{StaticResource Accent}"/><TextBlock Text="Windows long-form video automation" Foreground="{StaticResource Muted}"/></StackPanel>
+      <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"><Button Style="{StaticResource SecondaryButton}" Command="{Binding LoadProjectCommand}" Content="Load project"/><Button Style="{StaticResource SecondaryButton}" Command="{Binding OpenProjectFolderCommand}" Content="Open folder"/></StackPanel>
+    </Grid>
+
+    <TabControl Grid.Row="1" Background="{StaticResource Panel}" BorderBrush="#253140">
+      <TabItem Header="Create">
+        <Grid Margin="18"><Grid.ColumnDefinitions><ColumnDefinition Width="410"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel>
+            <TextBlock Text="New long-form video" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,12"/>
+            <Label Content="TOPIC"/><TextBox Text="{Binding Topic, UpdateSourceTrigger=PropertyChanged}" MinHeight="70" TextWrapping="Wrap" AcceptsReturn="True"/>
+            <Grid Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition/></Grid.ColumnDefinitions>
+              <StackPanel><Label Content="LENGTH (MIN)"/><ComboBox ItemsSource="{Binding Durations}" IsEditable="True" Text="{Binding Duration, UpdateSourceTrigger=LostFocus}"/></StackPanel>
+              <StackPanel Grid.Column="2"><Label Content="FORMAT"/><ComboBox ItemsSource="{Binding AspectRatios}" SelectedItem="{Binding AspectRatio}"/></StackPanel>
+            </Grid>
+            <TextBlock Text="Type any custom duration, including 60+ minutes." Foreground="{StaticResource Muted}" FontSize="11" Margin="0,4,0,0"/>
+            <Label Content="STORY / EDIT STYLE" Margin="0,10,0,0"/><ComboBox ItemsSource="{Binding Styles}" IsEditable="True" Text="{Binding Style, UpdateSourceTrigger=PropertyChanged}"/>
+            <Separator Margin="0,16" Background="#314052"/>
+            <TextBlock Text="Output options" FontWeight="SemiBold"/>
+            <CheckBox Content="Generate missing visuals with ChatGPT" IsChecked="{Binding Project.Options.GenerateMissingVisuals}"/>
+            <Grid Margin="22,2,0,4"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions><TextBlock Text="Maximum generated visuals" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/><TextBox Grid.Column="1" Text="{Binding Project.Options.MaxGeneratedVisuals}"/></Grid>
+            <CheckBox Content="Generate .SRT captions" IsChecked="{Binding Project.Options.GenerateCaptions}"/>
+            <CheckBox Content="Automatic pan / zoom motion" IsChecked="{Binding Project.Options.AddMotion}"/>
+            <CheckBox Content="Mix background music" IsChecked="{Binding Project.Options.AddBackgroundMusic}"/>
+            <CheckBox Content="Sound effect hooks (when scene file exists)" IsChecked="{Binding Project.Options.AddSoundEffects}"/>
+            <TextBlock Margin="0,14,0,4" Foreground="{StaticResource Muted}" TextWrapping="Wrap">ZeroVideo creates a master outline first, writes and checkpoints each chapter separately, then can generate missing scene stills, create chapter-sized Clipchamp TTS, and render the long-form video with FFmpeg.</TextBlock>
+            <WrapPanel Margin="0,14,0,0"><Button Style="{StaticResource PrimaryButton}" Command="{Binding GeneratePlanCommand}" Content="1. Generate project"/><Button Style="{StaticResource SecondaryButton}" Command="{Binding ContinueWritingCommand}" Content="Resume writing"/><Button Style="{StaticResource PrimaryButton}" Command="{Binding RunPipelineCommand}" Content="2. Build video"/></WrapPanel>
+          </StackPanel></ScrollViewer>
+
+          <Grid Grid.Column="2"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="180"/></Grid.RowDefinitions>
+            <StackPanel><TextBlock Text="Project plan" FontSize="20" FontWeight="SemiBold"/><TextBlock Text="Every completed chapter is saved immediately. If generation stops midway, load the project and use Resume writing. Existing media named c01-s001.jpg, c01-s002.mp4, etc. is reused." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,10"/></StackPanel>
+            <DataGrid Grid.Row="1" ItemsSource="{Binding Chapters}" AutoGenerateColumns="False" IsReadOnly="True" AlternationCount="2">
+              <DataGrid.Columns><DataGridTextColumn Header="#" Binding="{Binding Number}" Width="45"/><DataGridTextColumn Header="Chapter" Binding="{Binding Title}" Width="2*"/><DataGridTextColumn Header="Purpose" Binding="{Binding Purpose}" Width="3*"/><DataGridTextColumn Header="Seconds" Binding="{Binding TargetSeconds}" Width="75"/><DataGridTextColumn Header="Scenes" Binding="{Binding Scenes.Count}" Width="65"/></DataGrid.Columns>
+            </DataGrid>
+            <ListBox Grid.Row="2" ItemsSource="{Binding Logs}" Background="#0B1016" Foreground="#B8C5D3" BorderThickness="0" FontFamily="Consolas" FontSize="12" Margin="0,12,0,0"/>
+          </Grid>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Automation">
+        <Grid Margin="22"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <StackPanel Margin="0,0,18,0"><TextBlock Text="Browser sessions" FontSize="20" FontWeight="SemiBold"/><TextBlock Text="ZeroVideo uses an isolated persistent Microsoft Edge profile. Sign into ChatGPT and Clipchamp once. Login, CAPTCHA, or verification is always left to you." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,16"/><WrapPanel><Button Style="{StaticResource PrimaryButton}" Command="{Binding OpenChatGptCommand}" Content="Open ChatGPT"/><Button Style="{StaticResource PrimaryButton}" Command="{Binding OpenClipchampCommand}" Content="Open Clipchamp"/></WrapPanel><Button Style="{StaticResource SecondaryButton}" Command="{Binding RunPreflightCommand}" Content="Run system checks" HorizontalAlignment="Left" Margin="0,14,0,6"/><ListBox ItemsSource="{Binding PreflightLines}" Height="180" Background="#0B1016" Foreground="#B8C5D3" BorderThickness="0" FontFamily="Consolas" FontSize="12"/></StackPanel>
+          <StackPanel Grid.Column="1"><TextBlock Text="Automation profile" FontSize="20" FontWeight="SemiBold"/><TextBlock Text="Selectors are stored outside the code so ChatGPT/Clipchamp UI changes can be fixed without rebuilding ZeroVideo." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,10"/><Label Content="PROFILE PATH"/><TextBox Text="{Binding Settings.AutomationProfilePath}"/><Label Content="EDGE PROFILE DIRECTORY" Margin="0,10,0,0"/><TextBox Text="{Binding Settings.EdgeUserDataDirectory}"/><Button Style="{StaticResource SecondaryButton}" Command="{Binding SaveSettingsCommand}" Content="Save automation settings" HorizontalAlignment="Left" Margin="0,12,0,0"/></StackPanel>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Settings">
+        <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel Margin="22" MaxWidth="780" HorizontalAlignment="Left"><TextBlock Text="Dependencies &amp; paths" FontSize="20" FontWeight="SemiBold"/>
+          <Label Content="PROJECTS ROOT" Margin="0,12,0,0"/><TextBox Width="720" Text="{Binding Settings.ProjectsRoot}"/>
+          <Label Content="FFMPEG.EXE" Margin="0,10,0,0"/><TextBox Width="720" Text="{Binding Settings.FfmpegPath}"/>
+          <Label Content="FFPROBE.EXE" Margin="0,10,0,0"/><TextBox Width="720" Text="{Binding Settings.FfprobePath}"/>
+          <Separator Margin="0,18" Background="#314052"/>
+          <TextBlock Text="Clipchamp TTS defaults" FontSize="18" FontWeight="SemiBold"/>
+          <Label Content="LANGUAGE LABEL" Margin="0,10,0,0"/><TextBox Width="720" Text="{Binding Settings.ClipchampLanguage}"/>
+          <Label Content="VOICE LABEL" Margin="0,10,0,0"/><TextBox Width="720" Text="{Binding Settings.ClipchampVoice}"/>
+          <TextBlock Text="Leave the voice blank to keep Clipchamp's current/default voice. Labels must match what Clipchamp shows in your account." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+          <WrapPanel Margin="0,14,0,0"><Button Style="{StaticResource PrimaryButton}" Command="{Binding InstallFfmpegCommand}" Content="Install FFmpeg automatically"/><Button Style="{StaticResource SecondaryButton}" Command="{Binding SaveSettingsCommand}" Content="Save settings"/></WrapPanel>
+          <TextBlock Margin="0,14,0,0" Foreground="{StaticResource Muted}" TextWrapping="Wrap">FFmpeg is downloaded from the public Gyan FFmpeg essentials build when you choose Install. ZeroVideo does not bundle or silently install it.</TextBlock>
+        </StackPanel></ScrollViewer>
+      </TabItem>
+    </TabControl>
+
+    <Grid Grid.Row="2" Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="360"/></Grid.ColumnDefinitions><TextBlock Text="{Binding Status}" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/><ProgressBar Grid.Column="1" Height="8" Minimum="0" Maximum="100" Value="{Binding Progress}"/></Grid>
+  </Grid>
+</Window>

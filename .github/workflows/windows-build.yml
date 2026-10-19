@@ -1,0 +1,29 @@
+name: Windows portable build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, feat/windows-longform-generator ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore
+        run: dotnet restore ZeroVideo.sln
+      - name: Publish portable x64
+        shell: pwsh
+        run: .\tools\build-portable.ps1
+      - name: Upload portable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZeroVideo-win-x64
+          path: dist/ZeroVideo-win-x64.zip
+          if-no-files-found: error

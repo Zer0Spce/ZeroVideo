@@ -1,0 +1,12 @@
+.vs/
+.idea/
+**/bin/
+**/obj/
+dist/
+artifacts/
+*.user
+*.suo
+*.log
+src/ZeroVideo.App/user-data/
+src/ZeroVideo.App/projects/
+src/ZeroVideo.App/tools/ffmpeg/
