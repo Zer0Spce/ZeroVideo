@@ -4,12 +4,36 @@ using ZeroVideo.App.Models;
 
 namespace ZeroVideo.App.Services;
 
-public sealed class FfmpegService(ProcessRunner runner)
+public sealed class FfmpegService(ProcessRunner runner, DependencyService dependencies)
 {
-    public async Task ValidateAsync(ZeroVideoSettings settings, CancellationToken ct = default)
+    public async Task ValidateAsync(ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
+        await EnsureToolsAsync(settings, log, ct);
         var result = await runner.RunAsync(settings.FfmpegPath, "-version", ct: ct);
-        if (result.ExitCode != 0) throw new InvalidOperationException("FFmpeg was not found. Open Settings and install/configure FFmpeg.");
+        if (result.ExitCode != 0) throw new InvalidOperationException("FFmpeg could not be started after installation/configuration.");
+    }
+
+    private async Task EnsureToolsAsync(ZeroVideoSettings settings, Action<string>? log, CancellationToken ct)
+    {
+        settings.FfmpegPath = SettingsService.ResolveTool(settings.FfmpegPath, "ffmpeg.exe");
+        settings.FfprobePath = SettingsService.ResolveTool(settings.FfprobePath, "ffprobe.exe");
+
+        if (!string.IsNullOrWhiteSpace(settings.FfmpegPath) && File.Exists(settings.FfmpegPath) &&
+            !string.IsNullOrWhiteSpace(settings.FfprobePath) && File.Exists(settings.FfprobePath))
+        {
+            log?.Invoke($"FFmpeg ready: {settings.FfmpegPath}");
+            return;
+        }
+
+        log?.Invoke("FFmpeg was not found. Installing it automatically to ZeroVideo's persistent tools folder...");
+        var ffmpeg = await dependencies.InstallFfmpegAsync(log, ct);
+        var ffprobe = Path.Combine(Path.GetDirectoryName(ffmpeg)!, "ffprobe.exe");
+        if (!File.Exists(ffmpeg) || !File.Exists(ffprobe))
+            throw new FileNotFoundException("ZeroVideo finished the FFmpeg install step, but ffmpeg.exe/ffprobe.exe could not be found.");
+
+        settings.FfmpegPath = ffmpeg;
+        settings.FfprobePath = ffprobe;
+        log?.Invoke("FFmpeg is ready. Continuing the render automatically.");
     }
 
     public async Task<double> ProbeDurationAsync(string path, ZeroVideoSettings settings, CancellationToken ct = default)
@@ -21,7 +45,7 @@ public sealed class FfmpegService(ProcessRunner runner)
 
     public async Task<string> RenderAsync(VideoProject project, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
-        await ValidateAsync(settings, ct);
+        await ValidateAsync(settings, log, ct);
         var renderDir = Path.Combine(project.ProjectDirectory, "render");
         var exportsDir = Path.Combine(project.ProjectDirectory, "exports");
         Directory.CreateDirectory(renderDir); Directory.CreateDirectory(exportsDir);
