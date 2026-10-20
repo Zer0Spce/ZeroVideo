@@ -77,7 +77,7 @@
               </WrapPanel>
 
               <TextBlock Text="Each chapter is scripted into the requested number of narration/image scenes. Missing media reuses the nearest real visual — no black empty frames." Foreground="{StaticResource Muted}" FontSize="10.5" TextWrapping="Wrap" Margin="0,5,0,8"/>
-              <WrapPanel><Button Style="{StaticResource PrimaryButton}" Command="{Binding GeneratePlanCommand}" Content="1. Generate project"/><Button Style="{StaticResource SecondaryButton}" Command="{Binding ContinueWritingCommand}" Content="Resume writing"/><Button Style="{StaticResource PrimaryButton}" Command="{Binding RunPipelineCommand}" Content="2. Build video"/></WrapPanel>
+              <WrapPanel><Button Style="{StaticResource PrimaryButton}" Command="{Binding GeneratePlanCommand}" Content="1. Generate project"/><Button Style="{StaticResource SecondaryButton}" Command="{Binding ContinueWritingCommand}" Content="Resume writing"/><Button Style="{StaticResource PrimaryButton}" Command="{Binding RunPipelineCommand}" Content="2. Build video"/><Button Style="{StaticResource PrimaryButton}" Command="{Binding ContinueTtsCommand}" Content="Continue TTS" IsEnabled="{Binding WaitingForTtsContinue}" ToolTip="Choose your voice manually in Clipchamp, then click here to continue narration and export."/></WrapPanel>
             </StackPanel>
           </Border>
 

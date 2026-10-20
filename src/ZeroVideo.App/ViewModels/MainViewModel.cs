@@ -34,6 +34,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private double _progress;
     private string _projectDirectory = "";
     private bool _newChat;
+    private bool _waitingForTtsContinue;
+    private TaskCompletionSource<bool>? _ttsContinueGate;
 
     public MainViewModel()
     {
@@ -45,6 +47,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         GeneratePlanCommand = new AsyncCommand(GeneratePlanAsync, () => !string.IsNullOrWhiteSpace(Topic) && Duration > 0);
         ContinueWritingCommand = new AsyncCommand(ContinueWritingAsync, CanContinueWriting);
         RunPipelineCommand = new AsyncCommand(RunPipelineAsync, CanBuildVideo);
+        ContinueTtsCommand = new RelayCommand(ContinueTts);
         OpenChatGptCommand = new AsyncCommand(() => _chat.OpenAsync(Settings));
         OpenClipchampCommand = new AsyncCommand(() => _clip.OpenAsync(Settings));
         InstallFfmpegCommand = new AsyncCommand(InstallFfmpegAsync);
@@ -72,6 +75,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public string Status { get => _status; set => Set(ref _status, value); }
     public double Progress { get => _progress; set => Set(ref _progress, value); }
     public bool NewChat { get => _newChat; set => Set(ref _newChat, value); }
+    public bool WaitingForTtsContinue { get => _waitingForTtsContinue; private set => Set(ref _waitingForTtsContinue, value); }
     public string ProjectDirectory { get => _projectDirectory; set { if (Set(ref _projectDirectory, value)) RefreshCommands(); } }
     public VideoProject Project { get => _project; private set { Set(ref _project, value); Raise(nameof(Chapters)); RefreshCommands(); } }
     public IEnumerable<ProjectChapter> Chapters => Project.Chapters;
@@ -80,6 +84,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public ICommand GeneratePlanCommand { get; }
     public ICommand ContinueWritingCommand { get; }
     public ICommand RunPipelineCommand { get; }
+    public ICommand ContinueTtsCommand { get; }
     public ICommand OpenChatGptCommand { get; }
     public ICommand OpenClipchampCommand { get; }
     public ICommand InstallFfmpegCommand { get; }
@@ -211,6 +216,20 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             await _settingsService.SaveAsync(Settings);
             if (string.IsNullOrWhiteSpace(Project.Voice)) Log("Clipchamp voice: using the current/default Clipchamp voice.");
             else Log($"Clipchamp voice selected: {Project.Voice}");
+            var needsTts = Project.Chapters.Any(c => string.IsNullOrWhiteSpace(c.AudioPath) || !File.Exists(c.AudioPath));
+            if (needsTts)
+            {
+                _ttsContinueGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                WaitingForTtsContinue = true;
+                Status = "Clipchamp: choose your voice manually, then click Continue TTS";
+                Log("MANUAL TTS: choose the voice you want in Clipchamp. When Text to speech is ready, click Continue TTS in ZeroVideo.");
+                await _clip.PrepareManualVoiceSelectionAsync(Settings, Log, _cts.Token);
+                await _ttsContinueGate.Task.WaitAsync(_cts.Token);
+                WaitingForTtsContinue = false;
+                _clip.ConfirmManualVoiceSelection();
+                Log("Manual Clipchamp voice confirmed. ZeroVideo will paste narration and continue without changing your voice.");
+            }
+
             Status = "Running long-form pipeline...";
             var p = new Progress<double>(x => Progress = x);
             var output = await _pipeline.RunAsync(Project, Settings, Log, p, _cts.Token);
@@ -221,6 +240,12 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             MessageBox.Show($"Video finished:\n{output}", "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex) { Fail(ex); }
+    }
+
+    private void ContinueTts()
+    {
+        if (!WaitingForTtsContinue || _ttsContinueGate is null) return;
+        _ttsContinueGate.TrySetResult(true);
     }
 
     private void ArmNewChatIfRequested()
@@ -330,6 +355,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void Fail(Exception ex)
     {
+        WaitingForTtsContinue = false;
+        _ttsContinueGate?.TrySetCanceled();
+        _ttsContinueGate = null;
         Status = "Stopped: " + ex.Message;
         Log("ERROR: " + ex);
         MessageBox.Show(ex.Message, "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Warning);
