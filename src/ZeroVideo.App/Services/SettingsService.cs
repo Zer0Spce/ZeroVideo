@@ -32,11 +32,32 @@ public sealed class SettingsService
         await File.WriteAllTextAsync(AppPaths.SettingsFile, JsonSerializer.Serialize(settings, JsonOptions));
     }
 
-    private static string ResolveTool(string configured, string name)
+    public static string ResolveTool(string configured, string name)
     {
-        if (!string.IsNullOrWhiteSpace(configured) && File.Exists(configured)) return configured;
+        if (!string.IsNullOrWhiteSpace(configured) && File.Exists(configured)) return Path.GetFullPath(configured);
+
+        var managed = Path.Combine(AppPaths.ManagedFfmpegDirectory, "bin", name);
+        if (File.Exists(managed)) return managed;
+
         var bundled = Path.Combine(AppPaths.BundledFfmpegDirectory, "bin", name);
         if (File.Exists(bundled)) return bundled;
-        return name;
+
+        var onPath = FindOnPath(name);
+        return onPath ?? "";
+    }
+
+    private static string? FindOnPath(string name)
+    {
+        var path = Environment.GetEnvironmentVariable("PATH") ?? "";
+        foreach (var raw in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            try
+            {
+                var candidate = Path.Combine(raw.Trim('"'), name);
+                if (File.Exists(candidate)) return candidate;
+            }
+            catch { }
+        }
+        return null;
     }
 }

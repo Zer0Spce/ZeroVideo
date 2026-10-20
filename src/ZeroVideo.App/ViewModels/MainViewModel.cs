@@ -39,7 +39,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     {
         _chat = new ChatGptBrowserService(_browser, _profiles);
         _clip = new ClipchampTtsService(_browser, _profiles);
-        _ffmpeg = new FfmpegService(_runner);
+        _ffmpeg = new FfmpegService(_runner, _dependencies);
         _pipeline = new PipelineService(_chat, _clip, _ffmpeg, _store);
         _preflight = new PreflightService(_runner);
         GeneratePlanCommand = new AsyncCommand(GeneratePlanAsync, () => !string.IsNullOrWhiteSpace(Topic) && Duration > 0);
@@ -170,6 +170,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             Status = "Running long-form pipeline...";
             var p = new Progress<double>(x => Progress = x);
             var output = await _pipeline.RunAsync(Project, Settings, Log, p, _cts.Token);
+            await _settingsService.SaveAsync(Settings);
             Status = "Finished"; Progress = 100; Log($"FINAL VIDEO: {output}");
             MessageBox.Show($"Video finished:\n{output}", "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Information);
         }
