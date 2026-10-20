@@ -104,14 +104,36 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         try
         {
             ArmNewChatIfRequested();
-            Status = "Creating master outline with ChatGPT..."; Progress = 3;
+            Status = "Creating master outline with ChatGPT...";
+            Progress = 3;
             var seed = new VideoProject
             {
-                Topic = Topic.Trim(), Title = Topic.Trim(), TargetMinutes = Duration, AspectRatio = AspectRatio,
-                Style = Style, Voice = Project.Voice, Options = Project.Options
+                Topic = Topic.Trim(),
+                Title = Topic.Trim(),
+                TargetMinutes = Duration,
+                AspectRatio = AspectRatio,
+                Style = Style,
+                Voice = Project.Voice,
+                Options = Project.Options
             };
+
+            var requestedChapters = Math.Clamp(seed.Options.HowManyChapters, 1, 40);
             var outlinePrompt = _promptBuilder.BuildOutline(seed);
-            Project = await _chat.GenerateOutlineAsync(seed, Settings, outlinePrompt, Log, _cts.Token);
+            VideoProject? generated = null;
+
+            for (var shapeAttempt = 1; shapeAttempt <= 2; shapeAttempt++)
+            {
+                generated = await _chat.GenerateOutlineAsync(seed, Settings, outlinePrompt, Log, _cts.Token);
+                if (generated.Chapters.Count == requestedChapters) break;
+
+                if (shapeAttempt >= 2)
+                    throw new InvalidDataException($"ChatGPT returned {generated.Chapters.Count} chapters, but How Many Chapters is {requestedChapters}.");
+
+                Log($"Outline shape mismatch: received {generated.Chapters.Count} chapters; requested exactly {requestedChapters}. Retrying in the same project chat.");
+                outlinePrompt += $"\nCORRECTION: Return EXACTLY {requestedChapters} chapters. Your previous outline had {generated.Chapters.Count}. Do not change the requested count.";
+            }
+
+            Project = generated!;
             ProjectDirectory = await _store.SaveAsync(Project, Settings.ProjectsRoot);
             Progress = 5;
             Log($"Outline checkpoint saved to {ProjectDirectory}");
@@ -135,6 +157,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         if (Project.Chapters.Count == 0) throw new InvalidOperationException("No outline is loaded.");
         if (string.IsNullOrWhiteSpace(Project.ProjectDirectory)) ProjectDirectory = await _store.SaveAsync(Project, Settings.ProjectsRoot);
 
+        var requestedSceneCount = Math.Clamp(Project.Options.ImagesPerChapter, 1, 50);
         var count = Project.Chapters.Count;
         for (var i = 0; i < count; i++)
         {
@@ -144,13 +167,34 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             var metadata = Project.Chapters[i];
             Status = $"Writing chapter {i + 1}/{count}: {metadata.Title}";
             Log(Status);
-            var prompt = _promptBuilder.BuildChapter(Project, metadata, i);
-            Project.Chapters[i] = await _chat.GenerateChapterAsync(Project, metadata, Settings, prompt, Log, _cts.Token);
+            var basePrompt = _promptBuilder.BuildChapter(Project, metadata, i);
+            ProjectChapter? generatedChapter = null;
+
+            for (var shapeAttempt = 1; shapeAttempt <= 2; shapeAttempt++)
+            {
+                var prompt = basePrompt;
+                if (shapeAttempt > 1)
+                    prompt += $"\nCORRECTION: Return EXACTLY {requestedSceneCount} scenes, numbered 1 through {requestedSceneCount}. Each scene must contain spoken narration and one matching imagePrompt.";
+
+                generatedChapter = await _chat.GenerateChapterAsync(Project, metadata, Settings, prompt, Log, _cts.Token);
+                if (generatedChapter.Scenes.Count == requestedSceneCount) break;
+
+                if (shapeAttempt >= 2)
+                    throw new InvalidDataException($"Chapter {metadata.Number} returned {generatedChapter.Scenes.Count} scenes, but Images Per Chapter is {requestedSceneCount}.");
+
+                Log($"Chapter {metadata.Number} shape mismatch: received {generatedChapter.Scenes.Count} scenes; requested exactly {requestedSceneCount}. Retrying in the same project chat.");
+            }
+
+            for (var s = 0; s < generatedChapter!.Scenes.Count; s++)
+                generatedChapter.Scenes[s].Number = s + 1;
+            generatedChapter.Narration = string.Join(" ", generatedChapter.Scenes.Select(s => s.Narration.Trim()).Where(s => s.Length > 0));
+
+            Project.Chapters[i] = generatedChapter;
             await _store.SaveAsync(Project, Settings.ProjectsRoot);
             Progress = 5 + ((i + 1) / (double)count * 20.0);
             Raise(nameof(Chapters));
             RefreshCommands();
-            Log($"Chapter {i + 1} checkpoint saved. ChatGPT chat: {Project.ChatGptConversationUrl ?? "pending"}");
+            Log($"Chapter {i + 1} checkpoint saved: {generatedChapter.Scenes.Count} narration/image scenes. ChatGPT chat: {Project.ChatGptConversationUrl ?? "pending"}");
         }
 
         Status = CanBuildVideo() ? $"Script ready: {count} chapters" : "Script paused — use Resume writing";
@@ -171,7 +215,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             var p = new Progress<double>(x => Progress = x);
             var output = await _pipeline.RunAsync(Project, Settings, Log, p, _cts.Token);
             await _settingsService.SaveAsync(Settings);
-            Status = "Finished"; Progress = 100; Log($"FINAL VIDEO: {output}");
+            Status = "Finished";
+            Progress = 100;
+            Log($"FINAL VIDEO: {output}");
             MessageBox.Show($"Video finished:\n{output}", "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex) { Fail(ex); }
@@ -195,7 +241,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             foreach (var check in checks)
             {
                 var line = $"{(check.Passed ? "PASS" : "FAIL")}  {check.Name} — {check.Detail}";
-                PreflightLines.Add(line); Log(line);
+                PreflightLines.Add(line);
+                Log(line);
             }
             Status = checks.All(x => x.Passed) ? "System ready" : "Setup needs attention";
         }
@@ -211,7 +258,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             Settings.FfmpegPath = ffmpeg;
             Settings.FfprobePath = Path.Combine(Path.GetDirectoryName(ffmpeg)!, "ffprobe.exe");
             await _settingsService.SaveAsync(Settings);
-            Raise(nameof(Settings)); Status = "FFmpeg ready";
+            Raise(nameof(Settings));
+            Status = "FFmpeg ready";
         }
         catch (Exception ex) { Fail(ex); }
     }
@@ -219,7 +267,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     private async Task SaveSettingsAsync()
     {
         Settings.ClipchampVoice = Project.Voice;
-        await _settingsService.SaveAsync(Settings); Status = "Settings saved"; Log("Settings saved.");
+        await _settingsService.SaveAsync(Settings);
+        Status = "Settings saved";
+        Log("Settings saved.");
     }
 
     private Task OpenProjectFolderAsync()
@@ -234,17 +284,32 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         if (dialog.ShowDialog() != true) return;
         Project = await _store.LoadAsync(dialog.FileName);
         if (string.IsNullOrWhiteSpace(Project.Voice)) Project.Voice = Settings.ClipchampVoice;
-        Topic = Project.Topic; Duration = Project.TargetMinutes; AspectRatio = Project.AspectRatio; Style = Project.Style; ProjectDirectory = Project.ProjectDirectory;
+        Topic = Project.Topic;
+        Duration = Project.TargetMinutes;
+        AspectRatio = Project.AspectRatio;
+        Style = Project.Style;
+        ProjectDirectory = Project.ProjectDirectory;
         NewChat = false;
         Raise(nameof(Project));
-        Raise(nameof(Chapters)); Status = CanBuildVideo() ? "Project loaded — ready to build" : "Project loaded — writing can resume"; Log($"Loaded {Project.Title}");
+        Raise(nameof(Chapters));
+        Status = CanBuildVideo() ? "Project loaded — ready to build" : "Project loaded — writing can resume";
+        Log($"Loaded {Project.Title}");
         if (!string.IsNullOrWhiteSpace(Project.ChatGptConversationUrl)) Log("Saved ChatGPT project chat will be reused.");
         RefreshCommands();
     }
 
     private bool CanContinueWriting() => Project.Chapters.Count > 0 && Project.Chapters.Any(c => !IsComplete(c));
-    private bool CanBuildVideo() => Project.Chapters.Count > 0 && Project.Chapters.All(IsComplete);
-    private static bool IsComplete(ProjectChapter chapter) => chapter.Scenes.Count > 0 && !string.IsNullOrWhiteSpace(chapter.Narration);
+    private bool CanBuildVideo()
+    {
+        var requestedChapters = Math.Clamp(Project.Options.HowManyChapters, 1, 40);
+        return Project.Chapters.Count == requestedChapters && Project.Chapters.All(IsComplete);
+    }
+
+    private bool IsComplete(ProjectChapter chapter)
+    {
+        var requestedScenes = Math.Clamp(Project.Options.ImagesPerChapter, 1, 50);
+        return chapter.Scenes.Count == requestedScenes && !string.IsNullOrWhiteSpace(chapter.Narration);
+    }
 
     private void RefreshCommands()
     {
@@ -265,10 +330,18 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void Fail(Exception ex)
     {
-        Status = "Stopped: " + ex.Message; Log("ERROR: " + ex); MessageBox.Show(ex.Message, "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Warning); RefreshCommands();
+        Status = "Stopped: " + ex.Message;
+        Log("ERROR: " + ex);
+        MessageBox.Show(ex.Message, "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Warning);
+        RefreshCommands();
     }
 
-    public async ValueTask DisposeAsync() { _cts.Cancel(); _cts.Dispose(); await _browser.DisposeAsync(); }
+    public async ValueTask DisposeAsync()
+    {
+        _cts.Cancel();
+        _cts.Dispose();
+        await _browser.DisposeAsync();
+    }
 
     private sealed class RelayCommand(Action action) : ICommand
     {
