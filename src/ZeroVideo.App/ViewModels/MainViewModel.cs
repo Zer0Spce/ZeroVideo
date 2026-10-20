@@ -60,6 +60,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<int> Durations { get; } = [5, 10, 15, 20, 30, 45, 60, 90, 120];
     public ObservableCollection<string> AspectRatios { get; } = ["16:9", "9:16"];
     public ObservableCollection<string> Styles { get; } = new(VisualStylePresets.Names);
+    public ObservableCollection<string> ClipchampVoices { get; } =
+    [
+        "Andrew", "Ava", "Brian", "Emma", "Aria", "Christopher", "Eric", "Guy", "Jenny", "Michelle", "Roger", "Steffan"
+    ];
 
     public string Topic { get => _topic; set { if (Set(ref _topic, value)) RefreshCommands(); } }
     public int Duration { get => _duration; set { if (Set(ref _duration, Math.Max(1, value))) RefreshCommands(); } }
@@ -88,6 +92,8 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public async Task InitializeAsync()
     {
         Settings = await _settingsService.LoadAsync();
+        if (string.IsNullOrWhiteSpace(Project.Voice)) Project.Voice = Settings.ClipchampVoice;
+        Raise(nameof(Project));
         Log("ZeroVideo initialized.");
         Log("Use Automation > Open ChatGPT / Open Clipchamp to sign in normally. Generation automatically hands that dedicated Edge profile over to automation.");
         Raise(nameof(Settings));
@@ -102,7 +108,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             var seed = new VideoProject
             {
                 Topic = Topic.Trim(), Title = Topic.Trim(), TargetMinutes = Duration, AspectRatio = AspectRatio,
-                Style = Style, Options = Project.Options
+                Style = Style, Voice = Project.Voice, Options = Project.Options
             };
             var outlinePrompt = _promptBuilder.BuildOutline(seed);
             Project = await _chat.GenerateOutlineAsync(seed, Settings, outlinePrompt, Log, _cts.Token);
@@ -157,6 +163,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         try
         {
             ArmNewChatIfRequested();
+            Settings.ClipchampVoice = Project.Voice;
+            await _settingsService.SaveAsync(Settings);
+            if (string.IsNullOrWhiteSpace(Project.Voice)) Log("Clipchamp voice: using the current/default Clipchamp voice.");
+            else Log($"Clipchamp voice selected: {Project.Voice}");
             Status = "Running long-form pipeline...";
             var p = new Progress<double>(x => Progress = x);
             var output = await _pipeline.RunAsync(Project, Settings, Log, p, _cts.Token);
@@ -207,6 +217,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
 
     private async Task SaveSettingsAsync()
     {
+        Settings.ClipchampVoice = Project.Voice;
         await _settingsService.SaveAsync(Settings); Status = "Settings saved"; Log("Settings saved.");
     }
 
@@ -221,8 +232,10 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         var dialog = new OpenFileDialog { Filter = "ZeroVideo Project|project.json", InitialDirectory = Settings.ProjectsRoot };
         if (dialog.ShowDialog() != true) return;
         Project = await _store.LoadAsync(dialog.FileName);
+        if (string.IsNullOrWhiteSpace(Project.Voice)) Project.Voice = Settings.ClipchampVoice;
         Topic = Project.Topic; Duration = Project.TargetMinutes; AspectRatio = Project.AspectRatio; Style = Project.Style; ProjectDirectory = Project.ProjectDirectory;
         NewChat = false;
+        Raise(nameof(Project));
         Raise(nameof(Chapters)); Status = CanBuildVideo() ? "Project loaded — ready to build" : "Project loaded — writing can resume"; Log($"Loaded {Project.Title}");
         if (!string.IsNullOrWhiteSpace(Project.ChatGptConversationUrl)) Log("Saved ChatGPT project chat will be reused.");
         RefreshCommands();

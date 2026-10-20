@@ -28,7 +28,8 @@
     "voiceControls": ["button:has-text('Voice')", "[aria-label*='voice' i]"],
     "saveButtons": ["button:has-text('Save')"],
     "exportButtons": ["button:has-text('Export')"],
-    "audioOnlyButtons": ["text=Audio only", "text=Audio-only"],
-    "downloadButtons": ["text=Save to your computer", "text=Download"]
+    "audioOnlyButtons": ["text=Audio only", "text=Audio-only", "text=Audio-only Only the audio from your project"],
+    "finalExportButtons": ["[role='dialog'] button:has-text('Export')", "div[role='dialog'] button:has-text('Export')", "button:has-text('Export')"],
+    "downloadButtons": ["text=Save to your computer", "text=Download", "button:has-text('Download')"]
   }
 }

@@ -19,6 +19,9 @@
             </Grid>
             <TextBlock Text="Type any custom duration, including 60+ minutes." Foreground="{StaticResource Muted}" FontSize="11" Margin="0,4,0,0"/>
             <Label Content="STORY / EDIT STYLE" Margin="0,10,0,0"/><ComboBox ItemsSource="{Binding Styles}" IsEditable="True" Text="{Binding Style, UpdateSourceTrigger=PropertyChanged}"/>
+            <Label Content="CLIPCHAMP VOICE" Margin="0,10,0,0"/>
+            <ComboBox ItemsSource="{Binding ClipchampVoices}" IsEditable="True" IsTextSearchEnabled="True" Text="{Binding Project.Voice, UpdateSourceTrigger=PropertyChanged}" ToolTip="Choose a Clipchamp voice, or type the exact voice label shown in Clipchamp."/>
+            <TextBlock Text="Choose a voice here for this project. The list is editable, so you can type any exact Clipchamp voice label. Leave blank to keep Clipchamp's current/default voice." Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"/>
             <Separator Margin="0,16" Background="#314052"/>
             <TextBlock Text="ChatGPT" FontWeight="SemiBold"/>
             <CheckBox Content="New Chat" IsChecked="{Binding NewChat}" ToolTip="One-shot. The next ChatGPT action starts a fresh conversation; after that ZeroVideo reuses that same chat for the entire project."/>
@@ -60,7 +63,7 @@
           <TextBlock Text="Clipchamp TTS defaults" FontSize="18" FontWeight="SemiBold"/>
           <Label Content="LANGUAGE LABEL" Margin="0,10,0,0"/><TextBox Width="720" Text="{Binding Settings.ClipchampLanguage}"/>
           <Label Content="VOICE LABEL" Margin="0,10,0,0"/><TextBox Width="720" Text="{Binding Settings.ClipchampVoice}"/>
-          <TextBlock Text="Leave the voice blank to keep Clipchamp's current/default voice. Labels must match what Clipchamp shows in your account." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+          <TextBlock Text="The Create tab voice overrides this default for the active project. Leave the voice blank to keep Clipchamp's current/default voice. Labels must match what Clipchamp shows in your account." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
           <WrapPanel Margin="0,14,0,0"><Button Style="{StaticResource PrimaryButton}" Command="{Binding InstallFfmpegCommand}" Content="Install FFmpeg automatically"/><Button Style="{StaticResource SecondaryButton}" Command="{Binding SaveSettingsCommand}" Content="Save settings"/></WrapPanel>
           <TextBlock Margin="0,14,0,0" Foreground="{StaticResource Muted}" TextWrapping="Wrap">FFmpeg is downloaded from the public Gyan FFmpeg essentials build when you choose Install. ZeroVideo does not bundle or silently install it.</TextBlock>
         </StackPanel></ScrollViewer>
