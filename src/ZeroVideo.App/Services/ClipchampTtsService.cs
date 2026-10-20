@@ -23,17 +23,17 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
 
         try
         {
-            var newVideo = await BrowserLocator.FirstVisibleAsync(page, profile.Clipchamp.NewVideoButtons, 4000);
+            var newVideo = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.NewVideoButtons, 4000, ct);
             if (newVideo is not null) await newVideo.ClickAsync();
             await Task.Delay(2500, ct);
 
-            await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.RecordCreateButtons, "Record & create", 10000);
-            await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.TextToSpeechButtons, "Text to speech", 10000);
+            await ClickFirstAcrossFramesAsync(page, profile.Clipchamp.RecordCreateButtons, "Record & create", 12000, ct);
+            await ClickFirstAcrossFramesAsync(page, profile.Clipchamp.TextToSpeechButtons, "Text to speech", 12000, ct);
 
-            log?.Invoke("Clipchamp: waiting for the text-to-speech controls to appear...");
+            log?.Invoke("Clipchamp: locating the visible text-to-speech controls across the editor...");
             await WaitForTtsPanelReadyAsync(page, log, ct);
 
-            await TryChooseAsync(page, profile.Clipchamp.LanguageControls, settings.ClipchampLanguage, "language", log);
+            await TryChooseAcrossFramesAsync(page, profile.Clipchamp.LanguageControls, settings.ClipchampLanguage, "language", log, ct);
 
             var selectedVoice = !string.IsNullOrWhiteSpace(project.Voice)
                 ? project.Voice.Trim()
@@ -42,24 +42,24 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
             await ChooseVoiceAsync(page, selectedVoice, log, ct);
 
             var input = await WaitForScriptInputAsync(page, profile.Clipchamp.ScriptInputs, 30000, ct)
-                ?? throw new InvalidOperationException("Clipchamp TTS panel is visible, but ZeroVideo could not find the narration text box.");
+                ?? throw new InvalidOperationException("Clipchamp TTS controls are visible, but ZeroVideo could not find the narration editor in any Clipchamp frame.");
 
-            await input.FillAsync(chapter.Narration);
-            await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.SaveButtons, "Clipchamp TTS Save", 10000);
+            await input.FillAsync(chapter.Narration, new() { Timeout = 15000 });
+            await ClickFirstAcrossFramesAsync(page, profile.Clipchamp.SaveButtons, "Clipchamp TTS Save", 15000, ct);
             log?.Invoke($"TTS created with voice '{(string.IsNullOrWhiteSpace(selectedVoice) ? "Clipchamp default" : selectedVoice)}'. Preparing audio-only export...");
 
             await Task.Delay(2000, ct);
-            await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.ExportButtons, "Clipchamp Export", 10000);
+            await ClickFirstAcrossFramesAsync(page, profile.Clipchamp.ExportButtons, "Clipchamp Export", 15000, ct);
 
             var audioDir = Path.Combine(project.ProjectDirectory, "audio");
             Directory.CreateDirectory(audioDir);
             var destination = Path.Combine(audioDir, $"chapter-{chapter.Number:00}.m4a");
             var exportStartedAt = DateTime.Now.AddSeconds(-2);
 
-            await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.AudioOnlyButtons, "audio-only export", 15000);
+            await ClickFirstAcrossFramesAsync(page, profile.Clipchamp.AudioOnlyButtons, "audio-only export", 20000, ct);
             log?.Invoke("Clipchamp audio-only selected. Confirming export...");
 
-            var finalExport = await FindFinalExportButtonAsync(page, profile.Clipchamp.FinalExportButtons, 15000)
+            var finalExport = await FindFinalExportButtonAsync(page, profile.Clipchamp.FinalExportButtons, 20000, ct)
                 ?? throw new InvalidOperationException("Could not find the final Clipchamp Audio-only Export button.");
 
             IDownload? download = null;
@@ -92,7 +92,7 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
                     return destination;
                 }
 
-                var downloadButton = await BrowserLocator.FirstVisibleAsync(page, profile.Clipchamp.DownloadButtons, 120000);
+                var downloadButton = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.DownloadButtons, 120000, ct);
                 if (downloadButton is not null)
                 {
                     try
@@ -156,124 +156,23 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
                 throw new InvalidOperationException("Clipchamp page closed while waiting for the text-to-speech panel.");
 
             var voiceValue = await FindDisplayedVoiceValueAsync(page);
-            var hasVoiceHeading = await HasVisibleExactTextAsync(page, "Voice");
-            var hasTtsHeading = await HasVisibleExactTextAsync(page, "Text to speech");
-
-            // Do not require the narration editor here. Clipchamp currently renders the
-            // voice controls before the editor is represented by a normal textarea/role.
-            // The screenshot can already show a completely usable TTS panel while the old
-            // script-input selector still reports nothing.
-            if (voiceValue is not null && hasVoiceHeading && hasTtsHeading)
+            if (voiceValue is not null)
             {
                 var currentVoice = await ReadLocatorLabelAsync(voiceValue);
-                log?.Invoke($"Clipchamp TTS controls ready. Current voice: {currentVoice}.");
+                log?.Invoke($"Clipchamp TTS controls ready. Current voice: {currentVoice}. Frames scanned: {page.Frames.Count}.");
                 return;
             }
 
             if ((DateTime.UtcNow - lastLog).TotalSeconds >= 8)
             {
-                log?.Invoke("Clipchamp TTS controls are still loading; waiting...");
+                log?.Invoke($"Clipchamp TTS controls not found yet; scanning {page.Frames.Count} frame(s)...");
                 lastLog = DateTime.UtcNow;
             }
 
-            await Task.Delay(400, ct);
+            await Task.Delay(350, ct);
         }
 
-        throw new InvalidOperationException("Clipchamp voice controls did not become available within 60 seconds.");
-    }
-
-    private static async Task<ILocator?> WaitForScriptInputAsync(
-        IPage page,
-        IEnumerable<string> selectors,
-        int timeoutMs,
-        CancellationToken ct)
-    {
-        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-        while (DateTime.UtcNow < deadline)
-        {
-            ct.ThrowIfCancellationRequested();
-            var input = await TryFindScriptInputOnceAsync(page, selectors);
-            if (input is not null) return input;
-            await Task.Delay(250, ct);
-        }
-
-        return null;
-    }
-
-    private static async Task<ILocator?> TryFindScriptInputOnceAsync(IPage page, IEnumerable<string> selectors)
-    {
-        // Prefer the automation profile first.
-        foreach (var selector in selectors.Where(x => !string.IsNullOrWhiteSpace(x)))
-        {
-            try
-            {
-                var items = page.Locator(selector);
-                var count = await items.CountAsync();
-                for (var i = count - 1; i >= 0; i--)
-                {
-                    var item = items.Nth(i);
-                    if (await item.IsVisibleAsync() && await item.IsEnabledAsync()) return item;
-                }
-            }
-            catch { }
-        }
-
-        // Current Clipchamp displays "Type what you'd like to say" inside a custom editor,
-        // which may be a textarea, contenteditable element, or role=textbox depending on the
-        // rollout. Search all of those directly.
-        var directSelectors = new[]
-        {
-            "textarea[placeholder*='Type what' i]",
-            "[contenteditable='true'][aria-label*='Type what' i]",
-            "[contenteditable='true'][data-placeholder*='Type what' i]",
-            "[role='textbox'][aria-label*='Type what' i]",
-            "[role='textbox'][contenteditable='true']",
-            "textarea",
-            "[contenteditable='true']"
-        };
-
-        foreach (var selector in directSelectors)
-        {
-            try
-            {
-                var items = page.Locator(selector);
-                var count = await items.CountAsync();
-                for (var i = count - 1; i >= 0; i--)
-                {
-                    var item = items.Nth(i);
-                    if (await item.IsVisibleAsync() && await item.IsEnabledAsync()) return item;
-                }
-            }
-            catch { }
-        }
-
-        try
-        {
-            var byPlaceholder = page.GetByPlaceholder("Type what you'd like to say", new() { Exact = false });
-            var count = await byPlaceholder.CountAsync();
-            for (var i = count - 1; i >= 0; i--)
-            {
-                var item = byPlaceholder.Nth(i);
-                if (await item.IsVisibleAsync() && await item.IsEnabledAsync()) return item;
-            }
-        }
-        catch { }
-
-        return null;
-    }
-
-    private static async Task<bool> HasVisibleExactTextAsync(IPage page, string text)
-    {
-        try
-        {
-            var matches = page.GetByText(text, new() { Exact = true });
-            var count = await matches.CountAsync();
-            for (var i = count - 1; i >= 0; i--)
-                if (await matches.Nth(i).IsVisibleAsync()) return true;
-        }
-        catch { }
-
-        return false;
+        throw new InvalidOperationException($"Clipchamp voice selector was visible in the browser but could not be located across {page.Frames.Count} frame(s) within 60 seconds.");
     }
 
     private static async Task ChooseVoiceAsync(IPage page, string requestedVoice, Action<string>? log, CancellationToken ct)
@@ -286,10 +185,10 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
 
         var normalizedRequested = NormalizeRequestedVoice(requestedVoice);
         var targetDisplay = ToClipchampVoiceLabel(normalizedRequested);
-
         var currentControl = await WaitForCurrentVoiceValueAsync(page, 20000, ct);
+
         if (currentControl is null)
-            throw new InvalidOperationException($"Could not find Clipchamp's current voice selector while trying to select '{targetDisplay}'.");
+            throw new InvalidOperationException($"Could not locate Clipchamp's current voice selector across any editor frame while trying to select '{targetDisplay}'.");
 
         var currentLabel = await ReadLocatorLabelAsync(currentControl);
         if (VoiceLabelMatches(currentLabel, normalizedRequested))
@@ -334,114 +233,94 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
 
     private static async Task<ILocator?> FindDisplayedVoiceValueAsync(IPage page)
     {
-        // First scan actual interactive controls. This directly finds the current Clipchamp
-        // selector such as a button/combobox whose text is "Ava Multilingual".
-        try
-        {
-            var controls = page.Locator("button, [role='combobox'], [aria-haspopup='listbox']");
-            var count = Math.Min(await controls.CountAsync(), 400);
-            for (var i = count - 1; i >= 0; i--)
-            {
-                var item = controls.Nth(i);
-                if (!await item.IsVisibleAsync() || !await item.IsEnabledAsync()) continue;
-                var label = await ReadLocatorLabelAsync(item);
-                if (KnownVoiceNames.Any(v => VoiceLabelMatches(label, v))) return item;
-            }
-        }
-        catch { }
-
-        // Fallback: find the visible voice text, then promote it to the nearest clickable
-        // ancestor so clicks hit the selector container instead of a child text span.
-        foreach (var voice in KnownVoiceNames)
-        {
-            foreach (var label in VoiceDisplayCandidates(voice))
-            {
-                var match = await FindVisibleExactTextAsync(page, label);
-                if (match is not null) return await PromoteToClickableAsync(match);
-            }
-        }
-
-        try
-        {
-            var headings = page.GetByText("Voice", new() { Exact = true });
-            var count = await headings.CountAsync();
-            for (var i = count - 1; i >= 0; i--)
-            {
-                var heading = headings.Nth(i);
-                if (!await heading.IsVisibleAsync()) continue;
-
-                var candidate = heading.Locator("xpath=following::*[contains(normalize-space(.), 'Multilingual')][1]");
-                if (await candidate.CountAsync() > 0 && await candidate.First.IsVisibleAsync())
-                    return await PromoteToClickableAsync(candidate.First);
-            }
-        }
-        catch { }
-
-        return null;
-    }
-
-    private static async Task<ILocator> PromoteToClickableAsync(ILocator item)
-    {
-        try
-        {
-            var clickable = item.Locator("xpath=ancestor::*[self::button or @role='combobox' or @aria-haspopup='listbox' or @tabindex][1]");
-            if (await clickable.CountAsync() > 0)
-            {
-                var first = clickable.First;
-                if (await first.IsVisibleAsync() && await first.IsEnabledAsync()) return first;
-            }
-        }
-        catch { }
-
-        return item;
-    }
-
-    private static async Task<ILocator?> FindExactClipchampVoiceOptionAsync(IPage page, string normalizedRequested, string targetDisplay, CancellationToken ct)
-    {
-        var exact = await FindVisibleExactTextAsync(page, targetDisplay);
-        if (exact is not null) return await PromoteToVoiceOptionAsync(exact);
-
-        for (var attempt = 0; attempt < 20; attempt++)
+        foreach (var frame in page.Frames.Reverse())
         {
             try
             {
-                var matches = page.GetByText(normalizedRequested, new() { Exact = false });
-                var count = Math.Min(await matches.CountAsync(), 120);
+                var controls = frame.Locator("button, [role='combobox'], [role='button'], [aria-haspopup='listbox']");
+                var count = Math.Min(await controls.CountAsync(), 500);
                 for (var i = count - 1; i >= 0; i--)
                 {
-                    var item = matches.Nth(i);
-                    if (!await item.IsVisibleAsync()) continue;
+                    var item = controls.Nth(i);
+                    if (!await item.IsVisibleAsync() || !await item.IsEnabledAsync()) continue;
                     var label = await ReadLocatorLabelAsync(item);
-                    if (VoiceLabelMatches(label, normalizedRequested))
-                        return await PromoteToVoiceOptionAsync(item);
+                    if (KnownVoiceNames.Any(v => VoiceLabelMatches(label, v))) return item;
                 }
             }
             catch { }
 
-            try { await page.Mouse.WheelAsync(0, 360); } catch { }
-            await Task.Delay(180, ct);
+            foreach (var voice in KnownVoiceNames)
+            {
+                foreach (var label in VoiceDisplayCandidates(voice))
+                {
+                    var match = await FindVisibleExactTextAsync(frame, label);
+                    if (match is not null) return await PromoteToClickableAsync(match);
+                }
+            }
 
-            exact = await FindVisibleExactTextAsync(page, targetDisplay);
-            if (exact is not null) return await PromoteToVoiceOptionAsync(exact);
+            try
+            {
+                var headings = frame.GetByText("Voice", new() { Exact = true });
+                var count = await headings.CountAsync();
+                for (var i = count - 1; i >= 0; i--)
+                {
+                    var heading = headings.Nth(i);
+                    if (!await heading.IsVisibleAsync()) continue;
+                    var candidate = heading.Locator("xpath=following::*[contains(normalize-space(.), 'Multilingual')][1]");
+                    if (await candidate.CountAsync() > 0 && await candidate.First.IsVisibleAsync())
+                        return await PromoteToClickableAsync(candidate.First);
+                }
+            }
+            catch { }
         }
 
         return null;
     }
 
-    private static async Task<ILocator> PromoteToVoiceOptionAsync(ILocator item)
+    private static async Task<ILocator?> FindExactClipchampVoiceOptionAsync(IPage page, string normalizedRequested, string targetDisplay, CancellationToken ct)
     {
-        try
-        {
-            var option = item.Locator("xpath=ancestor::*[@role='option' or @role='menuitem' or @role='listitem' or self::button or @tabindex][1]");
-            if (await option.CountAsync() > 0)
-            {
-                var first = option.First;
-                if (await first.IsVisibleAsync() && await first.IsEnabledAsync()) return first;
-            }
-        }
-        catch { }
+        var exact = await FindVisibleExactTextAcrossFramesAsync(page, targetDisplay);
+        if (exact is not null) return await PromoteToVoiceOptionAsync(exact);
 
-        return item;
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            foreach (var frame in page.Frames.Reverse())
+            {
+                try
+                {
+                    var matches = frame.GetByText(normalizedRequested, new() { Exact = false });
+                    var count = Math.Min(await matches.CountAsync(), 160);
+                    for (var i = count - 1; i >= 0; i--)
+                    {
+                        var item = matches.Nth(i);
+                        if (!await item.IsVisibleAsync()) continue;
+                        var label = await ReadLocatorLabelAsync(item);
+                        if (VoiceLabelMatches(label, normalizedRequested))
+                            return await PromoteToVoiceOptionAsync(item);
+                    }
+                }
+                catch { }
+
+                try
+                {
+                    var scrollers = frame.Locator("[role='listbox'], [role='menu'], [data-radix-scroll-area-viewport]");
+                    var count = await scrollers.CountAsync();
+                    for (var i = count - 1; i >= 0; i--)
+                    {
+                        var scroller = scrollers.Nth(i);
+                        if (!await scroller.IsVisibleAsync()) continue;
+                        await scroller.EvaluateAsync("el => { el.scrollTop += Math.max(240, el.clientHeight * 0.75); }");
+                    }
+                }
+                catch { }
+            }
+
+            await Task.Delay(180, ct);
+            exact = await FindVisibleExactTextAcrossFramesAsync(page, targetDisplay);
+            if (exact is not null) return await PromoteToVoiceOptionAsync(exact);
+        }
+
+        return null;
     }
 
     private static async Task<ILocator?> WaitForDisplayedVoiceAsync(IPage page, string requestedVoice, int timeoutMs, CancellationToken ct)
@@ -449,24 +328,156 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
         while (DateTime.UtcNow < deadline)
         {
+            ct.ThrowIfCancellationRequested();
             var current = await FindDisplayedVoiceValueAsync(page);
             if (current is not null)
             {
                 var label = await ReadLocatorLabelAsync(current);
                 if (VoiceLabelMatches(label, requestedVoice)) return current;
             }
-
             await Task.Delay(150, ct);
         }
 
         return null;
     }
 
-    private static async Task<ILocator?> FindVisibleExactTextAsync(IPage page, string text)
+    private static async Task<ILocator?> WaitForScriptInputAsync(IPage page, IEnumerable<string> selectors, int timeoutMs, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+            var input = await TryFindScriptInputOnceAsync(page, selectors);
+            if (input is not null) return input;
+            await Task.Delay(250, ct);
+        }
+        return null;
+    }
+
+    private static async Task<ILocator?> TryFindScriptInputOnceAsync(IPage page, IEnumerable<string> selectors)
+    {
+        var directSelectors = new[]
+        {
+            "textarea[placeholder*='Type what' i]",
+            "[contenteditable='true'][aria-label*='Type what' i]",
+            "[contenteditable='true'][data-placeholder*='Type what' i]",
+            "[role='textbox'][aria-label*='Type what' i]",
+            "[role='textbox'][contenteditable='true']",
+            "textarea",
+            "[contenteditable='true']"
+        };
+
+        foreach (var frame in page.Frames.Reverse())
+        {
+            foreach (var selector in selectors.Where(x => !string.IsNullOrWhiteSpace(x)))
+            {
+                var found = await FindVisibleEnabledAsync(frame, selector);
+                if (found is not null) return found;
+            }
+
+            foreach (var selector in directSelectors)
+            {
+                var found = await FindVisibleEnabledAsync(frame, selector);
+                if (found is not null) return found;
+            }
+
+            try
+            {
+                var byPlaceholder = frame.GetByPlaceholder("Type what you'd like to say", new() { Exact = false });
+                var count = await byPlaceholder.CountAsync();
+                for (var i = count - 1; i >= 0; i--)
+                {
+                    var item = byPlaceholder.Nth(i);
+                    if (await item.IsVisibleAsync() && await item.IsEnabledAsync()) return item;
+                }
+            }
+            catch { }
+        }
+
+        return null;
+    }
+
+    private static async Task<ILocator?> FindVisibleEnabledAsync(IFrame frame, string selector)
     {
         try
         {
-            var matches = page.GetByText(text, new() { Exact = true });
+            var items = frame.Locator(selector);
+            var count = await items.CountAsync();
+            for (var i = count - 1; i >= 0; i--)
+            {
+                var item = items.Nth(i);
+                if (await item.IsVisibleAsync() && await item.IsEnabledAsync()) return item;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private static async Task<ILocator?> FirstVisibleAcrossFramesAsync(IPage page, IEnumerable<string> selectors, int timeoutMs, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+            foreach (var frame in page.Frames.Reverse())
+            {
+                foreach (var selector in selectors.Where(x => !string.IsNullOrWhiteSpace(x)))
+                {
+                    var item = await FindVisibleEnabledAsync(frame, selector);
+                    if (item is not null) return item;
+                }
+            }
+            await Task.Delay(150, ct);
+        }
+        return null;
+    }
+
+    private static async Task ClickFirstAcrossFramesAsync(IPage page, IEnumerable<string> selectors, string description, int timeoutMs, CancellationToken ct)
+    {
+        var item = await FirstVisibleAcrossFramesAsync(page, selectors, timeoutMs, ct)
+            ?? throw new InvalidOperationException($"Could not find Clipchamp control: {description}.");
+        await item.ClickAsync(new() { Timeout = timeoutMs });
+    }
+
+    private static async Task TryChooseAcrossFramesAsync(IPage page, IEnumerable<string> controls, string value, string label, Action<string>? log, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(value) || !controls.Any()) return;
+        var control = await FirstVisibleAcrossFramesAsync(page, controls, 5000, ct);
+        if (control is null)
+        {
+            log?.Invoke($"Clipchamp {label} selector not found; keeping current selection.");
+            return;
+        }
+
+        try
+        {
+            await control.ClickAsync(new() { Timeout = 5000 });
+            var option = await FindVisibleExactTextAcrossFramesAsync(page, value);
+            if (option is null) throw new InvalidOperationException();
+            await (await PromoteToVoiceOptionAsync(option)).ClickAsync(new() { Timeout = 5000 });
+            log?.Invoke($"Clipchamp {label}: {value}");
+        }
+        catch
+        {
+            log?.Invoke($"Clipchamp could not select {label} '{value}'; keeping current selection.");
+        }
+    }
+
+    private static async Task<ILocator?> FindVisibleExactTextAcrossFramesAsync(IPage page, string text)
+    {
+        foreach (var frame in page.Frames.Reverse())
+        {
+            var item = await FindVisibleExactTextAsync(frame, text);
+            if (item is not null) return item;
+        }
+        return null;
+    }
+
+    private static async Task<ILocator?> FindVisibleExactTextAsync(IFrame frame, string text)
+    {
+        try
+        {
+            var matches = frame.GetByText(text, new() { Exact = true });
             var count = await matches.CountAsync();
             for (var i = count - 1; i >= 0; i--)
             {
@@ -475,8 +486,37 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
             }
         }
         catch { }
-
         return null;
+    }
+
+    private static async Task<ILocator> PromoteToClickableAsync(ILocator item)
+    {
+        try
+        {
+            var clickable = item.Locator("xpath=ancestor-or-self::*[self::button or @role='combobox' or @role='button' or @aria-haspopup='listbox' or @tabindex][1]");
+            if (await clickable.CountAsync() > 0)
+            {
+                var first = clickable.First;
+                if (await first.IsVisibleAsync() && await first.IsEnabledAsync()) return first;
+            }
+        }
+        catch { }
+        return item;
+    }
+
+    private static async Task<ILocator> PromoteToVoiceOptionAsync(ILocator item)
+    {
+        try
+        {
+            var option = item.Locator("xpath=ancestor-or-self::*[@role='option' or @role='menuitem' or @role='listitem' or self::button or @tabindex][1]");
+            if (await option.CountAsync() > 0)
+            {
+                var first = option.First;
+                if (await first.IsVisibleAsync() && await first.IsEnabledAsync()) return first;
+            }
+        }
+        catch { }
+        return item;
     }
 
     private static string NormalizeRequestedVoice(string value)
@@ -489,9 +529,7 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
     }
 
     private static string ToClipchampVoiceLabel(string baseVoice)
-        => baseVoice.EndsWith("Multilingual", StringComparison.OrdinalIgnoreCase)
-            ? baseVoice
-            : $"{baseVoice} Multilingual";
+        => baseVoice.EndsWith("Multilingual", StringComparison.OrdinalIgnoreCase) ? baseVoice : $"{baseVoice} Multilingual";
 
     private static IEnumerable<string> VoiceDisplayCandidates(string baseVoice)
     {
@@ -515,7 +553,6 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
         try { text = (await item.InnerTextAsync()).Trim(); } catch { }
         try { aria = (await item.GetAttributeAsync("aria-label") ?? "").Trim(); } catch { }
         try { title = (await item.GetAttributeAsync("title") ?? "").Trim(); } catch { }
-
         if (!string.IsNullOrWhiteSpace(text)) return CollapseWhitespace(text);
         if (!string.IsNullOrWhiteSpace(aria)) return CollapseWhitespace(aria);
         return CollapseWhitespace(title);
@@ -524,66 +561,38 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
     private static string CollapseWhitespace(string value)
         => string.Join(" ", value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 
-    private static async Task<ILocator?> FindFinalExportButtonAsync(IPage page, IEnumerable<string> selectors, int timeoutMs)
+    private static async Task<ILocator?> FindFinalExportButtonAsync(IPage page, IEnumerable<string> selectors, int timeoutMs, CancellationToken ct)
     {
-        foreach (var selector in selectors.Where(x => !string.IsNullOrWhiteSpace(x)))
+        var configured = await FirstVisibleAcrossFramesAsync(page, selectors, timeoutMs, ct);
+        if (configured is not null) return configured;
+
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
         {
-            try
+            ct.ThrowIfCancellationRequested();
+            foreach (var frame in page.Frames.Reverse())
             {
-                var items = page.Locator(selector);
-                var count = await items.CountAsync();
-                for (var i = count - 1; i >= 0; i--)
+                try
                 {
-                    var item = items.Nth(i);
-                    if (!await item.IsVisibleAsync()) continue;
-                    if (!await item.IsEnabledAsync()) continue;
-                    return item;
+                    var buttons = frame.GetByRole(AriaRole.Button, new() { Name = "Export", Exact = true });
+                    var count = await buttons.CountAsync();
+                    for (var i = count - 1; i >= 0; i--)
+                    {
+                        var button = buttons.Nth(i);
+                        if (await button.IsVisibleAsync() && await button.IsEnabledAsync()) return button;
+                    }
                 }
+                catch { }
             }
-            catch { }
+            await Task.Delay(150, ct);
         }
-
-        try
-        {
-            var button = page.GetByRole(AriaRole.Button, new() { Name = "Export", Exact = true }).Last;
-            await button.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = timeoutMs });
-            if (await button.IsEnabledAsync()) return button;
-        }
-        catch { }
-
         return null;
-    }
-
-    private static async Task TryChooseAsync(IPage page, IEnumerable<string> controls, string value, string label, Action<string>? log)
-    {
-        if (string.IsNullOrWhiteSpace(value) || !controls.Any()) return;
-
-        var control = await BrowserLocator.FirstVisibleAsync(page, controls, 5000);
-        if (control is null)
-        {
-            log?.Invoke($"Clipchamp {label} selector not found; keeping current selection.");
-            return;
-        }
-
-        try
-        {
-            await control.ClickAsync();
-            var option = page.GetByText(value, new() { Exact = true }).Last;
-            await option.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 5000 });
-            await option.ClickAsync();
-            log?.Invoke($"Clipchamp {label}: {value}");
-        }
-        catch
-        {
-            log?.Invoke($"Clipchamp could not select {label} '{value}'; keeping current selection.");
-        }
     }
 
     private static string? FindRecentDownload(string pattern, DateTime notBefore)
     {
         var downloads = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
         if (!Directory.Exists(downloads)) return null;
-
         return Directory.EnumerateFiles(downloads, pattern)
             .Select(p => new FileInfo(p))
             .Where(f => f.LastWriteTime >= notBefore && f.Length > 1000)
