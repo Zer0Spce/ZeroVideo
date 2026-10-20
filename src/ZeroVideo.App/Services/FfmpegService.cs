@@ -98,18 +98,18 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
             string args;
             if (media is not null && IsVideo(media))
             {
-                args = $"-y -stream_loop -1 -i \"{media}\" -t {duration} -vf \"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},fps=30\" -an -c:v libx264 -preset veryfast -pix_fmt yuv420p \"{output}\"";
+                args = $"-y -stream_loop -1 -i \"{media}\" -t {duration} -vf \"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h},fps=30\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
             }
             else if (media is not null)
             {
                 var frames = Math.Max(30, (int)(scene.TargetSeconds * 30));
                 var zoom = project.Options.AddMotion ? $",zoompan=z='min(zoom+0.0008,1.08)':d={frames}:s={w}x{h}:fps=30" : "";
-                args = $"-y -loop 1 -i \"{media}\" -t {duration} -vf \"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}{zoom}\" -an -c:v libx264 -preset veryfast -pix_fmt yuv420p \"{output}\"";
+                args = $"-y -loop 1 -i \"{media}\" -t {duration} -vf \"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h}{zoom}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
             }
             else
             {
                 log?.Invoke($"Scene {chapter.Number}.{scene.Number}: no media assigned, rendering neutral placeholder.");
-                args = $"-y -f lavfi -i \"color=c=0x111821:s={w}x{h}:r=30:d={duration}\" -an -c:v libx264 -preset veryfast -pix_fmt yuv420p \"{output}\"";
+                args = $"-y -f lavfi -i \"color=c=0x111821:s={w}x{h}:r=30:d={duration}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
             }
             var result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
             if (result.ExitCode != 0) throw new InvalidOperationException($"Scene render failed ({chapter.Number}.{scene.Number}): {result.StdErr}");
