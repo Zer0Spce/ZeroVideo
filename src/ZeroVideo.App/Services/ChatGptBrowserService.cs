@@ -69,29 +69,48 @@ public sealed class ChatGptBrowserService(BrowserSession browser, AutomationProf
         var baseline = await CaptureImageBaselineAsync(page, profile.ChatGpt.GeneratedImages);
         var ratioWords = project.AspectRatio == "9:16" ? "vertical 9:16" : "widescreen 16:9";
         var styleRules = VisualStylePresets.GetPrompt(project.Style);
+        var sceneIndex = chapter.Scenes.FindIndex(s => ReferenceEquals(s, scene) || s.Number == scene.Number);
+        var previousNarration = sceneIndex > 0 ? chapter.Scenes[sceneIndex - 1].Narration : "none — this is the first scene in the chapter";
+        var nextNarration = sceneIndex >= 0 && sceneIndex + 1 < chapter.Scenes.Count ? chapter.Scenes[sceneIndex + 1].Narration : "none — this is the final scene in the chapter";
         var prompt = $"""
-Create ONE original {ratioWords} still image for this video scene.
-TOPIC: {project.Topic}
-SCENE NARRATION: {scene.Narration}
-VISUAL DIRECTION: {scene.ImagePrompt}
+Create ONE original {ratioWords} still image for this exact video scene.
+VIDEO TITLE: {project.Title}
+VIDEO TOPIC: {project.Topic}
+CHAPTER: {chapter.Number}. {chapter.Title}
+CHAPTER PURPOSE: {chapter.Purpose}
+SCENE ROLE: {scene.Role}
+CURRENT SCENE NARRATION: {scene.Narration}
+PLANNED VISUAL DIRECTION: {scene.ImagePrompt}
 SEARCH/REFERENCE IDEA: {scene.VisualQuery}
+PREVIOUS SCENE NARRATION: {previousNarration}
+NEXT SCENE NARRATION: {nextNarration}
 VIDEO STYLE: {project.Style}
 STYLE RULES: {styleRules}
 
-Requirements:
-- Follow the STYLE RULES exactly and keep the visual style consistent with the project.
+VISUAL RELEVANCE RULES:
+- The CURRENT SCENE NARRATION is the source of truth. The image must directly illustrate what is being said in this scene, not merely the overall theme of the video.
+- Make the concrete subject, action, location, object, clue, document, vehicle, person, institution, or event named in the current narration the primary visual focus whenever visually appropriate.
+- Use the previous and next scene only for continuity. Do not replace the current scene with a generic transition image.
+- Prefer concrete explanatory imagery over generic symbolism. Do NOT default to random puzzle pieces, question marks, anonymous investigators, generic evidence boards, random mountains, or unrelated silhouettes unless the current narration specifically calls for them.
+- If the narration is abstract, build the metaphor from topic-specific objects already established in this video so the frame still unmistakably belongs to this story.
+- Preserve recurring subjects, props, clothing, locations, shapes, and era across adjacent scenes unless the narration intentionally changes them.
+- If PLANNED VISUAL DIRECTION conflicts with CURRENT SCENE NARRATION, follow the narration and correct the visual.
+
+QUALITY REQUIREMENTS:
+- Generate the actual finished artwork at high resolution suitable for a 1080p YouTube video.
+- Fill the composition cleanly for {ratioWords}; do not create a screenshot, browser mockup, framed webpage, UI panel, or image-within-an-interface.
 - One single image only; no multi-panel layout.
 - No captions, no readable text, no logos, no watermark, and no UI.
-- Visually clear at YouTube resolution.
 - Keep the subject and era accurate to the scene.
 - Do not add unrelated people or objects.
+- Follow the STYLE RULES exactly and keep the visual style consistent with the project.
 - If this is Stickman explainer, ALL people and characters must be stickmen; realistic humans are forbidden.
 - If this is Cartoon, Hand-drawn, or Whiteboard explainer, do not drift into photorealistic human imagery.
 """;
 
         await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, prompt, ct);
         await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
-        log?.Invoke($"Scene {chapter.Number}.{scene.Number}: waiting for ChatGPT visual in the project chat...");
+        log?.Invoke($"Scene {chapter.Number}.{scene.Number}: waiting for a scene-specific ChatGPT visual...");
 
         var destination = ProjectMedia.GeneratedImagePath(project, chapter, scene);
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
@@ -107,7 +126,7 @@ Requirements:
 
         RememberConversation(project, page);
         scene.MediaPath = destination;
-        log?.Invoke($"Scene {chapter.Number}.{scene.Number}: visual saved.");
+        log?.Invoke($"Scene {chapter.Number}.{scene.Number}: full-resolution visual saved.");
         return destination;
     }
 
@@ -122,9 +141,6 @@ Requirements:
         log?.Invoke("ChatGPT: waiting for the live composer...");
         await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, prompt, ct);
 
-        // Capture whatever JSON is already visible after the prompt is entered but before
-        // sending. This prevents the JSON schema in ZeroVideo's own prompt from being
-        // mistaken for ChatGPT's new answer after it becomes a user turn.
         var baseline = await TryReadLatestResponseAsync(page, profile.ChatGpt.AssistantMessages) ?? "";
         await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
         log?.Invoke("ChatGPT: prompt sent; waiting for the finished response...");
@@ -168,8 +184,6 @@ Requirements:
         }
         else
         {
-            // A project without a saved conversation must not accidentally inherit a chat
-            // left open by another project. Start from ChatGPT's new-chat page once.
             if (page.Url.Contains("/c/", StringComparison.OrdinalIgnoreCase) ||
                 !page.Url.Contains("chatgpt.com", StringComparison.OrdinalIgnoreCase))
             {
@@ -228,9 +242,12 @@ Requirements:
             sawGeneration |= isGenerating;
             var candidates = await GetLargeImageCandidatesAsync(page, configuredImageSelectors);
 
-            var fresh = candidates.LastOrDefault(x => !baseline.Fingerprints.Contains(x.Fingerprint));
+            var fresh = candidates
+                .Where(x => !baseline.Fingerprints.Contains(x.Fingerprint))
+                .OrderByDescending(x => x.Area)
+                .FirstOrDefault();
             if (fresh is null && candidates.Count > baseline.CandidateCount)
-                fresh = candidates.LastOrDefault();
+                fresh = candidates.OrderByDescending(x => x.Area).FirstOrDefault();
 
             if (fresh is not null)
             {
@@ -243,14 +260,11 @@ Requirements:
                     stableSamples = 0;
                 }
 
-                // ChatGPT sometimes never exposes a reliable Stop button for image jobs.
-                // A new large image that survives two scans is sufficient when no generation
-                // control is visible.
                 if (!isGenerating && stableSamples >= 1)
                 {
-                    if (await TrySaveImageCandidateAsync(fresh, destination))
+                    if (await TrySaveImageCandidateAsync(fresh, destination, sceneLabel, log))
                     {
-                        log?.Invoke($"{sceneLabel}: generated image detected and captured.");
+                        log?.Invoke($"{sceneLabel}: full-resolution generated image detected and saved.");
                         return;
                     }
                     stableSamples = 0;
@@ -261,13 +275,16 @@ Requirements:
             {
                 await Task.Delay(900, ct);
                 var finalCandidates = await GetLargeImageCandidatesAsync(page, configuredImageSelectors);
-                var finalFresh = finalCandidates.LastOrDefault(x => !baseline.Fingerprints.Contains(x.Fingerprint));
+                var finalFresh = finalCandidates
+                    .Where(x => !baseline.Fingerprints.Contains(x.Fingerprint))
+                    .OrderByDescending(x => x.Area)
+                    .FirstOrDefault();
                 if (finalFresh is null && finalCandidates.Count > baseline.CandidateCount)
-                    finalFresh = finalCandidates.LastOrDefault();
+                    finalFresh = finalCandidates.OrderByDescending(x => x.Area).FirstOrDefault();
 
-                if (finalFresh is not null && await TrySaveImageCandidateAsync(finalFresh, destination))
+                if (finalFresh is not null && await TrySaveImageCandidateAsync(finalFresh, destination, sceneLabel, log))
                 {
-                    log?.Invoke($"{sceneLabel}: image generation finished; captured final visual.");
+                    log?.Invoke($"{sceneLabel}: image generation finished; saved the original full-resolution visual.");
                     return;
                 }
             }
@@ -275,20 +292,17 @@ Requirements:
             await Task.Delay(1200, ct);
         }
 
-        if (lastFresh is not null && await TrySaveImageCandidateAsync(lastFresh, destination))
+        if (lastFresh is not null && await TrySaveImageCandidateAsync(lastFresh, destination, sceneLabel, log))
         {
-            log?.Invoke($"{sceneLabel}: generation controls were inconclusive, but a new image was visible and was captured.");
+            log?.Invoke($"{sceneLabel}: generation controls were inconclusive, but the original full-resolution image asset was available and saved.");
             return;
         }
 
-        throw new TimeoutException("ChatGPT generated the scene prompt, but ZeroVideo could not detect a new large image. Check the visible ChatGPT conversation.");
+        throw new TimeoutException("ChatGPT generated the scene prompt, but ZeroVideo could not obtain the original full-resolution image asset. No webpage screenshot was used. The scene can be retried safely.");
     }
 
     private static async Task<List<ImageCandidate>> GetLargeImageCandidatesAsync(IPage page, IEnumerable<string> configuredSelectors)
     {
-        // main img is deliberately first: it follows actual DOM order and is much more
-        // resilient than ChatGPT's internal class/test-id names. Configured selectors remain
-        // useful as fallbacks when the image is rendered outside <main>.
         var selectors = new[]
         {
             "main img",
@@ -330,51 +344,29 @@ Requirements:
                             ? $"{src.Length}:{src.GetHashCode(StringComparison.Ordinal)}"
                             : src;
                         var fingerprint = !string.IsNullOrWhiteSpace(sourceKey)
-                            ? $"src:{sourceKey}|alt:{alt}"
-                            : $"nosrc:{alt}|{Math.Round(box.Width)}x{Math.Round(box.Height)}|{i}";
+                            ? $"src:{sourceKey}|alt:{alt}|native:{naturalWidth}x{naturalHeight}"
+                            : $"nosrc:{alt}|{naturalWidth}x{naturalHeight}|{i}";
 
                         if (!seen.Add(fingerprint)) continue;
-                        result.Add(new ImageCandidate(item, fingerprint, box.Width * box.Height));
+                        result.Add(new ImageCandidate(item, fingerprint, (double)naturalWidth * naturalHeight));
                     }
                     catch
                     {
-                        // ChatGPT can replace image nodes while they are being generated.
-                        // Re-scan on the next polling pass instead of failing the whole job.
+                        // ChatGPT may replace image nodes while generation finishes.
                     }
                 }
             }
             catch
             {
-                // A selector can become invalid/stale as ChatGPT evolves; other selectors
-                // and the main img fallback continue to work.
+                // Continue with the other selectors when ChatGPT changes one DOM path.
             }
         }
 
         return result;
     }
 
-    private static async Task<bool> TrySaveImageCandidateAsync(ImageCandidate candidate, string destination)
-    {
-        try
-        {
-            await candidate.Locator.ScrollIntoViewIfNeededAsync(new() { Timeout = 5000 });
-            var box = await candidate.Locator.BoundingBoxAsync();
-            if (box is null || box.Width < 180 || box.Height < 120) return false;
-            await candidate.Locator.ScreenshotAsync(new()
-            {
-                Path = destination,
-                Type = ScreenshotType.Png,
-                Timeout = 15000
-            });
-            return File.Exists(destination) && new FileInfo(destination).Length > 10_000;
-        }
-        catch
-        {
-            // The image node may have been replaced between detection and capture. The
-            // caller re-queries the DOM and tries the current node on the next pass.
-            return false;
-        }
-    }
+    private static Task<bool> TrySaveImageCandidateAsync(ImageCandidate candidate, string destination, string sceneLabel, Action<string>? log)
+        => ChatGptImageAssetSaver.TrySaveFullResolutionPngAsync(candidate.Locator, destination, sceneLabel, log);
 
     private static async Task<string> WaitForCompletedResponseAsync(
         IPage page,
@@ -394,8 +386,6 @@ Requirements:
             var isGenerating = await AnyVisibleAsync(page, stopSelectors);
             sawGeneration |= isGenerating;
 
-            // This returns the latest VALID JSON object, not raw turn text. It first tries
-            // assistant/turn selectors, then falls back to the complete visible <main> text.
             var current = await TryReadLatestResponseAsync(page, configuredResponseSelectors);
             if (!string.IsNullOrWhiteSpace(current) &&
                 !string.Equals(current, baseline, StringComparison.Ordinal))
@@ -408,16 +398,12 @@ Requirements:
                     stableSamples = 0;
                 }
 
-                // Once a new valid JSON object is stable and ChatGPT is no longer showing
-                // a Stop control, the response is finished.
                 if (!isGenerating && stableSamples >= 1)
                     return current;
             }
 
             if (sawGeneration && !isGenerating && !string.IsNullOrWhiteSpace(last))
             {
-                // Give the DOM one final beat after streaming ends and prefer the newest
-                // valid JSON object visible on the page.
                 await Task.Delay(1000, ct);
                 var finalRead = await TryReadLatestResponseAsync(page, configuredResponseSelectors);
                 if (!string.IsNullOrWhiteSpace(finalRead) &&
@@ -449,8 +435,6 @@ Requirements:
             "main [class*='markdown']"
         };
 
-        // Prefer the most specific message/turn nodes. Read newest to oldest and return
-        // only text that actually contains a complete parseable JSON object.
         foreach (var selector in configuredSelectors.Concat(fallbacks).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct())
         {
             try
@@ -462,9 +446,6 @@ Requirements:
                     var item = items.Nth(i);
                     if (!await item.IsVisibleAsync()) continue;
 
-                    // If a generic conversation-turn selector clearly points at a user turn,
-                    // skip it. The page-level fallback below still protects us when role
-                    // attributes disappear entirely.
                     try
                     {
                         if (await item.Locator("[data-message-author-role='user']").CountAsync() > 0 &&
@@ -484,10 +465,6 @@ Requirements:
             }
         }
 
-        // Last-resort DOM-independent fallback: inspect everything visibly rendered in
-        // ChatGPT's main conversation region and take the LAST complete valid JSON object.
-        // Baseline capture before Send prevents the JSON schema in our user prompt from
-        // being mistaken for a new assistant response.
         try
         {
             var main = page.Locator("main").First;
@@ -521,11 +498,6 @@ Requirements:
         return false;
     }
 
-    /// <summary>
-    /// Finds complete balanced JSON objects inside arbitrary UI text and returns the last
-    /// one that JsonDocument can actually parse. Braces inside quoted JSON strings are
-    /// ignored, so long prompts and escaped text do not confuse the scanner.
-    /// </summary>
     private static string? TryExtractLastValidJsonObject(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
