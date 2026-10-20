@@ -19,6 +19,22 @@ public static class ChatGptComposer
         if (selectorList.Length == 0)
             throw new InvalidOperationException("No ChatGPT prompt selectors are configured.");
 
+        if (IsImageGenerationPrompt(text))
+        {
+            var aspectRatio = text.Contains("vertical 9:16", StringComparison.OrdinalIgnoreCase) ? "9:16" : "16:9";
+            await AttachBlankRoutingCanvasAsync(page, aspectRatio, ct);
+            text = $"""
+IMPORTANT IMAGE ROUTING NOTE:
+- A completely blank white canvas is attached only so this long-running project chat can reliably enter image-generation/edit mode.
+- The attached image contains NO reference content and must NOT influence the subject, composition, objects, people, or style.
+- Replace 100% of the blank canvas with a brand-new image generated from the text instructions below.
+- Do not preserve the blank canvas, do not ask for another upload, and do not describe the image instead of generating it.
+- Produce the finished image now.
+
+{text}
+""";
+        }
+
         var started = DateTime.UtcNow;
         Exception? lastError = null;
 
@@ -146,5 +162,84 @@ public static class ChatGptComposer
 
         // Last fallback: the prompt composer is normally still focused and Enter sends.
         await page.Keyboard.PressAsync("Enter");
+    }
+
+    private static bool IsImageGenerationPrompt(string text)
+        => text.Contains("still image for this exact video scene", StringComparison.OrdinalIgnoreCase)
+           || (text.StartsWith("Create ONE original", StringComparison.OrdinalIgnoreCase)
+               && text.Contains("image", StringComparison.OrdinalIgnoreCase));
+
+    private static async Task AttachBlankRoutingCanvasAsync(IPage page, string aspectRatio, CancellationToken ct)
+    {
+        var path = ChatGptBlankCanvas.Ensure(aspectRatio);
+        Exception? lastError = null;
+
+        // ChatGPT normally keeps one or more hidden file inputs in the composer DOM.
+        // Playwright can set a hidden file input directly, so no brittle menu click is needed.
+        for (var pass = 0; pass < 3; pass++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var inputs = page.Locator("input[type='file']");
+                var count = await inputs.CountAsync();
+                for (var i = count - 1; i >= 0; i--)
+                {
+                    var input = inputs.Nth(i);
+                    try
+                    {
+                        var accept = (await input.GetAttributeAsync("accept")) ?? "";
+                        if (accept.Length > 0 &&
+                            !accept.Contains("image", StringComparison.OrdinalIgnoreCase) &&
+                            !accept.Contains("png", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        await input.SetInputFilesAsync(path, new() { Timeout = 5000 });
+                        await Task.Delay(700, ct);
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        lastError = ex;
+                    }
+                }
+
+                // Some ChatGPT builds only mount the file input after opening the composer + menu.
+                // Click only highly specific composer attachment controls, then rescan inputs.
+                var plusSelectors = new[]
+                {
+                    "button[data-testid='composer-plus-btn']",
+                    "button[aria-label*='Add files' i]",
+                    "button[aria-label*='Attach' i]",
+                    "button[aria-label*='Add photos' i]",
+                    "button[aria-label*='Upload' i]"
+                };
+
+                foreach (var selector in plusSelectors)
+                {
+                    var buttons = page.Locator(selector);
+                    var buttonCount = await buttons.CountAsync();
+                    for (var i = buttonCount - 1; i >= 0; i--)
+                    {
+                        var button = buttons.Nth(i);
+                        if (!await button.IsVisibleAsync()) continue;
+                        await button.ClickAsync(new() { Timeout = 3000 });
+                        await Task.Delay(400, ct);
+                        break;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+            }
+
+            await Task.Delay(350, ct);
+        }
+
+        throw new InvalidOperationException(
+            "ZeroVideo could not attach its automatic blank image-routing canvas to ChatGPT. " +
+            "The project chat was left unchanged." +
+            (lastError is null ? "" : " Last error: " + lastError.Message));
     }
 }
