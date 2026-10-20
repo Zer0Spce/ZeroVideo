@@ -2,6 +2,8 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
 using ZeroVideo.App.ViewModels;
 
 namespace ZeroVideo.App;
@@ -15,7 +17,36 @@ public partial class MainWindow : Window
         InitializeComponent();
         DataContext = _vm;
         SourceInitialized += (_, _) => EnableDarkTitleBar();
-        Loaded += async (_, _) => await _vm.InitializeAsync();
+        Loaded += OnLoaded;
+    }
+
+    private async void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        AnimateShellIn();
+        await _vm.InitializeAsync();
+    }
+
+    private void AnimateShellIn()
+    {
+        var easing = new QuadraticEase { EasingMode = EasingMode.EaseOut };
+        RootShell.BeginAnimation(OpacityProperty, new DoubleAnimation
+        {
+            From = 0,
+            To = 1,
+            Duration = TimeSpan.FromMilliseconds(330),
+            EasingFunction = easing
+        });
+
+        if (RootShell.RenderTransform is TranslateTransform translate)
+        {
+            translate.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation
+            {
+                From = 14,
+                To = 0,
+                Duration = TimeSpan.FromMilliseconds(360),
+                EasingFunction = easing
+            });
+        }
     }
 
     private void EnableDarkTitleBar()
