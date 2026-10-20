@@ -26,5 +26,6 @@ public sealed class ClipchampSelectorSet
     public List<string> SaveButtons { get; set; } = [];
     public List<string> ExportButtons { get; set; } = [];
     public List<string> AudioOnlyButtons { get; set; } = [];
+    public List<string> FinalExportButtons { get; set; } = [];
     public List<string> DownloadButtons { get; set; } = [];
 }
