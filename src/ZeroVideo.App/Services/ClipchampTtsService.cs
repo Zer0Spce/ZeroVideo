@@ -22,18 +22,66 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
         log?.Invoke($"Clipchamp chapter {chapter.Number}: preparing text-to-speech.");
 
         try
+{
+    // Clipchamp restores the last editor state for a project. On resume we may
+    // already be inside Text to speech, so navigation must be idempotent instead
+    // of requiring Record & create -> Text to speech every time.
+    var currentVoice = await FindDisplayedVoiceValueAsync(page);
+    if (currentVoice is not null)
+    {
+        var label = await ReadLocatorLabelAsync(currentVoice);
+        log?.Invoke($"Clipchamp Text to speech is already open. Current voice: {label}. Skipping navigation.");
+    }
+    else
+    {
+        var newVideo = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.NewVideoButtons, 4000, ct);
+        if (newVideo is not null)
         {
-            var newVideo = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.NewVideoButtons, 4000, ct);
-            if (newVideo is not null) await newVideo.ClickAsync();
-            await Task.Delay(2500, ct);
+            await newVideo.ClickAsync(new() { Timeout = 8000 });
+            await Task.Delay(1800, ct);
+        }
 
-            await ClickFirstAcrossFramesAsync(page, profile.Clipchamp.RecordCreateButtons, "Record & create", 12000, ct);
-            await ClickFirstAcrossFramesAsync(page, profile.Clipchamp.TextToSpeechButtons, "Text to speech", 12000, ct);
+        currentVoice = await FindDisplayedVoiceValueAsync(page);
 
-            log?.Invoke("Clipchamp: locating the visible text-to-speech controls across the editor...");
-            await WaitForTtsPanelReadyAsync(page, log, ct);
+        if (currentVoice is null)
+        {
+            var recordCreate = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.RecordCreateButtons, 8000, ct);
+            if (recordCreate is not null)
+            {
+                await recordCreate.ClickAsync(new() { Timeout = 8000 });
+                log?.Invoke("Clipchamp: opened Record & create.");
+                await Task.Delay(700, ct);
+            }
+            else
+            {
+                log?.Invoke("Clipchamp: Record & create is not visible; checking whether Text to speech is already available.");
+            }
 
-            await TryChooseAcrossFramesAsync(page, profile.Clipchamp.LanguageControls, settings.ClipchampLanguage, "language", log, ct);
+            currentVoice = await FindDisplayedVoiceValueAsync(page);
+        }
+
+        if (currentVoice is null)
+        {
+            var textToSpeech = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.TextToSpeechButtons, 10000, ct);
+            if (textToSpeech is not null)
+            {
+                await textToSpeech.ClickAsync(new() { Timeout = 8000 });
+                log?.Invoke("Clipchamp: opened Text to speech.");
+                await Task.Delay(700, ct);
+            }
+            else
+            {
+                currentVoice = await FindDisplayedVoiceValueAsync(page);
+                if (currentVoice is null)
+                    throw new InvalidOperationException("Could not open Clipchamp Text to speech: neither the TTS panel nor its navigation control was found.");
+            }
+        }
+    }
+
+    log?.Invoke("Clipchamp: locating the visible text-to-speech controls across the editor...");
+    await WaitForTtsPanelReadyAsync(page, log, ct);
+
+    await TryChooseAcrossFramesAsync(page, profile.Clipchamp.LanguageControls, settings.ClipchampLanguage, "language", log, ct);
 
             var selectedVoice = !string.IsNullOrWhiteSpace(project.Voice)
                 ? project.Voice.Trim()
