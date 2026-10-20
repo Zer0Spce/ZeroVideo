@@ -32,15 +32,22 @@ public sealed class ProjectOptions
     public bool GenerateMissingVisuals { get; set; } = true;
 
     /// <summary>
-    /// Number of ChatGPT-generated stills ZeroVideo should aim to create for each scene.
-    /// One is the recommended default. Multiple images are rendered sequentially inside
-    /// the scene so the narration can have more visual changes without creating new scenes.
+    /// Maximum number of project scenes that ZeroVideo may populate with ChatGPT-generated
+    /// visuals. Existing generated scenes count toward the limit so Resume/Build cannot
+    /// gradually expand past it. Example: 5 scenes + 1 image per scene = 5 generated images.
+    /// </summary>
+    public int MaxGeneratedScenes { get; set; } = 20;
+
+    /// <summary>
+    /// Number of ChatGPT-generated stills ZeroVideo should aim to create inside each selected
+    /// generated scene. One is the recommended default.
     /// </summary>
     public int ImagesPerScene { get; set; } = 1;
 
     /// <summary>
-    /// Hard project-wide cap for ChatGPT-generated still images. This is TOTAL, not per scene.
-    /// Existing generated stills count toward the cap, so resume/build runs cannot multiply it.
+    /// Secondary hard project-wide safety cap for generated still images. The scene limit is
+    /// applied first; this prevents an unexpectedly high ImagesPerScene value from creating
+    /// too many images.
     /// </summary>
     public int MaxGeneratedVisuals { get; set; } = 120;
 
