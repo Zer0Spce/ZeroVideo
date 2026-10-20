@@ -57,76 +57,64 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
                 log?.Invoke("Visual quality upgrade enabled: generated visuals use full-resolution ChatGPT assets, not webpage screenshots.");
         }
 
-        var howManyScenes = Math.Clamp(project.Options.MaxGeneratedScenes, 0, all.Count);
-        var imagesPerScene = Math.Clamp(project.Options.ImagesPerScene, 1, 20);
-        var safetyTotalImageCap = Math.Max(0, project.Options.MaxGeneratedVisuals);
+        var howManyChapters = Math.Clamp(project.Options.HowManyChapters, 1, Math.Max(1, project.Chapters.Count));
+        var imagesPerChapter = Math.Clamp(project.Options.ImagesPerChapter, 1, 50);
+        var safetyCap = Math.Max(0, project.Options.MaxGeneratedVisuals);
+        var selectedChapters = project.Chapters.Take(howManyChapters).ToList();
 
-        if (howManyScenes <= 0)
-        {
-            log?.Invoke("Visual pass: How Many Scenes = 0. No ChatGPT images will be generated.");
-            return;
-        }
-
-        if (safetyTotalImageCap <= 0)
+        if (safetyCap <= 0)
         {
             log?.Invoke("Visual pass: Safety Total Image Cap = 0. No ChatGPT images will be generated.");
             return;
         }
 
-        // "How Many Scenes" means exactly this many deterministic timeline scenes are eligible.
-        // They are spread across the full video so a small scene budget does not spend every
-        // image in the opening chapter. The same project/settings always select the same scenes,
-        // so Resume/Build continues those scenes instead of drifting into new ones.
-        var selectedScenes = SelectEvenly(all, howManyScenes);
-        var selectedKeys = selectedScenes
-            .Select(x => $"{x.Chapter.Number}.{x.Scene.Number}")
-            .ToList();
-
-        var existingGeneratedImages = ProjectMedia.CountGeneratedImages(project);
-        var totalBudgetRemaining = Math.Max(0, safetyTotalImageCap - existingGeneratedImages);
-
-        // Build slots variant-first. With 5 scenes, 2 images/scene and a safety cap of 8,
-        // ZeroVideo first gives all 5 selected scenes one image, then fills 3 second images.
-        // This preserves the meaning of How Many Scenes whenever the safety cap permits it.
-        var slots = new List<VisualSlot>();
-        for (var variant = 1; variant <= imagesPerScene; variant++)
+        // Each scripted scene is one narration beat + one target image. Fill in scene-index
+        // rounds so a tight safety cap spreads visuals across chapters before adding later
+        // images to the same chapter.
+        var desiredSlots = new List<(ProjectChapter Chapter, ProjectScene Scene)>();
+        for (var sceneIndex = 0; sceneIndex < imagesPerChapter; sceneIndex++)
         {
-            foreach (var (chapter, scene) in selectedScenes)
+            foreach (var chapter in selectedChapters)
             {
-                var generatedCount = ProjectMedia.FindGeneratedImages(project, chapter, scene).Count;
-                if (generatedCount >= variant) continue;
-                slots.Add(new VisualSlot(chapter, scene, variant));
+                if (sceneIndex >= chapter.Scenes.Count) continue;
+                desiredSlots.Add((chapter, chapter.Scenes[sceneIndex]));
             }
         }
 
-        if (slots.Count > totalBudgetRemaining)
-            slots = slots.Take(totalBudgetRemaining).ToList();
+        var existingGenerated = ProjectMedia.CountGeneratedImages(project);
+        var remainingBudget = Math.Max(0, safetyCap - existingGenerated);
+        var missingSlots = desiredSlots
+            .Where(x => ProjectMedia.FindGeneratedImages(project, x.Chapter, x.Scene).Count == 0)
+            .Take(remainingBudget)
+            .ToList();
 
-        log?.Invoke($"Visual settings: How Many Scenes = {howManyScenes}, Images Per Scene = {imagesPerScene}, Safety Total Image Cap = {safetyTotalImageCap}.");
-        log?.Invoke($"Selected timeline scenes: {string.Join(", ", selectedKeys)}.");
-        log?.Invoke($"Existing generated images: {existingGeneratedImages}. Remaining safety budget: {totalBudgetRemaining}.");
+        log?.Invoke($"Visual settings: How Many Chapters = {howManyChapters}, Images Per Chapter = {imagesPerChapter}, Safety Total Image Cap = {safetyCap}.");
+        log?.Invoke($"Script target: {selectedChapters.Count} chapter(s) × {imagesPerChapter} narration/image scene(s) = {selectedChapters.Count * imagesPerChapter} target visual beat(s).");
+        log?.Invoke($"Existing generated images: {existingGenerated}. Remaining safety budget: {remainingBudget}.");
 
-        if (slots.Count == 0)
+        foreach (var chapter in selectedChapters.Where(c => c.Scenes.Count != imagesPerChapter))
+            log?.Invoke($"Chapter {chapter.Number}: script currently has {chapter.Scenes.Count} scene(s), but Images Per Chapter is {imagesPerChapter}. Use Resume writing to regenerate this chapter to the requested structure.");
+
+        if (missingSlots.Count == 0)
         {
-            if (totalBudgetRemaining <= 0)
-                log?.Invoke($"Visual pass: Safety Total Image Cap reached ({existingGeneratedImages}/{safetyTotalImageCap}).");
+            if (remainingBudget <= 0)
+                log?.Invoke($"Visual pass: Safety Total Image Cap reached ({existingGenerated}/{safetyCap}). Missing scripted scenes will reuse nearby real visuals during rendering.");
             else
-                log?.Invoke("Visual pass: all selected scenes already satisfy Images Per Scene.");
+                log?.Invoke("Visual pass: all eligible scripted scenes already have generated images.");
             return;
         }
 
-        log?.Invoke($"Visual pass: generating {slots.Count} image(s) for the selected scene set.");
-        log?.Invoke("Visual pass is resumable: successful images are checkpointed immediately and Resume/Build keeps the same selected scene set.");
+        log?.Invoke($"Visual pass: generating {missingSlots.Count} scene image(s). One generated image targets one scripted narration scene.");
+        log?.Invoke("Visual pass is resumable: every successful full-resolution image is checkpointed immediately.");
 
-        var failedSlots = new List<string>();
         var consecutiveFailures = 0;
+        var failed = new List<string>();
         var processed = 0;
 
-        foreach (var slot in slots)
+        foreach (var (chapter, scene) in missingSlots)
         {
             ct.ThrowIfCancellationRequested();
-
-            var succeeded = await TryGenerateSceneVisualAsync(project, slot.Chapter, slot.Scene, slot.Variant, imagesPerScene, settings, log, ct);
+            var succeeded = await TryGenerateSceneVisualAsync(project, chapter, scene, settings, log, ct);
             processed++;
 
             if (succeeded)
@@ -136,34 +124,31 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
             else
             {
                 consecutiveFailures++;
-                failedSlots.Add($"{slot.Chapter.Number}.{slot.Scene.Number}/v{slot.Variant:00}");
-                log?.Invoke($"Scene {slot.Chapter.Number}.{slot.Scene.Number} visual {slot.Variant}: left missing after retries. Resume/Build will retry this selected scene later.");
+                failed.Add($"{chapter.Number}.{scene.Number}");
+                log?.Invoke($"Scene {chapter.Number}.{scene.Number}: left missing after retries. Resume/Build will retry it later.");
             }
 
             await store.SaveAsync(project, settings.ProjectsRoot);
-            progress?.Report(25 + (processed / (double)Math.Max(1, slots.Count) * 40.0));
+            progress?.Report(25 + (processed / (double)Math.Max(1, missingSlots.Count) * 40.0));
 
             if (consecutiveFailures >= 3)
             {
-                log?.Invoke("Visual pass paused after 3 consecutive failed image slots. Completed images are preserved.");
+                log?.Invoke("Visual pass paused after 3 consecutive failed scenes. Completed images are preserved.");
                 break;
             }
         }
 
-        var generatedNow = ProjectMedia.CountGeneratedImages(project);
-        if (failedSlots.Count > 0)
-            log?.Invoke($"Visual pass completed with {failedSlots.Count} failed slot(s): {string.Join(", ", failedSlots)}.");
+        if (failed.Count > 0)
+            log?.Invoke($"Visual pass completed with {failed.Count} failed scene(s): {string.Join(", ", failed)}.");
 
-        var completedSelectedScenes = selectedScenes.Count(x => ProjectMedia.FindGeneratedImages(project, x.Chapter, x.Scene).Count > 0);
-        log?.Invoke($"Visual pass total: {completedSelectedScenes}/{howManyScenes} selected scene(s) have generated visuals; {generatedNow}/{safetyTotalImageCap} generated image(s) total.");
+        var generatedNow = ProjectMedia.CountGeneratedImages(project);
+        log?.Invoke($"Visual pass total: {generatedNow}/{safetyCap} generated image(s). Voiceover remains aligned to the scripted scene order.");
     }
 
     private async Task<bool> TryGenerateSceneVisualAsync(
         VideoProject project,
         ProjectChapter chapter,
         ProjectScene scene,
-        int variant,
-        int imagesPerScene,
         ZeroVideoSettings settings,
         Action<string>? log,
         CancellationToken ct)
@@ -179,17 +164,14 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
             try
             {
                 if (attempt > 1)
-                    log?.Invoke($"Scene {chapter.Number}.{scene.Number} visual {variant}: retry {attempt}/{maxAttempts}...");
+                    log?.Invoke($"Scene {chapter.Number}.{scene.Number}: retry {attempt}/{maxAttempts}...");
 
-                PrepareGeneratedVariant(project, chapter, scene, variant, imagesPerScene);
-                var rawPath = await chat.GenerateSceneImageAsync(project, chapter, scene, settings, log, attemptCts.Token);
-                var storedPath = FinalizeGeneratedVariant(project, chapter, scene, rawPath, variant, imagesPerScene);
-                log?.Invoke($"Scene {chapter.Number}.{scene.Number}: saved visual {variant}/{imagesPerScene} -> {Path.GetFileName(storedPath)}");
+                await chat.GenerateSceneImageAsync(project, chapter, scene, settings, log, attemptCts.Token);
                 return true;
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested && attemptCts.IsCancellationRequested)
             {
-                log?.Invoke($"Scene {chapter.Number}.{scene.Number} visual {variant}: ChatGPT image attempt {attempt}/{maxAttempts} timed out after 3 minutes.");
+                log?.Invoke($"Scene {chapter.Number}.{scene.Number}: ChatGPT image attempt {attempt}/{maxAttempts} timed out after 3 minutes.");
                 await store.SaveAsync(project, settings.ProjectsRoot);
                 if (attempt >= maxAttempts) return false;
                 await Task.Delay(TimeSpan.FromSeconds(4 * attempt), ct);
@@ -200,7 +182,7 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
             }
             catch (Exception ex)
             {
-                log?.Invoke($"Scene {chapter.Number}.{scene.Number} visual {variant}: attempt {attempt}/{maxAttempts} failed — {ex.Message}");
+                log?.Invoke($"Scene {chapter.Number}.{scene.Number}: image attempt {attempt}/{maxAttempts} failed — {ex.Message}");
                 await store.SaveAsync(project, settings.ProjectsRoot);
                 if (attempt >= maxAttempts) return false;
                 await Task.Delay(TimeSpan.FromSeconds(4 * attempt), ct);
@@ -210,77 +192,10 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
         return false;
     }
 
-    private static void PrepareGeneratedVariant(VideoProject project, ProjectChapter chapter, ProjectScene scene, int variant, int imagesPerScene)
-    {
-        if (imagesPerScene <= 1 || variant <= 1) return;
-
-        var basePath = ProjectMedia.GeneratedImagePath(project, chapter, scene, 1);
-        if (!File.Exists(basePath)) return;
-
-        var firstVariant = Path.Combine(
-            Path.GetDirectoryName(basePath)!,
-            Path.GetFileNameWithoutExtension(basePath) + "-v01" + Path.GetExtension(basePath));
-
-        if (!File.Exists(firstVariant)) File.Move(basePath, firstVariant, true);
-        else File.Delete(basePath);
-
-        if (string.Equals(scene.MediaPath, basePath, StringComparison.OrdinalIgnoreCase)) scene.MediaPath = firstVariant;
-        scene.MediaPaths.RemoveAll(p => PathsEqual(p, basePath));
-        if (!scene.MediaPaths.Any(p => PathsEqual(p, firstVariant))) scene.MediaPaths.Add(firstVariant);
-    }
-
-    private static string FinalizeGeneratedVariant(VideoProject project, ProjectChapter chapter, ProjectScene scene, string rawPath, int variant, int imagesPerScene)
-    {
-        var finalPath = rawPath;
-        if (imagesPerScene > 1)
-        {
-            finalPath = Path.Combine(
-                Path.GetDirectoryName(rawPath)!,
-                $"c{chapter.Number:00}-s{scene.Number:000}-v{variant:00}{Path.GetExtension(rawPath)}");
-            if (!string.Equals(rawPath, finalPath, StringComparison.OrdinalIgnoreCase))
-                File.Move(rawPath, finalPath, true);
-        }
-
-        if (string.IsNullOrWhiteSpace(scene.MediaPath) || !File.Exists(scene.MediaPath)) scene.MediaPath = finalPath;
-        if (!scene.MediaPaths.Any(p => PathsEqual(p, finalPath))) scene.MediaPaths.Add(finalPath);
-
-        return finalPath;
-    }
-
-    private static List<(ProjectChapter Chapter, ProjectScene Scene)> SelectEvenly(
-        List<(ProjectChapter Chapter, ProjectScene Scene)> source,
-        int count)
-    {
-        if (count >= source.Count) return source.ToList();
-        if (count <= 0) return [];
-        if (count == 1) return [source[0]];
-
-        var selected = new List<(ProjectChapter Chapter, ProjectScene Scene)>(count);
-        var used = new HashSet<int>();
-        for (var i = 0; i < count; i++)
-        {
-            var index = (int)Math.Round(i * (source.Count - 1d) / (count - 1d));
-            if (used.Add(index)) selected.Add(source[index]);
-        }
-
-        for (var i = 0; selected.Count < count && i < source.Count; i++)
-            if (used.Add(i)) selected.Add(source[i]);
-
-        return selected;
-    }
-
-    private static bool PathsEqual(string left, string right)
-    {
-        try { return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase); }
-        catch { return string.Equals(left, right, StringComparison.OrdinalIgnoreCase); }
-    }
-
     private static void AdoptExistingAudio(VideoProject project, ProjectChapter chapter)
     {
         if (!string.IsNullOrWhiteSpace(chapter.AudioPath) && File.Exists(chapter.AudioPath)) return;
         var candidate = Path.Combine(project.ProjectDirectory, "audio", $"chapter-{chapter.Number:00}.m4a");
         if (File.Exists(candidate)) chapter.AudioPath = candidate;
     }
-
-    private sealed record VisualSlot(ProjectChapter Chapter, ProjectScene Scene, int Variant);
 }
