@@ -68,17 +68,14 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
             return;
         }
 
-        // Each scripted scene is one narration beat + one target image. Fill in scene-index
-        // rounds so a tight safety cap spreads visuals across chapters before adding later
-        // images to the same chapter.
+        // Generate chapter by chapter so Images Per Chapter behaves literally in the log and
+        // in the visual pass: 1.1, 1.2, 1.3... then 2.1, 2.2, 2.3..., etc.
+        // Every scripted scene is one narration beat + one target image.
         var desiredSlots = new List<(ProjectChapter Chapter, ProjectScene Scene)>();
-        for (var sceneIndex = 0; sceneIndex < imagesPerChapter; sceneIndex++)
+        foreach (var chapter in selectedChapters)
         {
-            foreach (var chapter in selectedChapters)
-            {
-                if (sceneIndex >= chapter.Scenes.Count) continue;
-                desiredSlots.Add((chapter, chapter.Scenes[sceneIndex]));
-            }
+            foreach (var scene in chapter.Scenes.Take(imagesPerChapter))
+                desiredSlots.Add((chapter, scene));
         }
 
         var existingGenerated = ProjectMedia.CountGeneratedImages(project);
@@ -104,7 +101,7 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
             return;
         }
 
-        log?.Invoke($"Visual pass: generating {missingSlots.Count} scene image(s). One generated image targets one scripted narration scene.");
+        log?.Invoke($"Visual pass: generating {missingSlots.Count} scene image(s) chapter by chapter. One generated image targets one scripted narration scene.");
         log?.Invoke("Visual pass is resumable: every successful full-resolution image is checkpointed immediately.");
 
         var consecutiveFailures = 0;
