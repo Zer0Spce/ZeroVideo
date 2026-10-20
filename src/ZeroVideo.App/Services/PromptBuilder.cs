@@ -79,9 +79,14 @@ Requirements:
 - Set up the next chapter naturally without summarizing the whole video.
 - Every scene must advance the narration.
 - Vary visual changes naturally, usually around 6-12 seconds each; longer holds are allowed when justified.
-- visualQuery must be a concise 2-8 word search phrase.
+- visualQuery must be a concise 2-8 word search phrase that names the actual subject, event, object, place, person, clue, document, or action in that scene. Avoid generic searches such as "mystery evidence", "dramatic background", "question marks", or "thinking person" when the narration contains something more specific.
+- imagePrompt must be directly derived from the SAME scene narration. It must depict the exact subject/action/place/object being discussed, not merely the general theme of the whole video.
+- When narration mentions a named person, location, vehicle, document, object, historical event, physical clue, technology, company, or institution, make that concrete item the primary visual subject when visually appropriate.
+- Prefer concrete explanatory visuals over generic symbolism. Do not default to puzzle pieces, question marks, silhouettes, anonymous investigators, random landscapes, or generic mystery boards unless the narration specifically calls for them.
+- For abstract narration, build the metaphor from topic-specific objects already established in the story so the visual still clearly belongs to this video.
 - imagePrompt must explicitly follow the VISUAL STYLE RULES above and describe one original still visual with no captions, readable text, logos, UI, or watermarks.
 - Keep the selected visual style consistent across every scene in this project.
+- Maintain visual continuity between adjacent scenes: recurring subjects should keep recognizable clothing, shapes, props, locations, and era unless the narration changes them.
 - If the selected style is Stickman explainer, every human/character in every imagePrompt must be a stickman and realistic people are forbidden.
 - If the selected style is Cartoon, Hand-drawn, or Whiteboard explainer, do not drift into photorealistic human imagery.
 - shotDirection must be practical, such as slow push in, pan left, map zoom, document highlight, parallax, or hold.
@@ -101,8 +106,8 @@ Return ONLY valid JSON, no markdown and no commentary. Do NOT duplicate the narr
       "role": "setup",
       "narration": "spoken narration for this scene",
       "visualType": "broll",
-      "visualQuery": "short search phrase",
-      "imagePrompt": "original scene visual prompt following the selected style",
+      "visualQuery": "specific subject search phrase",
+      "imagePrompt": "one scene-specific visual that directly illustrates this narration while following the selected style",
       "shotDirection": "slow push in",
       "targetSeconds": 8
     }

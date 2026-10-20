@@ -37,6 +37,34 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
     private async Task GenerateMissingVisualsAsync(VideoProject project, ZeroVideoSettings settings, Action<string>? log, IProgress<double>? progress, CancellationToken ct)
     {
         var all = project.Chapters.SelectMany(c => c.Scenes.Select(s => (Chapter: c, Scene: s))).ToList();
+
+        // Older ZeroVideo builds captured the rendered ChatGPT page area instead of the
+        // underlying generated image asset. That produced soft visuals and could include
+        // ChatGPT controls such as Edit/download/Ask ChatGPT. Projects without the current
+        // asset version are migrated once by discarding only ZeroVideo's generated scene
+        // image files; narration, TTS, project state, and user-supplied non-generated media
+        // remain untouched.
+        if (project.VisualAssetVersion.GetValueOrDefault() < ProjectMedia.CurrentGeneratedAssetVersion)
+        {
+            var legacyCount = 0;
+            foreach (var (chapter, scene) in all)
+            {
+                var generatedPath = ProjectMedia.GeneratedImagePath(project, chapter, scene);
+                var stem = Path.Combine(Path.GetDirectoryName(generatedPath)!, Path.GetFileNameWithoutExtension(generatedPath));
+                var hasLegacy = new[] { ".png", ".jpg", ".jpeg", ".webp", ".avif" }.Any(ext => File.Exists(stem + ext));
+                if (!hasLegacy) continue;
+                ProjectMedia.DeleteGeneratedImageVariants(project, chapter, scene);
+                legacyCount++;
+            }
+
+            project.VisualAssetVersion = ProjectMedia.CurrentGeneratedAssetVersion;
+            await store.SaveAsync(project, settings.ProjectsRoot);
+            if (legacyCount > 0)
+                log?.Invoke($"Visual quality upgrade: removed {legacyCount} legacy screenshot-based scene visual(s). They will be regenerated from the original ChatGPT image assets at full resolution.");
+            else
+                log?.Invoke("Visual quality upgrade enabled: new generated visuals will use full-resolution ChatGPT assets, not webpage screenshots.");
+        }
+
         var missing = all.Where(x => ProjectMedia.Find(project, x.Chapter, x.Scene) is null)
             .Take(Math.Max(0, project.Options.MaxGeneratedVisuals))
             .ToList();
@@ -48,7 +76,7 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
         }
 
         log?.Invoke($"Visual pass: generating {missing.Count} missing scene image(s) with ChatGPT.");
-        log?.Invoke("Visual pass is resumable: every successful image is checkpointed immediately.");
+        log?.Invoke("Visual pass is resumable: every successful full-resolution image is checkpointed immediately.");
 
         var failedScenes = new List<string>();
         var consecutiveFailures = 0;
@@ -84,10 +112,6 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
             await store.SaveAsync(project, settings.ProjectsRoot);
             progress?.Report(25 + (processed / (double)missing.Count * 40.0));
 
-            // A run of failures usually means ChatGPT has hit an image-generation limit,
-            // the page UI has changed, or the service is temporarily unavailable. Do not
-            // burn dozens more prompts. Stop only the visual pass; the project remains safe
-            // and can resume later from the first still-missing scene.
             if (consecutiveFailures >= 3)
             {
                 log?.Invoke("Visual pass paused after 3 consecutive failed scenes. Completed images are preserved; rerun Build later to resume missing visuals.");
@@ -102,7 +126,7 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
         if (remaining > 0)
             log?.Invoke($"Visual pass: {remaining} scene(s) still have no media. ZeroVideo will preserve the project and can resume them on the next Build run.");
         else
-            log?.Invoke("Visual pass: every scene now has media.");
+            log?.Invoke("Visual pass: every scene now has full-quality media.");
     }
 
     private async Task<bool> TryGenerateSceneVisualAsync(
@@ -137,9 +161,6 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
                 await store.SaveAsync(project, settings.ProjectsRoot);
 
                 if (attempt >= maxAttempts) return false;
-
-                // Give ChatGPT a little time to settle after a transient render/detection
-                // failure. Longer delay on each retry avoids hammering the same conversation.
                 await Task.Delay(TimeSpan.FromSeconds(4 * attempt), ct);
             }
         }
