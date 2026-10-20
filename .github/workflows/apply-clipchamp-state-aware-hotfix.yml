@@ -1,0 +1,117 @@
+name: Apply Clipchamp state-aware hotfix
+
+on:
+  push:
+    branches:
+      - fix/clipchamp-state-aware-navigation
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message != 'Make Clipchamp navigation state-aware'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch Clipchamp navigation
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('src/ZeroVideo.App/Services/ClipchampTtsService.cs')
+          text = path.read_text()
+
+          old = '''        try
+          {
+              var newVideo = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.NewVideoButtons, 4000, ct);
+              if (newVideo is not null) await newVideo.ClickAsync();
+              await Task.Delay(2500, ct);
+
+              await ClickFirstAcrossFramesAsync(page, profile.Clipchamp.RecordCreateButtons, "Record & create", 12000, ct);
+              await ClickFirstAcrossFramesAsync(page, profile.Clipchamp.TextToSpeechButtons, "Text to speech", 12000, ct);
+
+              log?.Invoke("Clipchamp: locating the visible text-to-speech controls across the editor...");
+              await WaitForTtsPanelReadyAsync(page, log, ct);
+          '''
+
+          new = '''        try
+          {
+              // Clipchamp restores the last editor state for a project. On resume we may
+              // already be inside Text to speech, so navigation must be idempotent instead
+              // of requiring Record & create -> Text to speech every time.
+              var currentVoice = await FindDisplayedVoiceValueAsync(page);
+              if (currentVoice is not null)
+              {
+                  var label = await ReadLocatorLabelAsync(currentVoice);
+                  log?.Invoke($"Clipchamp Text to speech is already open. Current voice: {label}. Skipping navigation.");
+              }
+              else
+              {
+                  var newVideo = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.NewVideoButtons, 4000, ct);
+                  if (newVideo is not null)
+                  {
+                      await newVideo.ClickAsync(new() { Timeout = 8000 });
+                      await Task.Delay(1800, ct);
+                  }
+
+                  currentVoice = await FindDisplayedVoiceValueAsync(page);
+
+                  if (currentVoice is null)
+                  {
+                      var recordCreate = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.RecordCreateButtons, 8000, ct);
+                      if (recordCreate is not null)
+                      {
+                          await recordCreate.ClickAsync(new() { Timeout = 8000 });
+                          log?.Invoke("Clipchamp: opened Record & create.");
+                          await Task.Delay(700, ct);
+                      }
+                      else
+                      {
+                          log?.Invoke("Clipchamp: Record & create is not visible; checking whether Text to speech is already available.");
+                      }
+
+                      currentVoice = await FindDisplayedVoiceValueAsync(page);
+                  }
+
+                  if (currentVoice is null)
+                  {
+                      var textToSpeech = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.TextToSpeechButtons, 10000, ct);
+                      if (textToSpeech is not null)
+                      {
+                          await textToSpeech.ClickAsync(new() { Timeout = 8000 });
+                          log?.Invoke("Clipchamp: opened Text to speech.");
+                          await Task.Delay(700, ct);
+                      }
+                      else
+                      {
+                          currentVoice = await FindDisplayedVoiceValueAsync(page);
+                          if (currentVoice is null)
+                              throw new InvalidOperationException("Could not open Clipchamp Text to speech: neither the TTS panel nor its navigation control was found.");
+                      }
+                  }
+              }
+
+              log?.Invoke("Clipchamp: locating the visible text-to-speech controls across the editor...");
+              await WaitForTtsPanelReadyAsync(page, log, ct);
+          '''
+
+          if old not in text:
+              raise SystemExit('Expected Clipchamp startup block was not found; refusing to patch the wrong code.')
+
+          path.write_text(text.replace(old, new, 1))
+
+          # This helper workflow is one-shot; remove it from the resulting source commit.
+          Path('.github/workflows/apply-clipchamp-state-aware-hotfix.yml').unlink()
+
+      - name: Commit source fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/ZeroVideo.App/Services/ClipchampTtsService.cs .github/workflows/apply-clipchamp-state-aware-hotfix.yml
+          git commit -m "Make Clipchamp navigation state-aware"
+          git push origin HEAD:fix/clipchamp-state-aware-navigation
