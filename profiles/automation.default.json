@@ -20,12 +20,19 @@
     ]
   },
   "clipchamp": {
-    "newVideoButtons": ["text=Create a new video", "text=New video", "button:has-text('Create')"],
-    "recordCreateButtons": ["text=Record & create", "button:has-text('Record & create')"],
-    "textToSpeechButtons": ["text=Text to speech", "button:has-text('Text to speech')"],
-    "scriptInputs": ["textarea", "[contenteditable='true']"],
-    "languageControls": ["button:has-text('Language')", "[aria-label*='language' i]"],
-    "voiceControls": ["button:has-text('Voice')", "[aria-label*='voice' i]"],
+    "newVideoButtons": [
+      "xpath=//*[normalize-space()='Text to speech']/ancestor::*[.//button[normalize-space()='Try it']][1]//button[normalize-space()='Try it']"
+    ],
+    "recordCreateButtons": [],
+    "textToSpeechButtons": [
+      "xpath=//*[normalize-space()='Text to speech']/ancestor::*[.//button[normalize-space()='Try it']][1]//button[normalize-space()='Try it']",
+      "button:has-text('Text to speech')",
+      "[aria-label*='Text to speech' i]",
+      "text=Text to speech"
+    ],
+    "scriptInputs": ["textarea[placeholder*='Type what' i]", "[role='textbox'][aria-label*='Type what' i]", "textarea", "[contenteditable='true']"],
+    "languageControls": ["button:has-text('English (United States)')", "[aria-label*='language' i]", "button:has-text('Language')"],
+    "voiceControls": ["button:has-text('Multilingual')", "[role='combobox']:has-text('Multilingual')", "[aria-label*='voice' i]", "button:has-text('Voice')"],
     "saveButtons": ["button:has-text('Save')"],
     "exportButtons": ["button:has-text('Export')"],
     "audioOnlyButtons": ["text=Audio only", "text=Audio-only", "text=Audio-only Only the audio from your project"],
