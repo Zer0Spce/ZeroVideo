@@ -102,10 +102,22 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
             var mediaItems = ProjectMedia.FindAll(project, chapter, scene).ToList();
             if (mediaItems.Count == 0)
             {
+                var fallback = FindNearestTimelineMedia(project, chapter, scene);
+                if (fallback is not null)
+                {
+                    mediaItems.Add(fallback.Path);
+                    log?.Invoke($"Scene {chapter.Number}.{scene.Number}: no direct media; reusing nearby scene {fallback.ChapterNumber}.{fallback.SceneNumber} instead of rendering an empty frame.");
+                }
+            }
+
+            if (mediaItems.Count == 0)
+            {
+                // This can only happen when the entire project has no visual media at all.
+                // Use a purple/graphite project backdrop rather than a black/empty frame.
                 var duration = Math.Max(1.0, scene.TargetSeconds).ToString("0.###", CultureInfo.InvariantCulture);
                 var output = Path.Combine(renderDir, $"c{chapter.Number:00}-s{scene.Number:000}.mp4");
-                log?.Invoke($"Scene {chapter.Number}.{scene.Number}: no media assigned, rendering neutral placeholder.");
-                var args = $"-y -f lavfi -i \"color=c=0x15131B:s={w}x{h}:r=30:d={duration}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
+                log?.Invoke($"Scene {chapter.Number}.{scene.Number}: no media exists anywhere in the project; using the branded project backdrop.");
+                var args = $"-y -f lavfi -i \"color=c=0x241C30:s={w}x{h}:r=30:d={duration}\" -vf \"drawbox=x=0:y=0:w=iw:h=ih/3:color=0x34254A@0.75:t=fill,drawbox=x=0:y=ih*0.72:w=iw:h=ih*0.28:color=0x17151F@0.82:t=fill\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
                 var result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
                 if (result.ExitCode != 0) throw new InvalidOperationException($"Scene render failed ({chapter.Number}.{scene.Number}): {result.StdErr}");
                 clips.Add(output);
@@ -148,6 +160,38 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         var concat = await runner.RunAsync(settings.FfmpegPath, $"-y -f concat -safe 0 -i \"{list}\" -c copy \"{chapterVisual}\"", renderDir, ct);
         if (concat.ExitCode != 0) throw new InvalidOperationException($"Chapter visual concat failed: {concat.StdErr}");
         return chapterVisual;
+    }
+
+    private static TimelineMedia? FindNearestTimelineMedia(VideoProject project, ProjectChapter currentChapter, ProjectScene currentScene)
+    {
+        var timeline = project.Chapters
+            .SelectMany(chapter => chapter.Scenes.Select(scene => (Chapter: chapter, Scene: scene)))
+            .ToList();
+
+        var currentIndex = timeline.FindIndex(x =>
+            ReferenceEquals(x.Chapter, currentChapter) && ReferenceEquals(x.Scene, currentScene));
+
+        if (currentIndex < 0)
+            currentIndex = timeline.FindIndex(x => x.Chapter.Number == currentChapter.Number && x.Scene.Number == currentScene.Number);
+        if (currentIndex < 0) return null;
+
+        // Prefer the previous scene so a missing visual naturally holds the last real image.
+        for (var i = currentIndex - 1; i >= 0; i--)
+        {
+            var media = ProjectMedia.FindAll(project, timeline[i].Chapter, timeline[i].Scene);
+            if (media.Count > 0)
+                return new TimelineMedia(media[^1], timeline[i].Chapter.Number, timeline[i].Scene.Number);
+        }
+
+        // At the beginning of a project/chapter, borrow the next available visual.
+        for (var i = currentIndex + 1; i < timeline.Count; i++)
+        {
+            var media = ProjectMedia.FindAll(project, timeline[i].Chapter, timeline[i].Scene);
+            if (media.Count > 0)
+                return new TimelineMedia(media[0], timeline[i].Chapter.Number, timeline[i].Scene.Number);
+        }
+
+        return null;
     }
 
     private static bool IsVideo(string path)
@@ -194,4 +238,6 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         foreach (var c in Path.GetInvalidFileNameChars()) value = value.Replace(c, '_');
         return value.Length == 0 ? "ZeroVideo" : value;
     }
+
+    private sealed record TimelineMedia(string Path, int ChapterNumber, int SceneNumber);
 }
