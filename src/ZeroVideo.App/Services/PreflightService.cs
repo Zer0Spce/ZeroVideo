@@ -25,8 +25,18 @@ public sealed class PreflightService(ProcessRunner runner)
 
         try
         {
-            var result = await runner.RunAsync(settings.FfmpegPath, "-version", ct: ct);
-            checks.Add(new("FFmpeg", result.ExitCode == 0, result.ExitCode == 0 ? settings.FfmpegPath : result.StdErr.Trim()));
+            var ffmpeg = SettingsService.ResolveTool(settings.FfmpegPath, "ffmpeg.exe");
+            if (string.IsNullOrWhiteSpace(ffmpeg) || !File.Exists(ffmpeg))
+            {
+                checks.Add(new("FFmpeg", true, "Not installed yet — ZeroVideo will install it automatically on Build video."));
+            }
+            else
+            {
+                settings.FfmpegPath = ffmpeg;
+                settings.FfprobePath = SettingsService.ResolveTool(settings.FfprobePath, "ffprobe.exe");
+                var result = await runner.RunAsync(ffmpeg, "-version", ct: ct);
+                checks.Add(new("FFmpeg", result.ExitCode == 0, result.ExitCode == 0 ? ffmpeg : result.StdErr.Trim()));
+            }
         }
         catch (Exception ex) { checks.Add(new("FFmpeg", false, ex.Message)); }
 
