@@ -27,8 +27,11 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
             if (newVideo is not null) await newVideo.ClickAsync();
             await Task.Delay(2500, ct);
 
-            await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.RecordCreateButtons, "Record & create", 5000);
-            await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.TextToSpeechButtons, "Text to speech", 5000);
+            await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.RecordCreateButtons, "Record & create", 10000);
+            await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.TextToSpeechButtons, "Text to speech", 10000);
+
+            log?.Invoke("Clipchamp: waiting for the text-to-speech panel to finish loading...");
+            await WaitForTtsPanelReadyAsync(page, profile.Clipchamp.ScriptInputs, log, ct);
 
             await TryChooseAsync(page, profile.Clipchamp.LanguageControls, settings.ClipchampLanguage, "language", log);
 
@@ -38,25 +41,25 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
 
             await ChooseVoiceAsync(page, selectedVoice, log, ct);
 
-            var input = await BrowserLocator.FirstVisibleAsync(page, profile.Clipchamp.ScriptInputs, 5000)
-                ?? throw new InvalidOperationException("Could not find Clipchamp TTS script input.");
+            var input = await WaitForScriptInputAsync(page, profile.Clipchamp.ScriptInputs, 30000, ct)
+                ?? throw new InvalidOperationException("Could not find Clipchamp TTS script input after the panel finished loading.");
 
             await input.FillAsync(chapter.Narration);
-            await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.SaveButtons, "Clipchamp TTS Save", 5000);
+            await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.SaveButtons, "Clipchamp TTS Save", 10000);
             log?.Invoke($"TTS created with voice '{(string.IsNullOrWhiteSpace(selectedVoice) ? "Clipchamp default" : selectedVoice)}'. Preparing audio-only export...");
 
             await Task.Delay(2000, ct);
-            await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.ExportButtons, "Clipchamp Export", 7000);
+            await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.ExportButtons, "Clipchamp Export", 10000);
 
             var audioDir = Path.Combine(project.ProjectDirectory, "audio");
             Directory.CreateDirectory(audioDir);
             var destination = Path.Combine(audioDir, $"chapter-{chapter.Number:00}.m4a");
             var exportStartedAt = DateTime.Now.AddSeconds(-2);
 
-            await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.AudioOnlyButtons, "audio-only export", 10000);
+            await BrowserLocator.ClickFirstAsync(page, profile.Clipchamp.AudioOnlyButtons, "audio-only export", 15000);
             log?.Invoke("Clipchamp audio-only selected. Confirming export...");
 
-            var finalExport = await FindFinalExportButtonAsync(page, profile.Clipchamp.FinalExportButtons, 12000)
+            var finalExport = await FindFinalExportButtonAsync(page, profile.Clipchamp.FinalExportButtons, 15000)
                 ?? throw new InvalidOperationException("Could not find the final Clipchamp Audio-only Export button.");
 
             IDownload? download = null;
@@ -141,6 +144,109 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
         }
     }
 
+    private static async Task WaitForTtsPanelReadyAsync(
+        IPage page,
+        IEnumerable<string> scriptInputSelectors,
+        Action<string>? log,
+        CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(45);
+        var lastLog = DateTime.MinValue;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (page.IsClosed)
+                throw new InvalidOperationException("Clipchamp page closed while waiting for the text-to-speech panel.");
+
+            var voiceValue = await FindDisplayedVoiceValueAsync(page);
+            var scriptInput = await TryFindScriptInputOnceAsync(page, scriptInputSelectors);
+            var hasVoiceHeading = await HasVisibleExactTextAsync(page, "Voice");
+            var hasTextHeading = await HasVisibleExactTextAsync(page, "Text");
+
+            if (voiceValue is not null && scriptInput is not null && hasVoiceHeading && hasTextHeading)
+            {
+                var currentVoice = await ReadLocatorLabelAsync(voiceValue);
+                log?.Invoke($"Clipchamp TTS panel ready. Current voice: {currentVoice}.");
+                return;
+            }
+
+            if ((DateTime.UtcNow - lastLog).TotalSeconds >= 8)
+            {
+                log?.Invoke("Clipchamp TTS panel is still loading; waiting...");
+                lastLog = DateTime.UtcNow;
+            }
+
+            await Task.Delay(500, ct);
+        }
+
+        throw new InvalidOperationException("Clipchamp text-to-speech panel did not finish loading within 45 seconds.");
+    }
+
+    private static async Task<ILocator?> WaitForScriptInputAsync(
+        IPage page,
+        IEnumerable<string> selectors,
+        int timeoutMs,
+        CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+            var input = await TryFindScriptInputOnceAsync(page, selectors);
+            if (input is not null) return input;
+            await Task.Delay(250, ct);
+        }
+
+        return null;
+    }
+
+    private static async Task<ILocator?> TryFindScriptInputOnceAsync(IPage page, IEnumerable<string> selectors)
+    {
+        foreach (var selector in selectors.Where(x => !string.IsNullOrWhiteSpace(x)))
+        {
+            try
+            {
+                var items = page.Locator(selector);
+                var count = await items.CountAsync();
+                for (var i = count - 1; i >= 0; i--)
+                {
+                    var item = items.Nth(i);
+                    if (await item.IsVisibleAsync() && await item.IsEnabledAsync()) return item;
+                }
+            }
+            catch { }
+        }
+
+        try
+        {
+            var textareas = page.Locator("textarea");
+            var count = await textareas.CountAsync();
+            for (var i = count - 1; i >= 0; i--)
+            {
+                var item = textareas.Nth(i);
+                if (await item.IsVisibleAsync() && await item.IsEnabledAsync()) return item;
+            }
+        }
+        catch { }
+
+        return null;
+    }
+
+    private static async Task<bool> HasVisibleExactTextAsync(IPage page, string text)
+    {
+        try
+        {
+            var matches = page.GetByText(text, new() { Exact = true });
+            var count = await matches.CountAsync();
+            for (var i = count - 1; i >= 0; i--)
+                if (await matches.Nth(i).IsVisibleAsync()) return true;
+        }
+        catch { }
+
+        return false;
+    }
+
     private static async Task ChooseVoiceAsync(IPage page, string requestedVoice, Action<string>? log, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(requestedVoice))
@@ -152,13 +258,11 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
         var normalizedRequested = NormalizeRequestedVoice(requestedVoice);
         var targetDisplay = ToClipchampVoiceLabel(normalizedRequested);
 
-        // The current Clipchamp UI shows the selected value itself (for example
-        // "Ava Multilingual") directly below the Voice label. Clicking generic buttons
-        // containing the word "voice" can accidentally hit "Hear this voice", so ZeroVideo
-        // deliberately clicks the displayed current voice value instead.
-        var currentControl = await FindDisplayedVoiceValueAsync(page);
+        // Even after the panel readiness check, Clipchamp can replace DOM nodes while
+        // finishing React hydration. Re-acquire the current voice selector for up to 20s.
+        var currentControl = await WaitForCurrentVoiceValueAsync(page, 20000, ct);
         if (currentControl is null)
-            throw new InvalidOperationException($"Could not find Clipchamp's current voice value while trying to select '{targetDisplay}'.");
+            throw new InvalidOperationException($"Could not find Clipchamp's current voice value after waiting for the TTS panel while trying to select '{targetDisplay}'.");
 
         var currentLabel = await ReadLocatorLabelAsync(currentControl);
         if (VoiceLabelMatches(currentLabel, normalizedRequested))
@@ -167,18 +271,18 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
             return;
         }
 
-        await currentControl.ClickAsync(new() { Timeout = 8000 });
-        await Task.Delay(350, ct);
+        await currentControl.ClickAsync(new() { Timeout = 10000 });
+        await Task.Delay(500, ct);
 
         var option = await FindExactClipchampVoiceOptionAsync(page, normalizedRequested, targetDisplay, ct);
         if (option is null)
             throw new InvalidOperationException($"Clipchamp voice '{targetDisplay}' was not found after opening the Voice dropdown.");
 
         var matchedLabel = await ReadLocatorLabelAsync(option);
-        await option.ClickAsync(new() { Timeout = 8000 });
-        await Task.Delay(500, ct);
+        await option.ClickAsync(new() { Timeout = 10000 });
+        await Task.Delay(650, ct);
 
-        var verified = await WaitForDisplayedVoiceAsync(page, normalizedRequested, 5000, ct);
+        var verified = await WaitForDisplayedVoiceAsync(page, normalizedRequested, 10000, ct);
         if (verified is null)
             throw new InvalidOperationException($"Clipchamp did not switch from '{currentLabel}' to '{targetDisplay}'. TTS was not created.");
 
@@ -186,11 +290,22 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
         log?.Invoke($"Clipchamp voice verified: {verifiedLabel} (requested {requestedVoice})");
     }
 
+    private static async Task<ILocator?> WaitForCurrentVoiceValueAsync(IPage page, int timeoutMs, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+            var current = await FindDisplayedVoiceValueAsync(page);
+            if (current is not null) return current;
+            await Task.Delay(300, ct);
+        }
+
+        return null;
+    }
+
     private static async Task<ILocator?> FindDisplayedVoiceValueAsync(IPage page)
     {
-        // Best path for the current Clipchamp UI: the closed selector contains a voice name
-        // such as "Ava Multilingual". Before the popup is open there should be one visible
-        // matching value, so this avoids confusing it with "Hear this voice".
         foreach (var voice in KnownVoiceNames)
         {
             foreach (var label in VoiceDisplayCandidates(voice))
@@ -200,9 +315,6 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
             }
         }
 
-        // Fallback for a future/new voice that is not in the known list. Find the exact
-        // "Voice" heading and then the nearest following visible element containing
-        // "Multilingual".
         try
         {
             var headings = page.GetByText("Voice", new() { Exact = true });
@@ -224,14 +336,10 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
 
     private static async Task<ILocator?> FindExactClipchampVoiceOptionAsync(IPage page, string normalizedRequested, string targetDisplay, CancellationToken ct)
     {
-        // The current Clipchamp list uses exact labels such as "Andrew Multilingual".
-        // Try the exact displayed label first.
         var exact = await FindVisibleExactTextAsync(page, targetDisplay);
         if (exact is not null) return exact;
 
-        // A small number of Clipchamp voices may use a longer display label. Search visible
-        // text nodes and accept a label that begins with the requested base voice name.
-        for (var attempt = 0; attempt < 12; attempt++)
+        for (var attempt = 0; attempt < 20; attempt++)
         {
             try
             {
@@ -247,10 +355,8 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
             }
             catch { }
 
-            // The dropdown itself is scrollable. Wheel the page while the popup is open so
-            // virtualized entries become rendered, then retry the exact text lookup.
-            try { await page.Mouse.WheelAsync(0, 420); } catch { }
-            await Task.Delay(140, ct);
+            try { await page.Mouse.WheelAsync(0, 360); } catch { }
+            await Task.Delay(180, ct);
 
             exact = await FindVisibleExactTextAsync(page, targetDisplay);
             if (exact is not null) return exact;
@@ -373,7 +479,7 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
     {
         if (string.IsNullOrWhiteSpace(value) || !controls.Any()) return;
 
-        var control = await BrowserLocator.FirstVisibleAsync(page, controls, 1800);
+        var control = await BrowserLocator.FirstVisibleAsync(page, controls, 5000);
         if (control is null)
         {
             log?.Invoke($"Clipchamp {label} selector not found; keeping current selection.");
@@ -384,7 +490,7 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
         {
             await control.ClickAsync();
             var option = page.GetByText(value, new() { Exact = true }).Last;
-            await option.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 3500 });
+            await option.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 5000 });
             await option.ClickAsync();
             log?.Invoke($"Clipchamp {label}: {value}");
         }
