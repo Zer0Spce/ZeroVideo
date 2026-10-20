@@ -143,13 +143,24 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
         {
             ct.ThrowIfCancellationRequested();
 
+            using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            attemptCts.CancelAfter(TimeSpan.FromMinutes(3));
+
             try
             {
                 if (attempt > 1)
                     log?.Invoke($"Scene {chapter.Number}.{scene.Number}: retry {attempt}/{maxAttempts}...");
 
-                await chat.GenerateSceneImageAsync(project, chapter, scene, settings, log, ct);
+                await chat.GenerateSceneImageAsync(project, chapter, scene, settings, log, attemptCts.Token);
                 return true;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested && attemptCts.IsCancellationRequested)
+            {
+                log?.Invoke($"Scene {chapter.Number}.{scene.Number}: ChatGPT image attempt {attempt}/{maxAttempts} timed out after 3 minutes; retrying without losing project progress.");
+                await store.SaveAsync(project, settings.ProjectsRoot);
+
+                if (attempt >= maxAttempts) return false;
+                await Task.Delay(TimeSpan.FromSeconds(4 * attempt), ct);
             }
             catch (OperationCanceledException)
             {
