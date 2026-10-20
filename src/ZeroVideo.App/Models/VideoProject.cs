@@ -30,7 +30,20 @@ public sealed class ProjectOptions
     public bool AddSoundEffects { get; set; }
     public bool AvoidRepeatedVisuals { get; set; } = true;
     public bool GenerateMissingVisuals { get; set; } = true;
+
+    /// <summary>
+    /// Number of ChatGPT-generated stills ZeroVideo should aim to create for each scene.
+    /// One is the recommended default. Multiple images are rendered sequentially inside
+    /// the scene so the narration can have more visual changes without creating new scenes.
+    /// </summary>
+    public int ImagesPerScene { get; set; } = 1;
+
+    /// <summary>
+    /// Hard project-wide cap for ChatGPT-generated still images. This is TOTAL, not per scene.
+    /// Existing generated stills count toward the cap, so resume/build runs cannot multiply it.
+    /// </summary>
     public int MaxGeneratedVisuals { get; set; } = 120;
+
     public string? BackgroundMusicPath { get; set; }
     public double BackgroundMusicVolume { get; set; } = 0.10;
 }
@@ -56,6 +69,12 @@ public sealed class ProjectScene
     public string ImagePrompt { get; set; } = "";
     public string ShotDirection { get; set; } = "slow push in";
     public double TargetSeconds { get; set; } = 6;
+
+    // MediaPath is retained for backwards compatibility and points to the primary visual.
     public string? MediaPath { get; set; }
+
+    // Newer projects can keep multiple generated visuals for one scene.
+    public List<string> MediaPaths { get; set; } = [];
+
     public string? SoundEffectPath { get; set; }
 }
