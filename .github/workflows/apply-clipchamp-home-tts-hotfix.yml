@@ -1,0 +1,134 @@
+name: Apply Clipchamp home TTS hotfix
+
+on:
+  push:
+    branches:
+      - fix/clipchamp-home-tts-card
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message != 'Handle Clipchamp home Text to speech card'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch Clipchamp home navigation
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('src/ZeroVideo.App/Services/ClipchampTtsService.cs')
+          text = path.read_text()
+
+          start_marker = '// Clipchamp restores the last editor state for a project.'
+          end_marker = 'log?.Invoke("Clipchamp: locating the visible text-to-speech controls across the editor...");'
+          start = text.find(start_marker)
+          end = text.find(end_marker, start + 1)
+          if start < 0 or end < 0:
+              raise SystemExit('Could not locate Clipchamp navigation block.')
+
+          line_start = text.rfind('\n', 0, start) + 1
+          prefix = text[line_start:start]
+
+          replacement = '''// Clipchamp may reopen on Home, inside the editor, or already inside Text to speech.
+          // Always prefer the visible Text to speech Home card when present; its Try it button
+          // is the direct route into TTS and avoids depending on editor-side Record & create.
+          var currentVoice = await FindDisplayedVoiceValueAsync(page);
+          if (currentVoice is null)
+          {
+              var openedFromHome = await TryOpenTtsHomeCardAsync(page, log, ct);
+              if (openedFromHome)
+              {
+                  await Task.Delay(1200, ct);
+                  currentVoice = await FindDisplayedVoiceValueAsync(page);
+              }
+          }
+
+          if (currentVoice is not null)
+          {
+              var label = await ReadLocatorLabelAsync(currentVoice);
+              log?.Invoke($"Clipchamp Text to speech is ready. Current voice: {label}. Skipping extra navigation.");
+          }
+          else
+          {
+              var recordCreate = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.RecordCreateButtons, 6000, ct);
+              if (recordCreate is not null)
+              {
+                  await recordCreate.ClickAsync(new() { Timeout = 8000 });
+                  log?.Invoke("Clipchamp: opened Record & create.");
+                  await Task.Delay(700, ct);
+              }
+
+              currentVoice = await FindDisplayedVoiceValueAsync(page);
+              if (currentVoice is null)
+              {
+                  var textToSpeech = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.TextToSpeechButtons, 8000, ct);
+                  if (textToSpeech is not null)
+                  {
+                      await textToSpeech.ClickAsync(new() { Timeout = 8000 });
+                      log?.Invoke("Clipchamp: opened Text to speech from the editor.");
+                      await Task.Delay(900, ct);
+                  }
+              }
+          }
+
+          '''
+          replacement = replacement.replace('\n', '\n' + prefix)
+          text = text[:start] + replacement + text[end:]
+
+          helper_anchor = '    private static async Task WaitForTtsPanelReadyAsync'
+          helper_at = text.find(helper_anchor)
+          if helper_at < 0:
+              raise SystemExit('Could not locate helper insertion point.')
+
+          helper = '''    private static async Task<bool> TryOpenTtsHomeCardAsync(IPage page, Action<string>? log, CancellationToken ct)
+    {
+        foreach (var frame in page.Frames.Reverse())
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var headings = frame.GetByText("Text to speech", new() { Exact = true });
+                var count = await headings.CountAsync();
+                for (var i = count - 1; i >= 0; i--)
+                {
+                    var heading = headings.Nth(i);
+                    if (!await heading.IsVisibleAsync()) continue;
+
+                    var card = heading.Locator("xpath=ancestor::*[.//button[normalize-space()='Try it']][1]");
+                    if (await card.CountAsync() == 0) continue;
+
+                    var tryButton = card.First.GetByRole(AriaRole.Button, new() { Name = "Try it", Exact = true });
+                    if (await tryButton.CountAsync() == 0) continue;
+                    var button = tryButton.First;
+                    if (!await button.IsVisibleAsync() || !await button.IsEnabledAsync()) continue;
+
+                    log?.Invoke("Clipchamp Home: opening Text to speech via Try it...");
+                    await button.ClickAsync(new() { Timeout = 10000 });
+                    return true;
+                }
+            }
+            catch { }
+        }
+
+        return false;
+    }
+
+'''
+          text = text[:helper_at] + helper + text[helper_at:]
+          path.write_text(text)
+          Path('.github/workflows/apply-clipchamp-home-tts-hotfix.yml').unlink()
+
+      - name: Commit source fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/ZeroVideo.App/Services/ClipchampTtsService.cs .github/workflows/apply-clipchamp-home-tts-hotfix.yml
+          git commit -m "Handle Clipchamp home Text to speech card"
+          git push origin HEAD:fix/clipchamp-home-tts-card
