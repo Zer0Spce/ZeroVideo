@@ -20,7 +20,16 @@ public sealed class SettingsService
 
         settings.ProjectsRoot = string.IsNullOrWhiteSpace(settings.ProjectsRoot) ? AppPaths.DefaultProjectsRoot : settings.ProjectsRoot;
         settings.EdgeUserDataDirectory = string.IsNullOrWhiteSpace(settings.EdgeUserDataDirectory) ? AppPaths.BrowserProfileDirectory : settings.EdgeUserDataDirectory;
-        settings.AutomationProfilePath = string.IsNullOrWhiteSpace(settings.AutomationProfilePath) ? AppPaths.BundledAutomationProfile : settings.AutomationProfilePath;
+
+        // Portable builds move between folders. If the user is using ZeroVideo's normal
+        // automation.default.json, always bind it to THIS build's bundled profile instead
+        // of keeping an absolute path to an older extracted build. Custom profiles are kept.
+        if (string.IsNullOrWhiteSpace(settings.AutomationProfilePath) ||
+            string.Equals(Path.GetFileName(settings.AutomationProfilePath), "automation.default.json", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.AutomationProfilePath = AppPaths.BundledAutomationProfile;
+        }
+
         settings.FfmpegPath = ResolveTool(settings.FfmpegPath, "ffmpeg.exe");
         settings.FfprobePath = ResolveTool(settings.FfprobePath, "ffprobe.exe");
         return settings;
