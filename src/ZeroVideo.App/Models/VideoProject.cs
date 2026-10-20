@@ -32,24 +32,28 @@ public sealed class ProjectOptions
     public bool GenerateMissingVisuals { get; set; } = true;
 
     /// <summary>
-    /// Maximum number of project scenes that ZeroVideo may populate with ChatGPT-generated
-    /// visuals. Existing generated scenes count toward the limit so Resume/Build cannot
-    /// gradually expand past it. Example: 5 scenes + 1 image per scene = 5 generated images.
+    /// Exact chapter count requested from ChatGPT for the master outline.
     /// </summary>
-    public int MaxGeneratedScenes { get; set; } = 20;
+    public int HowManyChapters { get; set; } = 7;
 
     /// <summary>
-    /// Number of ChatGPT-generated stills ZeroVideo should aim to create inside each selected
-    /// generated scene. One is the recommended default.
+    /// Exact number of narration/visual scenes requested inside every chapter.
+    /// One generated image is targeted for each scene, so this is also the normal
+    /// image count per chapter when the safety total image cap does not intervene.
     /// </summary>
-    public int ImagesPerScene { get; set; } = 1;
+    public int ImagesPerChapter { get; set; } = 10;
 
     /// <summary>
-    /// Secondary hard project-wide safety cap for generated still images. The scene limit is
-    /// applied first; this prevents an unexpectedly high ImagesPerScene value from creating
-    /// too many images.
+    /// Hard project-wide safety cap for actual ChatGPT-generated images.
+    /// It can intentionally stop image generation before every scripted scene has
+    /// its own image; rendering then reuses the nearest real visual instead of black.
     /// </summary>
     public int MaxGeneratedVisuals { get; set; } = 120;
+
+    // Compatibility aliases for projects written by the immediately previous builds.
+    // New UI/pipeline code uses HowManyChapters and ImagesPerChapter.
+    public int MaxGeneratedScenes { get => HowManyChapters; set => HowManyChapters = value; }
+    public int ImagesPerScene { get => ImagesPerChapter; set => ImagesPerChapter = value; }
 
     public string? BackgroundMusicPath { get; set; }
     public double BackgroundMusicVolume { get; set; } = 0.10;
@@ -76,12 +80,7 @@ public sealed class ProjectScene
     public string ImagePrompt { get; set; } = "";
     public string ShotDirection { get; set; } = "slow push in";
     public double TargetSeconds { get; set; } = 6;
-
-    // MediaPath is retained for backwards compatibility and points to the primary visual.
     public string? MediaPath { get; set; }
-
-    // Newer projects can keep multiple generated visuals for one scene.
     public List<string> MediaPaths { get; set; } = [];
-
     public string? SoundEffectPath { get; set; }
 }

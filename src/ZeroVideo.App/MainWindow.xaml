@@ -23,7 +23,6 @@
       <TabItem Header="Create">
         <Grid Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="430"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
           <Border Style="{StaticResource CardBorder}">
-            <!-- Intentionally no sidebar ScrollViewer: controls are compact enough to remain visible. -->
             <StackPanel>
               <TextBlock Text="New long-form video" FontSize="21" FontWeight="SemiBold" Margin="0,0,0,8"/>
               <Label Content="TOPIC"/><TextBox Text="{Binding Topic, UpdateSourceTrigger=PropertyChanged}" MinHeight="58" TextWrapping="Wrap" AcceptsReturn="True"/>
@@ -53,18 +52,18 @@
               <TextBlock Text="Output options" FontWeight="SemiBold" FontSize="15" Margin="0,6,0,1"/>
               <CheckBox Content="Generate missing visuals with ChatGPT" IsChecked="{Binding Project.Options.GenerateMissingVisuals}"/>
 
-              <Border Background="#17151F" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="9" Padding="10" Margin="18,2,0,5">
+              <Border Background="#17151F" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="9" Padding="10" Margin="18,2,0,7">
                 <StackPanel>
-                  <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions>
-                    <StackPanel><TextBlock Text="Max scenes with generated visuals" Foreground="{StaticResource Text}" FontWeight="SemiBold"/><TextBlock Text="Example: 5 scenes + 1 image each = 5 generated images." Foreground="#C4B5FD" FontSize="10"/></StackPanel>
-                    <TextBox Grid.Column="1" Text="{Binding Project.Options.MaxGeneratedScenes, UpdateSourceTrigger=LostFocus}" HorizontalContentAlignment="Center" VerticalContentAlignment="Center"/>
+                  <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
+                    <TextBlock Text="How Many Chapters" Foreground="{StaticResource Text}" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    <TextBox Grid.Column="1" Text="{Binding Project.Options.HowManyChapters, UpdateSourceTrigger=LostFocus}" HorizontalContentAlignment="Center" VerticalContentAlignment="Center"/>
                   </Grid>
-                  <Grid Margin="0,7,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="Images per selected scene" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
-                    <TextBox Grid.Column="1" Text="{Binding Project.Options.ImagesPerScene, UpdateSourceTrigger=LostFocus}" HorizontalContentAlignment="Center" VerticalContentAlignment="Center"/>
+                  <Grid Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
+                    <TextBlock Text="Images Per Chapter" Foreground="{StaticResource Text}" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    <TextBox Grid.Column="1" Text="{Binding Project.Options.ImagesPerChapter, UpdateSourceTrigger=LostFocus}" HorizontalContentAlignment="Center" VerticalContentAlignment="Center"/>
                   </Grid>
-                  <Grid Margin="0,7,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="Safety total image cap" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                  <Grid Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
+                    <TextBlock Text="Safety Total Image Cap" Foreground="{StaticResource Text}" FontWeight="SemiBold" VerticalAlignment="Center"/>
                     <TextBox Grid.Column="1" Text="{Binding Project.Options.MaxGeneratedVisuals, UpdateSourceTrigger=LostFocus}" HorizontalContentAlignment="Center" VerticalContentAlignment="Center"/>
                   </Grid>
                 </StackPanel>
@@ -77,7 +76,7 @@
                 <CheckBox Content="SFX hooks" IsChecked="{Binding Project.Options.AddSoundEffects}" Margin="0,4,0,4"/>
               </WrapPanel>
 
-              <TextBlock Text="Scenes without their own image reuse the nearest real visual during rendering — no black empty frames." Foreground="{StaticResource Muted}" FontSize="10.5" TextWrapping="Wrap" Margin="0,5,0,8"/>
+              <TextBlock Text="Each chapter is scripted into the requested number of narration/image scenes. Missing media reuses the nearest real visual — no black empty frames." Foreground="{StaticResource Muted}" FontSize="10.5" TextWrapping="Wrap" Margin="0,5,0,8"/>
               <WrapPanel><Button Style="{StaticResource PrimaryButton}" Command="{Binding GeneratePlanCommand}" Content="1. Generate project"/><Button Style="{StaticResource SecondaryButton}" Command="{Binding ContinueWritingCommand}" Content="Resume writing"/><Button Style="{StaticResource PrimaryButton}" Command="{Binding RunPipelineCommand}" Content="2. Build video"/></WrapPanel>
             </StackPanel>
           </Border>
