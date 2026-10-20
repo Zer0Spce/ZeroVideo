@@ -25,15 +25,16 @@ jobs:
           path = Path('src/ZeroVideo.App/Services/ClipchampTtsService.cs')
           text = path.read_text()
 
-          start_marker = '''        try
-          {
-              var newVideo = await FirstVisibleAcrossFramesAsync'''
-          end_marker = '''            await TryChooseAcrossFramesAsync'''
+          start_stmt = text.find('var newVideo = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.NewVideoButtons')
+          end = text.find('await TryChooseAcrossFramesAsync(page, profile.Clipchamp.LanguageControls', max(0, start_stmt))
+          start = text.rfind('try', 0, start_stmt)
 
-          start = text.find(start_marker)
-          end = text.find(end_marker, start + 1)
-          if start < 0 or end < 0:
-              raise SystemExit('Could not locate the Clipchamp startup navigation boundaries; refusing to patch the wrong code.')
+          if start_stmt < 0 or start < 0 or end < 0:
+              raise SystemExit(f'Could not locate startup boundaries: start_stmt={start_stmt}, start={start}, end={end}')
+
+          # Rewind to the indentation at the beginning of the try line.
+          line_start = text.rfind('\n', 0, start) + 1
+          start = line_start
 
           replacement = '''        try
           {
@@ -95,7 +96,7 @@ jobs:
               log?.Invoke("Clipchamp: locating the visible text-to-speech controls across the editor...");
               await WaitForTtsPanelReadyAsync(page, log, ct);
 
-          '''
+              '''
 
           path.write_text(text[:start] + replacement + text[end:])
           Path('.github/workflows/apply-clipchamp-state-aware-hotfix.yml').unlink()
