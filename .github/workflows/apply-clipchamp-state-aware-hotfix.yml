@@ -25,20 +25,17 @@ jobs:
           path = Path('src/ZeroVideo.App/Services/ClipchampTtsService.cs')
           text = path.read_text()
 
-          old = '''        try
+          start_marker = '''        try
           {
-              var newVideo = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.NewVideoButtons, 4000, ct);
-              if (newVideo is not null) await newVideo.ClickAsync();
-              await Task.Delay(2500, ct);
+              var newVideo = await FirstVisibleAcrossFramesAsync'''
+          end_marker = '''            await TryChooseAcrossFramesAsync'''
 
-              await ClickFirstAcrossFramesAsync(page, profile.Clipchamp.RecordCreateButtons, "Record & create", 12000, ct);
-              await ClickFirstAcrossFramesAsync(page, profile.Clipchamp.TextToSpeechButtons, "Text to speech", 12000, ct);
+          start = text.find(start_marker)
+          end = text.find(end_marker, start + 1)
+          if start < 0 or end < 0:
+              raise SystemExit('Could not locate the Clipchamp startup navigation boundaries; refusing to patch the wrong code.')
 
-              log?.Invoke("Clipchamp: locating the visible text-to-speech controls across the editor...");
-              await WaitForTtsPanelReadyAsync(page, log, ct);
-          '''
-
-          new = '''        try
+          replacement = '''        try
           {
               // Clipchamp restores the last editor state for a project. On resume we may
               // already be inside Text to speech, so navigation must be idempotent instead
@@ -97,14 +94,10 @@ jobs:
 
               log?.Invoke("Clipchamp: locating the visible text-to-speech controls across the editor...");
               await WaitForTtsPanelReadyAsync(page, log, ct);
+
           '''
 
-          if old not in text:
-              raise SystemExit('Expected Clipchamp startup block was not found; refusing to patch the wrong code.')
-
-          path.write_text(text.replace(old, new, 1))
-
-          # This helper workflow is one-shot; remove it from the resulting source commit.
+          path.write_text(text[:start] + replacement + text[end:])
           Path('.github/workflows/apply-clipchamp-state-aware-hotfix.yml').unlink()
 
       - name: Commit source fix
