@@ -5,6 +5,8 @@ namespace ZeroVideo.App.Services;
 
 public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfileService profiles)
 {
+    private bool _manualVoiceConfirmedForNextChapter;
+
     private static readonly string[] KnownVoiceNames =
     [
         "Ava", "Andrew", "Brian", "Emma", "Aria", "Christopher", "Eric", "Guy", "Jenny", "Michelle", "Roger", "Steffan"
@@ -13,88 +15,69 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
     public Task OpenAsync(ZeroVideoSettings settings)
         => browser.OpenManualAsync(settings, settings.ClipchampUrl);
 
-    public async Task<string> GenerateChapterAsync(ProjectChapter chapter, VideoProject project, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
+    public async Task PrepareManualVoiceSelectionAsync(ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
         await browser.EnsureStartedAsync(settings);
         var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
         var page = await browser.GetOrCreatePageAsync("clipchamp");
         await page.GotoAsync(settings.ClipchampUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120000 });
+
+        var entry = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.NewVideoButtons, 6000, ct)
+            ?? await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.TextToSpeechButtons, 6000, ct);
+        if (entry is not null)
+        {
+            try
+            {
+                await entry.ClickAsync(new() { Timeout = 10000 });
+                await Task.Delay(1200, ct);
+            }
+            catch { }
+        }
+
+        log?.Invoke("Clipchamp manual checkpoint: open Text to speech if needed, choose your voice, then click Continue TTS in ZeroVideo.");
+    }
+
+    public void ConfirmManualVoiceSelection()
+        => _manualVoiceConfirmedForNextChapter = true;
+
+    public async Task<string> GenerateChapterAsync(ProjectChapter chapter, VideoProject project, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
+    {
+        await browser.EnsureStartedAsync(settings);
+        var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
+        var page = await browser.GetOrCreatePageAsync("clipchamp");
+        var manualVoiceConfirmed = _manualVoiceConfirmedForNextChapter;
+        if (manualVoiceConfirmed)
+        {
+            _manualVoiceConfirmedForNextChapter = false;
+            log?.Invoke($"Clipchamp chapter {chapter.Number}: using the voice you selected manually. ZeroVideo will not change it.");
+        }
+        else
+        {
+            var existingInput = await TryFindScriptInputOnceAsync(page, profile.Clipchamp.ScriptInputs);
+            if (existingInput is null)
+            {
+                await page.GotoAsync(settings.ClipchampUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120000 });
+                var entry = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.NewVideoButtons, 8000, ct)
+                    ?? await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.TextToSpeechButtons, 8000, ct);
+                if (entry is not null)
+                {
+                    await entry.ClickAsync(new() { Timeout = 10000 });
+                    await Task.Delay(1200, ct);
+                }
+            }
+            log?.Invoke($"Clipchamp chapter {chapter.Number}: keeping the current manually selected Clipchamp voice.");
+        }
+
         log?.Invoke($"Clipchamp chapter {chapter.Number}: preparing text-to-speech.");
 
         try
-{
-    // Clipchamp restores the last editor state for a project. On resume we may
-    // already be inside Text to speech, so navigation must be idempotent instead
-    // of requiring Record & create -> Text to speech every time.
-    var currentVoice = await FindDisplayedVoiceValueAsync(page);
-    if (currentVoice is not null)
-    {
-        var label = await ReadLocatorLabelAsync(currentVoice);
-        log?.Invoke($"Clipchamp Text to speech is already open. Current voice: {label}. Skipping navigation.");
-    }
-    else
-    {
-        var newVideo = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.NewVideoButtons, 4000, ct);
-        if (newVideo is not null)
         {
-            await newVideo.ClickAsync(new() { Timeout = 8000 });
-            await Task.Delay(1800, ct);
-        }
-
-        currentVoice = await FindDisplayedVoiceValueAsync(page);
-
-        if (currentVoice is null)
-        {
-            var recordCreate = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.RecordCreateButtons, 8000, ct);
-            if (recordCreate is not null)
-            {
-                await recordCreate.ClickAsync(new() { Timeout = 8000 });
-                log?.Invoke("Clipchamp: opened Record & create.");
-                await Task.Delay(700, ct);
-            }
-            else
-            {
-                log?.Invoke("Clipchamp: Record & create is not visible; checking whether Text to speech is already available.");
-            }
-
-            currentVoice = await FindDisplayedVoiceValueAsync(page);
-        }
-
-        if (currentVoice is null)
-        {
-            var textToSpeech = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.TextToSpeechButtons, 10000, ct);
-            if (textToSpeech is not null)
-            {
-                await textToSpeech.ClickAsync(new() { Timeout = 8000 });
-                log?.Invoke("Clipchamp: opened Text to speech.");
-                await Task.Delay(700, ct);
-            }
-            else
-            {
-                currentVoice = await FindDisplayedVoiceValueAsync(page);
-                if (currentVoice is null)
-                    throw new InvalidOperationException("Could not open Clipchamp Text to speech: neither the TTS panel nor its navigation control was found.");
-            }
-        }
-    }
-
-    log?.Invoke("Clipchamp: locating the visible text-to-speech controls across the editor...");
-    await WaitForTtsPanelReadyAsync(page, log, ct);
-
-    await TryChooseAcrossFramesAsync(page, profile.Clipchamp.LanguageControls, settings.ClipchampLanguage, "language", log, ct);
-
-            var selectedVoice = !string.IsNullOrWhiteSpace(project.Voice)
-                ? project.Voice.Trim()
-                : settings.ClipchampVoice?.Trim() ?? "";
-
-            await ChooseVoiceAsync(page, selectedVoice, log, ct);
-
             var input = await WaitForScriptInputAsync(page, profile.Clipchamp.ScriptInputs, 30000, ct)
                 ?? throw new InvalidOperationException("Clipchamp TTS controls are visible, but ZeroVideo could not find the narration editor in any Clipchamp frame.");
 
             await input.FillAsync(chapter.Narration, new() { Timeout = 15000 });
             await ClickFirstAcrossFramesAsync(page, profile.Clipchamp.SaveButtons, "Clipchamp TTS Save", 15000, ct);
-            log?.Invoke($"TTS created with voice '{(string.IsNullOrWhiteSpace(selectedVoice) ? "Clipchamp default" : selectedVoice)}'. Preparing audio-only export...");
+            log?.Invoke("TTS created with the current manually selected Clipchamp voice. Preparing audio-only export...");
 
             await Task.Delay(2000, ct);
             await ClickFirstAcrossFramesAsync(page, profile.Clipchamp.ExportButtons, "Clipchamp Export", 15000, ct);
