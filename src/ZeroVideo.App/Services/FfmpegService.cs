@@ -48,16 +48,20 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         await ValidateAsync(settings, log, ct);
         var renderDir = Path.Combine(project.ProjectDirectory, "render");
         var exportsDir = Path.Combine(project.ProjectDirectory, "exports");
-        Directory.CreateDirectory(renderDir); Directory.CreateDirectory(exportsDir);
+        Directory.CreateDirectory(renderDir);
+        Directory.CreateDirectory(exportsDir);
 
         var chapterOutputs = new List<string>();
         foreach (var chapter in project.Chapters)
         {
             ct.ThrowIfCancellationRequested();
-            if (string.IsNullOrWhiteSpace(chapter.AudioPath) || !File.Exists(chapter.AudioPath)) throw new FileNotFoundException($"Missing audio for chapter {chapter.Number}.", chapter.AudioPath);
+            if (string.IsNullOrWhiteSpace(chapter.AudioPath) || !File.Exists(chapter.AudioPath))
+                throw new FileNotFoundException($"Missing audio for chapter {chapter.Number}.", chapter.AudioPath);
+
             var audioSeconds = await ProbeDurationAsync(chapter.AudioPath, settings, ct);
             if (audioSeconds <= 0) audioSeconds = Math.Max(1, chapter.TargetSeconds);
             NormalizeSceneDurations(chapter, audioSeconds);
+
             var visual = await RenderChapterVisualAsync(project, chapter, settings, renderDir, log, ct);
             var output = Path.Combine(renderDir, $"chapter-{chapter.Number:00}-final.mp4");
             var muxArgs = $"-y -i \"{visual}\" -i \"{chapter.AudioPath}\" -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 192k -shortest \"{output}\"";
@@ -82,7 +86,9 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         }
         else File.Copy(voiceFinal, finalPath, true);
 
-        if (project.Options.GenerateCaptions) await WriteSrtAsync(project, Path.ChangeExtension(finalPath, ".srt"), ct);
+        if (project.Options.GenerateCaptions)
+            await WriteSrtAsync(project, Path.ChangeExtension(finalPath, ".srt"), ct);
+
         return finalPath;
     }
 
@@ -90,31 +96,52 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
     {
         var (w, h) = project.AspectRatio == "9:16" ? (1080, 1920) : (1920, 1080);
         var clips = new List<string>();
+
         foreach (var scene in chapter.Scenes)
         {
-            var duration = Math.Max(1.0, scene.TargetSeconds).ToString("0.###", CultureInfo.InvariantCulture);
-            var output = Path.Combine(renderDir, $"c{chapter.Number:00}-s{scene.Number:000}.mp4");
-            var media = ResolveMedia(project.ProjectDirectory, chapter.Number, scene);
-            string args;
-            if (media is not null && IsVideo(media))
+            var mediaItems = ProjectMedia.FindAll(project, chapter, scene).ToList();
+            if (mediaItems.Count == 0)
             {
-                args = $"-y -stream_loop -1 -i \"{media}\" -t {duration} -vf \"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h},fps=30\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
-            }
-            else if (media is not null)
-            {
-                var frames = Math.Max(30, (int)(scene.TargetSeconds * 30));
-                var zoom = project.Options.AddMotion ? $",zoompan=z='min(zoom+0.0008,1.08)':d={frames}:s={w}x{h}:fps=30" : "";
-                args = $"-y -loop 1 -i \"{media}\" -t {duration} -vf \"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h}{zoom}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
-            }
-            else
-            {
+                var duration = Math.Max(1.0, scene.TargetSeconds).ToString("0.###", CultureInfo.InvariantCulture);
+                var output = Path.Combine(renderDir, $"c{chapter.Number:00}-s{scene.Number:000}.mp4");
                 log?.Invoke($"Scene {chapter.Number}.{scene.Number}: no media assigned, rendering neutral placeholder.");
-                args = $"-y -f lavfi -i \"color=c=0x111821:s={w}x{h}:r=30:d={duration}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
+                var args = $"-y -f lavfi -i \"color=c=0x15131B:s={w}x{h}:r=30:d={duration}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
+                var result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
+                if (result.ExitCode != 0) throw new InvalidOperationException($"Scene render failed ({chapter.Number}.{scene.Number}): {result.StdErr}");
+                clips.Add(output);
+                continue;
             }
-            var result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
-            if (result.ExitCode != 0) throw new InvalidOperationException($"Scene render failed ({chapter.Number}.{scene.Number}): {result.StdErr}");
-            clips.Add(output);
+
+            var perVisualSeconds = Math.Max(1.0, scene.TargetSeconds / mediaItems.Count);
+            for (var mediaIndex = 0; mediaIndex < mediaItems.Count; mediaIndex++)
+            {
+                var media = mediaItems[mediaIndex];
+                var duration = perVisualSeconds.ToString("0.###", CultureInfo.InvariantCulture);
+                var suffix = mediaItems.Count > 1 ? $"-v{mediaIndex + 1:00}" : "";
+                var output = Path.Combine(renderDir, $"c{chapter.Number:00}-s{scene.Number:000}{suffix}.mp4");
+                string args;
+
+                if (IsVideo(media))
+                {
+                    args = $"-y -stream_loop -1 -i \"{media}\" -t {duration} -vf \"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h},fps=30\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
+                }
+                else
+                {
+                    var frames = Math.Max(30, (int)(perVisualSeconds * 30));
+                    var zoom = project.Options.AddMotion
+                        ? $",zoompan=z='min(zoom+0.0008,1.08)':d={frames}:s={w}x{h}:fps=30"
+                        : "";
+                    args = $"-y -loop 1 -i \"{media}\" -t {duration} -vf \"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h}{zoom}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
+                }
+
+                var result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
+                if (result.ExitCode != 0)
+                    throw new InvalidOperationException($"Scene render failed ({chapter.Number}.{scene.Number}, visual {mediaIndex + 1}): {result.StdErr}");
+
+                clips.Add(output);
+            }
         }
+
         var list = Path.Combine(renderDir, $"chapter-{chapter.Number:00}-visuals.txt");
         await File.WriteAllLinesAsync(list, clips.Select(p => $"file '{p.Replace("'", "'\\''")}'"), ct);
         var chapterVisual = Path.Combine(renderDir, $"chapter-{chapter.Number:00}-visuals.mp4");
@@ -123,44 +150,36 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         return chapterVisual;
     }
 
-    private static string? ResolveMedia(string projectDir, int chapterNumber, ProjectScene scene)
-    {
-        if (!string.IsNullOrWhiteSpace(scene.MediaPath))
-        {
-            var path = Path.IsPathRooted(scene.MediaPath) ? scene.MediaPath : Path.Combine(projectDir, scene.MediaPath);
-            if (File.Exists(path)) return path;
-        }
-        var mediaDir = Path.Combine(projectDir, "media");
-        if (!Directory.Exists(mediaDir)) return null;
-        var chapterSceneStem = $"c{chapterNumber:00}-s{scene.Number:000}";
-        var byChapter = Directory.EnumerateFiles(mediaDir).FirstOrDefault(f => Path.GetFileNameWithoutExtension(f).Equals(chapterSceneStem, StringComparison.OrdinalIgnoreCase));
-        if (byChapter is not null) return byChapter;
-        var legacyStem = $"{scene.Number:000}";
-        return Directory.EnumerateFiles(mediaDir).FirstOrDefault(f => Path.GetFileNameWithoutExtension(f).Equals(legacyStem, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static bool IsVideo(string path) => new[] { ".mp4", ".mov", ".mkv", ".webm", ".avi" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
+    private static bool IsVideo(string path)
+        => new[] { ".mp4", ".mov", ".mkv", ".webm", ".avi" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
     private static void NormalizeSceneDurations(ProjectChapter chapter, double actualAudioSeconds)
     {
         if (chapter.Scenes.Count == 0) return;
         var total = chapter.Scenes.Sum(s => Math.Max(1, s.TargetSeconds));
         var factor = actualAudioSeconds / total;
-        foreach (var scene in chapter.Scenes) scene.TargetSeconds = Math.Max(1, scene.TargetSeconds * factor);
+        foreach (var scene in chapter.Scenes)
+            scene.TargetSeconds = Math.Max(1, scene.TargetSeconds * factor);
         chapter.TargetSeconds = (int)Math.Round(actualAudioSeconds);
     }
 
     private static async Task WriteSrtAsync(VideoProject project, string path, CancellationToken ct)
     {
         var sb = new StringBuilder();
-        var index = 1; double cursor = 0;
+        var index = 1;
+        double cursor = 0;
+
         foreach (var chapter in project.Chapters)
         foreach (var scene in chapter.Scenes)
         {
             var end = cursor + scene.TargetSeconds;
-            sb.AppendLine(index++.ToString()).AppendLine($"{Timestamp(cursor)} --> {Timestamp(end)}").AppendLine(scene.Narration.Trim()).AppendLine();
+            sb.AppendLine(index++.ToString())
+              .AppendLine($"{Timestamp(cursor)} --> {Timestamp(end)}")
+              .AppendLine(scene.Narration.Trim())
+              .AppendLine();
             cursor = end;
         }
+
         await File.WriteAllTextAsync(path, sb.ToString(), ct);
     }
 
