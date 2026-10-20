@@ -153,24 +153,45 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
             throw new InvalidOperationException($"Could not find Clipchamp's voice selector for requested voice '{value}'. ZeroVideo will not silently use Ava.");
 
         await control.ClickAsync(new() { Timeout = 8000 });
-        await Task.Delay(350, ct);
+        await Task.Delay(450, ct);
 
-        var option = await FindVoiceOptionAsync(page, value, 8000);
+        // Clipchamp virtualizes its voice list. A voice can be available without being
+        // rendered in the DOM yet, so actively use the picker search field when present.
+        var searched = await TrySearchVoicePickerAsync(page, value, ct);
+        if (searched)
+        {
+            log?.Invoke($"Clipchamp voice picker: searched for '{value}'.");
+            await Task.Delay(450, ct);
+        }
+
+        var option = await FindVoiceOptionAsync(page, value, 9000);
+        if (option is null && !searched)
+        {
+            // No search field: walk/scroll a virtualized list until the requested voice is rendered.
+            option = await ScrollVoiceListAndFindAsync(page, value, ct);
+        }
+
         if (option is null)
-            throw new InvalidOperationException($"Clipchamp voice '{value}' was not found in the open voice list. ZeroVideo will not silently use Ava.");
+        {
+            var visible = await ReadVisibleVoiceLabelsAsync(page);
+            var suffix = visible.Count == 0 ? "" : $" Visible voices: {string.Join(", ", visible.Take(12))}.";
+            throw new InvalidOperationException($"Clipchamp voice '{value}' was not found in the voice picker.{suffix} ZeroVideo will not silently use Ava.");
+        }
 
+        var matchedLabel = await ReadLocatorLabelAsync(option);
         await option.ClickAsync(new() { Timeout = 8000 });
-        await Task.Delay(500, ct);
+        await Task.Delay(650, ct);
 
-        if (!await IsVoiceSelectedAsync(page, value))
+        if (!await IsVoiceSelectedAsync(page, value, matchedLabel))
             throw new InvalidOperationException($"Clipchamp did not confirm voice '{value}' after selection. TTS was not created, preventing an accidental Ava fallback.");
 
-        log?.Invoke($"Clipchamp voice verified: {value}");
+        log?.Invoke(string.IsNullOrWhiteSpace(matchedLabel) || matchedLabel.Equals(value, StringComparison.OrdinalIgnoreCase)
+            ? $"Clipchamp voice verified: {value}"
+            : $"Clipchamp voice verified: {matchedLabel} (requested {value})");
     }
 
     private static async Task<ILocator?> FindVoiceControlAsync(IPage page, IEnumerable<string> configuredControls, string requestedVoice)
     {
-        // First try configured selectors, but only accept a visible interactive control.
         foreach (var selector in configuredControls.Where(x => !string.IsNullOrWhiteSpace(x)))
         {
             try
@@ -186,10 +207,10 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
             catch { }
         }
 
-        // Current Clipchamp often labels the voice control with the currently selected
-        // voice (commonly "Ava") instead of the literal word "Voice".
+        // Current Clipchamp often labels this control with the CURRENT voice (for example
+        // "Ava") instead of the literal word "Voice".
         var candidates = page.Locator("[role='combobox'], button[aria-haspopup='listbox'], button[aria-haspopup='menu'], button");
-        var candidateCount = Math.Min(await candidates.CountAsync(), 300);
+        var candidateCount = Math.Min(await candidates.CountAsync(), 350);
         for (var i = candidateCount - 1; i >= 0; i--)
         {
             try
@@ -197,14 +218,10 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
                 var item = candidates.Nth(i);
                 if (!await item.IsVisibleAsync() || !await item.IsEnabledAsync()) continue;
 
-                var text = (await item.InnerTextAsync()).Trim();
-                var aria = (await item.GetAttributeAsync("aria-label") ?? "").Trim();
-                var title = (await item.GetAttributeAsync("title") ?? "").Trim();
-                var combined = $"{text} {aria} {title}";
-
-                if (combined.Contains("voice", StringComparison.OrdinalIgnoreCase) ||
-                    combined.Contains(requestedVoice, StringComparison.OrdinalIgnoreCase) ||
-                    KnownVoiceNames.Any(v => text.Equals(v, StringComparison.OrdinalIgnoreCase)))
+                var label = await ReadLocatorLabelAsync(item);
+                if (label.Contains("voice", StringComparison.OrdinalIgnoreCase) ||
+                    VoiceLabelMatches(label, requestedVoice) ||
+                    KnownVoiceNames.Any(v => VoiceLabelMatches(label, v)))
                     return item;
             }
             catch { }
@@ -213,66 +230,197 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
         return null;
     }
 
+    private static async Task<bool> TrySearchVoicePickerAsync(IPage page, string value, CancellationToken ct)
+    {
+        var selectors = new[]
+        {
+            "input[type='search']",
+            "input[placeholder*='search' i]",
+            "input[aria-label*='search' i]",
+            "input[placeholder*='voice' i]",
+            "input[aria-label*='voice' i]",
+            "[role='dialog'] input",
+            "[role='listbox'] input"
+        };
+
+        foreach (var selector in selectors)
+        {
+            try
+            {
+                var inputs = page.Locator(selector);
+                var count = await inputs.CountAsync();
+                for (var i = count - 1; i >= 0; i--)
+                {
+                    var input = inputs.Nth(i);
+                    if (!await input.IsVisibleAsync() || !await input.IsEnabledAsync()) continue;
+                    await input.FillAsync(value, new() { Timeout = 5000 });
+                    await Task.Delay(250, ct);
+                    return true;
+                }
+            }
+            catch { }
+        }
+
+        return false;
+    }
+
     private static async Task<ILocator?> FindVoiceOptionAsync(IPage page, string value, int timeoutMs)
     {
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
         while (DateTime.UtcNow < deadline)
         {
-            try
-            {
-                var exactOption = page.GetByRole(AriaRole.Option, new() { Name = value, Exact = true }).Last;
-                if (await exactOption.IsVisibleAsync()) return exactOption;
-            }
-            catch { }
-
-            try
-            {
-                var exactText = page.GetByText(value, new() { Exact = true }).Last;
-                if (await exactText.IsVisibleAsync()) return exactText;
-            }
-            catch { }
-
-            try
-            {
-                var optionLike = page.Locator("[role='option'], [role='menuitem'], [role='menuitemradio'], li, button")
-                    .Filter(new() { HasText = value });
-                var count = await optionLike.CountAsync();
-                for (var i = count - 1; i >= 0; i--)
-                {
-                    var item = optionLike.Nth(i);
-                    if (await item.IsVisibleAsync()) return item;
-                }
-            }
-            catch { }
-
+            var matched = await FindBestVisibleVoiceOptionAsync(page, value);
+            if (matched is not null) return matched;
             await Task.Delay(200);
         }
 
         return null;
     }
 
-    private static async Task<bool> IsVoiceSelectedAsync(IPage page, string value)
+    private static async Task<ILocator?> FindBestVisibleVoiceOptionAsync(IPage page, string value)
     {
+        // Exact ARIA option first.
         try
         {
-            var selected = page.Locator("[aria-selected='true'], [aria-checked='true']").Filter(new() { HasText = value });
-            var count = await selected.CountAsync();
-            for (var i = 0; i < count; i++)
-                if (await selected.Nth(i).IsVisibleAsync()) return true;
+            var exactOption = page.GetByRole(AriaRole.Option, new() { Name = value, Exact = true }).Last;
+            if (await exactOption.IsVisibleAsync()) return exactOption;
         }
         catch { }
 
+        // Then scan option-like elements so labels such as "Andrew (Multilingual)" match
+        // a project selection of simply "Andrew".
+        var optionLike = page.Locator("[role='option'], [role='menuitem'], [role='menuitemradio'], [role='listitem'], li, button");
+        var count = Math.Min(await optionLike.CountAsync(), 600);
+        ILocator? prefixMatch = null;
+
+        for (var i = count - 1; i >= 0; i--)
+        {
+            try
+            {
+                var item = optionLike.Nth(i);
+                if (!await item.IsVisibleAsync() || !await item.IsEnabledAsync()) continue;
+                var label = await ReadLocatorLabelAsync(item);
+                if (label.Equals(value, StringComparison.OrdinalIgnoreCase)) return item;
+                if (prefixMatch is null && VoiceLabelMatches(label, value)) prefixMatch = item;
+            }
+            catch { }
+        }
+
+        return prefixMatch;
+    }
+
+    private static async Task<ILocator?> ScrollVoiceListAndFindAsync(IPage page, string value, CancellationToken ct)
+    {
+        var scrollers = page.Locator("[role='listbox'], [role='menu'], [role='dialog']");
+        var count = await scrollers.CountAsync();
+
+        for (var s = count - 1; s >= 0; s--)
+        {
+            var scroller = scrollers.Nth(s);
+            try
+            {
+                if (!await scroller.IsVisibleAsync()) continue;
+                await scroller.EvaluateAsync("el => { el.scrollTop = 0; }");
+
+                for (var step = 0; step < 30; step++)
+                {
+                    var match = await FindBestVisibleVoiceOptionAsync(page, value);
+                    if (match is not null) return match;
+
+                    var before = await scroller.EvaluateAsync<double>("el => el.scrollTop");
+                    await scroller.EvaluateAsync("el => { el.scrollTop += Math.max(260, el.clientHeight * 0.8); }");
+                    await Task.Delay(160, ct);
+                    var after = await scroller.EvaluateAsync<double>("el => el.scrollTop");
+                    if (Math.Abs(after - before) < 1) break;
+                }
+            }
+            catch { }
+        }
+
+        return null;
+    }
+
+    private static async Task<List<string>> ReadVisibleVoiceLabelsAsync(IPage page)
+    {
+        var result = new List<string>();
+        var items = page.Locator("[role='option'], [role='menuitem'], [role='menuitemradio'], [role='listitem'], li");
+        var count = Math.Min(await items.CountAsync(), 100);
+        for (var i = 0; i < count; i++)
+        {
+            try
+            {
+                var item = items.Nth(i);
+                if (!await item.IsVisibleAsync()) continue;
+                var label = await ReadLocatorLabelAsync(item);
+                if (string.IsNullOrWhiteSpace(label) || label.Length > 80) continue;
+                if (!result.Contains(label, StringComparer.OrdinalIgnoreCase)) result.Add(label);
+            }
+            catch { }
+        }
+        return result;
+    }
+
+    private static async Task<bool> IsVoiceSelectedAsync(IPage page, string requested, string matchedLabel)
+    {
+        var expectedLabels = new[] { requested, matchedLabel }.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
         try
         {
-            var controls = page.Locator("[role='combobox'], button[aria-haspopup='listbox'], button[aria-haspopup='menu'], button").Filter(new() { HasText = value });
-            var count = await controls.CountAsync();
+            var selected = page.Locator("[aria-selected='true'], [aria-checked='true']");
+            var count = await selected.CountAsync();
             for (var i = 0; i < count; i++)
-                if (await controls.Nth(i).IsVisibleAsync()) return true;
+            {
+                var item = selected.Nth(i);
+                if (!await item.IsVisibleAsync()) continue;
+                var label = await ReadLocatorLabelAsync(item);
+                if (expectedLabels.Any(expected => VoiceLabelMatches(label, expected))) return true;
+            }
+        }
+        catch { }
+
+        // After the popup closes, the selector itself should display the chosen voice.
+        try
+        {
+            var controls = page.Locator("[role='combobox'], button[aria-haspopup='listbox'], button[aria-haspopup='menu'], button");
+            var count = Math.Min(await controls.CountAsync(), 350);
+            for (var i = 0; i < count; i++)
+            {
+                var item = controls.Nth(i);
+                if (!await item.IsVisibleAsync()) continue;
+                var label = await ReadLocatorLabelAsync(item);
+                if (expectedLabels.Any(expected => VoiceLabelMatches(label, expected))) return true;
+            }
         }
         catch { }
 
         return false;
     }
+
+    private static async Task<string> ReadLocatorLabelAsync(ILocator item)
+    {
+        string text = "", aria = "", title = "";
+        try { text = (await item.InnerTextAsync()).Trim(); } catch { }
+        try { aria = (await item.GetAttributeAsync("aria-label") ?? "").Trim(); } catch { }
+        try { title = (await item.GetAttributeAsync("title") ?? "").Trim(); } catch { }
+
+        if (!string.IsNullOrWhiteSpace(text)) return CollapseWhitespace(text);
+        if (!string.IsNullOrWhiteSpace(aria)) return CollapseWhitespace(aria);
+        return CollapseWhitespace(title);
+    }
+
+    private static bool VoiceLabelMatches(string candidate, string requested)
+    {
+        candidate = CollapseWhitespace(candidate).Trim();
+        requested = CollapseWhitespace(requested).Trim();
+        if (candidate.Length == 0 || requested.Length == 0) return false;
+        if (candidate.Equals(requested, StringComparison.OrdinalIgnoreCase)) return true;
+
+        var separators = new[] { " ", " (", " -", " –", " —", ",", ":" };
+        return separators.Any(separator => candidate.StartsWith(requested + separator, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string CollapseWhitespace(string value)
+        => string.Join(" ", value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 
     private static async Task<ILocator?> FindFinalExportButtonAsync(IPage page, IEnumerable<string> selectors, int timeoutMs)
     {
