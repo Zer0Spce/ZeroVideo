@@ -55,6 +55,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         RunPreflightCommand = new AsyncCommand(RunPreflightAsync);
         OpenProjectFolderCommand = new AsyncCommand(OpenProjectFolderAsync, () => Directory.Exists(ProjectDirectory));
         LoadProjectCommand = new AsyncCommand(LoadProjectAsync);
+        SaveProjectEditsCommand = new AsyncCommand(SaveProjectEditsAsync, () => Project.Chapters.Count > 0);
         CancelCommand = new RelayCommand(() => _cts.Cancel());
     }
 
@@ -79,6 +80,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public string ProjectDirectory { get => _projectDirectory; set { if (Set(ref _projectDirectory, value)) RefreshCommands(); } }
     public VideoProject Project { get => _project; private set { Set(ref _project, value); Raise(nameof(Chapters)); RefreshCommands(); } }
     public IEnumerable<ProjectChapter> Chapters => Project.Chapters;
+    public IEnumerable<ProjectScene> AllScenes => Project.Chapters.SelectMany(c => c.Scenes);
     public ZeroVideoSettings Settings { get => _settings; private set => Set(ref _settings, value); }
 
     public ICommand GeneratePlanCommand { get; }
@@ -92,6 +94,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
     public ICommand RunPreflightCommand { get; }
     public ICommand OpenProjectFolderCommand { get; }
     public ICommand LoadProjectCommand { get; }
+    public ICommand SaveProjectEditsCommand { get; }
     public ICommand CancelCommand { get; }
 
     public async Task InitializeAsync()
@@ -191,13 +194,17 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             }
 
             for (var s = 0; s < generatedChapter!.Scenes.Count; s++)
+            {
                 generatedChapter.Scenes[s].Number = s + 1;
+                generatedChapter.Scenes[s].ChapterNumber = generatedChapter.Number;
+            }
             generatedChapter.Narration = string.Join(" ", generatedChapter.Scenes.Select(s => s.Narration.Trim()).Where(s => s.Length > 0));
 
             Project.Chapters[i] = generatedChapter;
             await _store.SaveAsync(Project, Settings.ProjectsRoot);
             Progress = 5 + ((i + 1) / (double)count * 20.0);
             Raise(nameof(Chapters));
+            Raise(nameof(AllScenes));
             RefreshCommands();
             Log($"Chapter {i + 1} checkpoint saved: {generatedChapter.Scenes.Count} narration/image scenes. ChatGPT chat: {Project.ChatGptConversationUrl ?? "pending"}");
         }
@@ -329,6 +336,9 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         var dialog = new OpenFileDialog { Filter = "ZeroVideo Project|project.json", InitialDirectory = Settings.ProjectsRoot };
         if (dialog.ShowDialog() != true) return;
         Project = await _store.LoadAsync(dialog.FileName);
+        foreach (var chapter in Project.Chapters)
+            foreach (var scene in chapter.Scenes)
+                scene.ChapterNumber = chapter.Number;
         if (string.IsNullOrWhiteSpace(Project.Voice)) Project.Voice = Settings.ClipchampVoice;
         Topic = Project.Topic;
         Duration = Project.TargetMinutes;
@@ -338,10 +348,22 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         NewChat = false;
         Raise(nameof(Project));
         Raise(nameof(Chapters));
+        Raise(nameof(AllScenes));
         Status = CanBuildVideo() ? "Project loaded — ready to build" : "Project loaded — writing can resume";
         Log($"Loaded {Project.Title}");
         if (!string.IsNullOrWhiteSpace(Project.ChatGptConversationUrl)) Log("Saved ChatGPT project chat will be reused.");
         RefreshCommands();
+    }
+
+    private async Task SaveProjectEditsAsync()
+    {
+        if (Project.Chapters.Count == 0) return;
+        if (string.IsNullOrWhiteSpace(Project.ProjectDirectory))
+            ProjectDirectory = await _store.SaveAsync(Project, Settings.ProjectsRoot);
+        else
+            await _store.SaveAsync(Project, Settings.ProjectsRoot);
+        Status = "Scene edits saved";
+        Log("Smart Edit scene overrides saved to project.json.");
     }
 
     private bool CanContinueWriting() => Project.Chapters.Count > 0 && Project.Chapters.Any(c => !IsComplete(c));
@@ -363,6 +385,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         (ContinueWritingCommand as AsyncCommand)?.RaiseCanExecuteChanged();
         (RunPipelineCommand as AsyncCommand)?.RaiseCanExecuteChanged();
         (OpenProjectFolderCommand as AsyncCommand)?.RaiseCanExecuteChanged();
+        (SaveProjectEditsCommand as AsyncCommand)?.RaiseCanExecuteChanged();
     }
 
     private void Log(string message)

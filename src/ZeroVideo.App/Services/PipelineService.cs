@@ -12,6 +12,9 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
         if (project.Options.GenerateMissingVisuals)
             await GenerateMissingVisualsAsync(project, settings, log, progress, ct);
 
+        if (project.Options.VisualQa)
+            RunVisualQa(project, log);
+
         var total = project.Chapters.Count + 1.0;
         for (var i = 0; i < project.Chapters.Count; i++)
         {
@@ -228,6 +231,40 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
 
         return false;
     }
+
+    private static void RunVisualQa(VideoProject project, Action<string>? log)
+    {
+        var allScenes = project.Chapters.SelectMany(c => c.Scenes.Select(s => (Chapter: c, Scene: s))).ToList();
+        var missing = 0;
+        var invalid = 0;
+        var duplicateContent = 0;
+        var hashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (chapter, scene) in allScenes)
+        {
+            var media = ProjectMedia.FindAll(project, chapter, scene).Where(File.Exists).ToList();
+            if (media.Count == 0) { missing++; continue; }
+            foreach (var path in media)
+            {
+                try
+                {
+                    var info = new FileInfo(path);
+                    if (info.Length < 2048) { invalid++; continue; }
+                    if (!IsImageForQa(path)) continue;
+                    using var fs = File.OpenRead(path);
+                    var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(fs));
+                    if (!hashes.Add(hash)) duplicateContent++;
+                }
+                catch { invalid++; }
+            }
+        }
+
+        log?.Invoke($"Visual QA: {allScenes.Count - missing}/{allScenes.Count} scene(s) have direct media; {missing} missing, {invalid} invalid/tiny file(s), {duplicateContent} duplicate-content visual(s).");
+        if (missing > 0) log?.Invoke("Visual QA note: missing scenes will still use ZeroVideo's nearest-real-visual fallback during rendering.");
+    }
+
+    private static bool IsImageForQa(string path)
+        => new[] { ".png", ".jpg", ".jpeg", ".webp", ".bmp" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
     private static void AdoptExistingAudio(VideoProject project, ProjectChapter chapter)
     {

@@ -141,6 +141,65 @@
         </Grid>
       </TabItem>
 
+
+      <TabItem Header="Smart Edit">
+        <Grid Margin="0,12,0,0"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="16"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+          <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions>
+            <Border Style="{StaticResource CardBorder}">
+              <StackPanel>
+                <TextBlock Text="AI Editing Director" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="Use narration role and AI scene direction to choose motion, transitions, parallax and emphasis without repeating the same edit." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,10"/>
+                <CheckBox Content="AI Editing Director" IsChecked="{Binding Project.Options.AiEditingDirector}"/>
+                <CheckBox Content="Smart Scene Timing" IsChecked="{Binding Project.Options.SmartSceneTiming}" ToolTip="Allocate the real chapter audio duration by narration word count and scene role."/>
+                <CheckBox Content="Role-aware Editing" IsChecked="{Binding Project.Options.RoleAwareEditing}"/>
+                <CheckBox Content="Image Consistency Mode" IsChecked="{Binding Project.Options.ImageConsistencyMode}"/>
+                <Grid Margin="18,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="100"/></Grid.ColumnDefinitions>
+                  <TextBlock Text="Visual refresh every" VerticalAlignment="Center"/>
+                  <StackPanel Grid.Column="1" Orientation="Horizontal"><TextBox Width="58" Text="{Binding Project.Options.VisualRefreshSeconds, UpdateSourceTrigger=LostFocus}" HorizontalContentAlignment="Center"/><TextBlock Text=" sec" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/></StackPanel>
+                </Grid>
+              </StackPanel>
+            </Border>
+            <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+              <StackPanel>
+                <TextBlock Text="Render &amp; Audio" FontSize="21" FontWeight="SemiBold"/>
+                <CheckBox Content="Audio Mastering (-16 LUFS target)" IsChecked="{Binding Project.Options.AudioMastering}" Margin="0,10,0,0"/>
+                <CheckBox Content="Automatic Music Ducking" IsChecked="{Binding Project.Options.AutoMusicDucking}"/>
+                <CheckBox Content="Render Cache" IsChecked="{Binding Project.Options.RenderCache}"/>
+                <CheckBox Content="Visual QA before render" IsChecked="{Binding Project.Options.VisualQa}"/>
+                <CheckBox Content="Final QC verification" IsChecked="{Binding Project.Options.FinalQc}"/>
+                <CheckBox Content="Burn captions into video" IsChecked="{Binding Project.Options.BurnInCaptions}"/>
+                <Grid Margin="0,7,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                  <StackPanel><Label Content="RENDER QUALITY"/><ComboBox SelectedValue="{Binding Project.Options.RenderQuality, Mode=TwoWay}" SelectedValuePath="Content"><ComboBoxItem Content="Draft"/><ComboBoxItem Content="Normal"/><ComboBoxItem Content="Final"/></ComboBox></StackPanel>
+                  <StackPanel Grid.Column="1" Margin="10,0,0,0"><Label Content="CAPTION STYLE"/><ComboBox SelectedValue="{Binding Project.Options.CaptionStyle, Mode=TwoWay}" SelectedValuePath="Content"><ComboBoxItem Content="Documentary"/><ComboBoxItem Content="Minimal"/><ComboBoxItem Content="Bold"/></ComboBox></StackPanel>
+                </Grid>
+              </StackPanel>
+            </Border>
+          </Grid>
+
+          <Border Grid.Row="2" Style="{StaticResource CardBorder}">
+            <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+              <Grid Margin="0,0,0,10"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel><TextBlock Text="Scene Editor" FontSize="21" FontWeight="SemiBold"/><TextBlock Text="Override AI edit choices before Build video. Automatic leaves the decision to ZeroVideo." Foreground="{StaticResource Muted}"/></StackPanel>
+                <Button Grid.Column="1" Style="{StaticResource SecondaryButton}" Command="{Binding SaveProjectEditsCommand}" Content="Save scene edits"/>
+              </Grid>
+              <DataGrid Grid.Row="1" ItemsSource="{Binding AllScenes}" AutoGenerateColumns="False" CanUserAddRows="False" AlternationCount="2">
+                <DataGrid.Columns>
+                  <DataGridTextColumn Header="Ch" Binding="{Binding ChapterNumber}" Width="45" IsReadOnly="True"/>
+                  <DataGridTextColumn Header="#" Binding="{Binding Number}" Width="42" IsReadOnly="True"/>
+                  <DataGridTextColumn Header="Role" Binding="{Binding Role, UpdateSourceTrigger=PropertyChanged}" Width="85"/>
+                  <DataGridTextColumn Header="Seconds" Binding="{Binding TargetSeconds, UpdateSourceTrigger=PropertyChanged}" Width="75"/>
+                  <DataGridTextColumn Header="Motion" Binding="{Binding EditMotion, UpdateSourceTrigger=PropertyChanged}" Width="120"/>
+                  <DataGridTextColumn Header="Transition" Binding="{Binding EditTransition, UpdateSourceTrigger=PropertyChanged}" Width="120"/>
+                  <DataGridCheckBoxColumn Header="Parallax" Binding="{Binding UseParallax, Mode=TwoWay}" Width="70"/>
+                  <DataGridTextColumn Header="Intensity" Binding="{Binding EditIntensity, UpdateSourceTrigger=PropertyChanged}" Width="85"/>
+                  <DataGridTextColumn Header="Editor note" Binding="{Binding EditorNote, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
+                </DataGrid.Columns>
+              </DataGrid>
+            </Grid>
+          </Border>
+        </Grid>
+      </TabItem>
+
       <TabItem Header="Automation">
         <Grid Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
           <Border Style="{StaticResource CardBorder}"><StackPanel><TextBlock Text="Browser sessions" FontSize="21" FontWeight="SemiBold"/><TextBlock Text="Open ChatGPT or Clipchamp to sign in normally in the dedicated ZeroVideo Edge profile. Generation automatically hands that signed-in profile over to automation." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,16"/><WrapPanel><Button Style="{StaticResource PrimaryButton}" Command="{Binding OpenChatGptCommand}" Content="Open ChatGPT"/><Button Style="{StaticResource PrimaryButton}" Command="{Binding OpenClipchampCommand}" Content="Open Clipchamp"/></WrapPanel><Button Style="{StaticResource SecondaryButton}" Command="{Binding RunPreflightCommand}" Content="Run system checks" HorizontalAlignment="Left" Margin="0,14,0,6"/><ListBox ItemsSource="{Binding PreflightLines}" Height="190" FontFamily="Consolas" FontSize="12"/></StackPanel></Border>
