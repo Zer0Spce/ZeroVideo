@@ -23,7 +23,7 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
             {
                 try
                 {
-                    await ffmpeg.ValidateAudibleAudioAsync(chapter.AudioPath, settings, $"Chapter {chapter.Number} existing audio", log, ct);
+                    await ffmpeg.ValidateNarrationAudioAsync(chapter.AudioPath, settings, $"Chapter {chapter.Number} existing audio", chapter.Narration, log, ct);
                 }
                 catch (Exception ex)
                 {
@@ -37,8 +37,31 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
             if (string.IsNullOrWhiteSpace(chapter.AudioPath) || !File.Exists(chapter.AudioPath))
             {
                 log?.Invoke($"Generating TTS chapter {chapter.Number}/{project.Chapters.Count}: {chapter.Title}");
-                await clipchamp.GenerateChapterAsync(chapter, project, settings, log, ct);
-                await ffmpeg.ValidateAudibleAudioAsync(chapter.AudioPath, settings, $"Chapter {chapter.Number} generated TTS", log, ct);
+                Exception? lastTtsError = null;
+                for (var ttsAttempt = 1; ttsAttempt <= 2; ttsAttempt++)
+                {
+                    try
+                    {
+                        await clipchamp.GenerateChapterAsync(chapter, project, settings, log, ct);
+                        await ffmpeg.ValidateNarrationAudioAsync(chapter.AudioPath, settings, $"Chapter {chapter.Number} generated TTS", chapter.Narration, log, ct);
+                        lastTtsError = null;
+                        break;
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        lastTtsError = ex;
+                        log?.Invoke($"Chapter {chapter.Number}: TTS attempt {ttsAttempt}/2 was invalid — {ex.Message}");
+                        if (!string.IsNullOrWhiteSpace(chapter.AudioPath))
+                        {
+                            try { if (File.Exists(chapter.AudioPath)) File.Delete(chapter.AudioPath); } catch { }
+                            chapter.AudioPath = "";
+                        }
+                        await store.SaveAsync(project, settings.ProjectsRoot);
+                        if (ttsAttempt < 2) await Task.Delay(2500, ct);
+                    }
+                }
+                if (lastTtsError is not null) throw new InvalidOperationException($"Chapter {chapter.Number} TTS failed twice and was not usable.", lastTtsError);
                 await store.SaveAsync(project, settings.ProjectsRoot);
             }
             else log?.Invoke($"Chapter {chapter.Number}: using validated existing audio.");

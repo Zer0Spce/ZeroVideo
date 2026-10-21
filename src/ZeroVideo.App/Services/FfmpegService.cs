@@ -77,6 +77,17 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         log?.Invoke($"Audio validation passed: {label} ({duration:0.0}s, max {maxDb:0.0} dB).");
     }
 
+    public async Task ValidateNarrationAudioAsync(string path, ZeroVideoSettings settings, string label, string narration, Action<string>? log = null, CancellationToken ct = default)
+    {
+        await ValidateAudibleAudioAsync(path, settings, label, log, ct);
+        var duration = await ProbeDurationAsync(path, settings, ct);
+        var words = Regex.Matches(narration ?? "", @"\b[\p{L}\p{N}][\p{L}\p{N}'’-]*\b").Count;
+        var minimumExpectedSeconds = Math.Max(8.0, words / 5.0); // reject Clipchamp's audible-but-wrong 5-second placeholder
+        if (duration < minimumExpectedSeconds)
+            throw new InvalidOperationException($"{label} is only {duration:0.0}s for {words} narration word(s). Expected at least about {minimumExpectedSeconds:0.0}s; this is probably Clipchamp's 5-second placeholder export.");
+        log?.Invoke($"Narration-duration validation passed: {label} ({duration:0.0}s for {words} word(s)).");
+    }
+
     public async Task<string> RenderAsync(VideoProject project, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
         await ValidateAsync(settings, log, ct);
