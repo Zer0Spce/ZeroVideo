@@ -26,6 +26,17 @@ public sealed class ProjectOptions
 {
     public bool GenerateCaptions { get; set; } = true;
     public bool AddMotion { get; set; } = true;
+    public bool ContinuousMotion { get; set; } = true;
+    public double MotionCycleSeconds { get; set; } = 5.0;
+    public string MotionStyle { get; set; } = "Automatic";
+    public bool SceneTransitions { get; set; } = true;
+    public string TransitionStyle { get; set; } = "Automatic";
+    public double TransitionDurationSeconds { get; set; } = 0.35;
+    public bool CinematicEffects { get; set; } = true;
+    public string EffectIntensity { get; set; } = "Subtle";
+    public bool StyleAwareEffects { get; set; } = true;
+    public bool SmartParallax { get; set; } = true;
+    public bool AvoidRepeatedEffects { get; set; } = true;
     public bool AddBackgroundMusic { get; set; }
     public bool AddSoundEffects { get; set; }
     public bool AvoidRepeatedVisuals { get; set; } = true;

@@ -97,6 +97,7 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         Directory.CreateDirectory(exportsDir);
 
         var chapterOutputs = new List<string>();
+        var effects = new RenderEffectsState();
         foreach (var chapter in project.Chapters)
         {
             ct.ThrowIfCancellationRequested();
@@ -107,7 +108,7 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
             if (audioSeconds <= 0) audioSeconds = Math.Max(1, chapter.TargetSeconds);
             NormalizeSceneDurations(chapter, audioSeconds);
 
-            var visual = await RenderChapterVisualAsync(project, chapter, settings, renderDir, log, ct);
+            var visual = await RenderChapterVisualAsync(project, chapter, settings, renderDir, effects, log, ct);
             var output = Path.Combine(renderDir, $"chapter-{chapter.Number:00}-final.mp4");
             var muxArgs = $"-y -i \"{visual}\" -i \"{chapter.AudioPath}\" -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 192k -shortest \"{output}\"";
             var mux = await runner.RunAsync(settings.FfmpegPath, muxArgs, renderDir, ct);
@@ -138,10 +139,13 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         return finalPath;
     }
 
-    private async Task<string> RenderChapterVisualAsync(VideoProject project, ProjectChapter chapter, ZeroVideoSettings settings, string renderDir, Action<string>? log, CancellationToken ct)
+    private async Task<string> RenderChapterVisualAsync(VideoProject project, ProjectChapter chapter, ZeroVideoSettings settings, string renderDir, RenderEffectsState effects, Action<string>? log, CancellationToken ct)
     {
         var (w, h) = project.AspectRatio == "9:16" ? (1080, 1920) : (1920, 1080);
-        var clips = new List<string>();
+        var clips = new List<RenderedClip>();
+        var configuredTransition = project.Options.SceneTransitions
+            ? Math.Clamp(project.Options.TransitionDurationSeconds, 0.15, 0.8)
+            : 0.0;
 
         foreach (var scene in chapter.Scenes)
         {
@@ -158,15 +162,14 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
 
             if (mediaItems.Count == 0)
             {
-                // This can only happen when the entire project has no visual media at all.
-                // Use a purple/graphite project backdrop rather than a black/empty frame.
-                var duration = Math.Max(1.0, scene.TargetSeconds).ToString("0.###", CultureInfo.InvariantCulture);
+                var seconds = Math.Max(1.0, scene.TargetSeconds);
+                var duration = F(seconds);
                 var output = Path.Combine(renderDir, $"c{chapter.Number:00}-s{scene.Number:000}.mp4");
                 log?.Invoke($"Scene {chapter.Number}.{scene.Number}: no media exists anywhere in the project; using the branded project backdrop.");
                 var args = $"-y -f lavfi -i \"color=c=0x241C30:s={w}x{h}:r=30:d={duration}\" -vf \"drawbox=x=0:y=0:w=iw:h=ih/3:color=0x34254A@0.75:t=fill,drawbox=x=0:y=ih*0.72:w=iw:h=ih*0.28:color=0x17151F@0.82:t=fill\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
                 var result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
                 if (result.ExitCode != 0) throw new InvalidOperationException($"Scene render failed ({chapter.Number}.{scene.Number}): {result.StdErr}");
-                clips.Add(output);
+                clips.Add(new RenderedClip(output, seconds, "fade"));
                 continue;
             }
 
@@ -174,39 +177,302 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
             for (var mediaIndex = 0; mediaIndex < mediaItems.Count; mediaIndex++)
             {
                 var media = mediaItems[mediaIndex];
-                var duration = perVisualSeconds.ToString("0.###", CultureInfo.InvariantCulture);
+                var transition = ChooseTransitionPreset(project, effects);
+                var renderSeconds = perVisualSeconds + configuredTransition;
+                var duration = F(renderSeconds);
                 var suffix = mediaItems.Count > 1 ? $"-v{mediaIndex + 1:00}" : "";
                 var output = Path.Combine(renderDir, $"c{chapter.Number:00}-s{scene.Number:000}{suffix}.mp4");
                 string args;
+                string motion;
 
                 if (IsVideo(media))
                 {
-                    args = $"-y -stream_loop -1 -i \"{media}\" -t {duration} -vf \"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h},fps=30\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
+                    motion = "source video";
+                    var vf = $"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h},fps=30";
+                    var styleFx = BuildStyleEffectFilter(project);
+                    if (!string.IsNullOrWhiteSpace(styleFx)) vf += "," + styleFx;
+                    args = $"-y -stream_loop -1 -i \"{media}\" -t {duration} -vf \"{vf}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
                 }
                 else
                 {
-                    var frames = Math.Max(30, (int)(perVisualSeconds * 30));
-                    var zoom = project.Options.AddMotion
-                        ? $",zoompan=z='min(zoom+0.0008,1.08)':d={frames}:s={w}x{h}:fps=30"
-                        : "";
-                    args = $"-y -loop 1 -i \"{media}\" -t {duration} -vf \"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h}{zoom}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
+                    motion = ChooseMotionPreset(project, scene, effects);
+                    args = BuildStillRenderArgs(media, output, renderSeconds, w, h, motion, project);
                 }
 
+                log?.Invoke($"Scene {chapter.Number}.{scene.Number}: effect {motion}; transition {transition}; {renderSeconds:0.0}s render segment.");
                 var result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
                 if (result.ExitCode != 0)
                     throw new InvalidOperationException($"Scene render failed ({chapter.Number}.{scene.Number}, visual {mediaIndex + 1}): {result.StdErr}");
 
-                clips.Add(output);
+                clips.Add(new RenderedClip(output, renderSeconds, transition));
             }
         }
 
-        var list = Path.Combine(renderDir, $"chapter-{chapter.Number:00}-visuals.txt");
-        await File.WriteAllLinesAsync(list, clips.Select(p => $"file '{p.Replace("'", "'\\''")}'"), ct);
+        return await RenderChapterTimelineAsync(project, chapter, settings, renderDir, clips, configuredTransition, log, ct);
+    }
+
+    private async Task<string> RenderChapterTimelineAsync(VideoProject project, ProjectChapter chapter, ZeroVideoSettings settings, string renderDir, List<RenderedClip> clips, double configuredTransition, Action<string>? log, CancellationToken ct)
+    {
+        if (clips.Count == 0)
+            throw new InvalidOperationException($"Chapter {chapter.Number} has no rendered visual clips.");
+        if (clips.Count == 1)
+            return clips[0].Path;
+
         var chapterVisual = Path.Combine(renderDir, $"chapter-{chapter.Number:00}-visuals.mp4");
+        if (!project.Options.SceneTransitions || project.Options.TransitionStyle.Equals("None", StringComparison.OrdinalIgnoreCase) || configuredTransition <= 0)
+            return await ConcatRenderedClipsAsync(chapter, settings, renderDir, clips, chapterVisual, ct);
+
+        var transitionSeconds = Math.Min(configuredTransition, Math.Max(0.12, clips.Min(x => x.DurationSeconds) / 3.0));
+        var inputArgs = new StringBuilder();
+        for (var i = 0; i < clips.Count; i++) inputArgs.Append($" -i \"{clips[i].Path}\"");
+
+        var filter = new StringBuilder();
+        for (var i = 0; i < clips.Count; i++)
+            filter.Append($"[{i}:v]settb=AVTB,setpts=PTS-STARTPTS[v{i}];");
+
+        var current = "v0";
+        var offset = clips[0].DurationSeconds - transitionSeconds;
+        for (var i = 1; i < clips.Count; i++)
+        {
+            var next = $"x{i}";
+            filter.Append($"[{current}][v{i}]xfade=transition={clips[i].Transition}:duration={F(transitionSeconds)}:offset={F(Math.Max(0.05, offset))}[{next}];");
+            current = next;
+            offset += clips[i].DurationSeconds - transitionSeconds;
+        }
+        filter.Append($"[{current}]format=yuv420p[outv]");
+
+        var args = $"-y{inputArgs} -filter_complex \"{filter}\" -map \"[outv]\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{chapterVisual}\"";
+        var result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
+        if (result.ExitCode == 0)
+        {
+            log?.Invoke($"Chapter {chapter.Number}: applied {clips.Count - 1} scene transition(s) with anti-repetition.");
+            return chapterVisual;
+        }
+
+        log?.Invoke($"Chapter {chapter.Number}: advanced transition render failed; falling back to safe concatenation. {result.StdErr}");
+        return await ConcatRenderedClipsAsync(chapter, settings, renderDir, clips, chapterVisual, ct);
+    }
+
+    private async Task<string> ConcatRenderedClipsAsync(ProjectChapter chapter, ZeroVideoSettings settings, string renderDir, List<RenderedClip> clips, string chapterVisual, CancellationToken ct)
+    {
+        var list = Path.Combine(renderDir, $"chapter-{chapter.Number:00}-visuals.txt");
+        await File.WriteAllLinesAsync(list, clips.Select(p => $"file '{p.Path.Replace("'", "'\\''")}'"), ct);
         var concat = await runner.RunAsync(settings.FfmpegPath, $"-y -f concat -safe 0 -i \"{list}\" -c copy \"{chapterVisual}\"", renderDir, ct);
         if (concat.ExitCode != 0) throw new InvalidOperationException($"Chapter visual concat failed: {concat.StdErr}");
         return chapterVisual;
     }
+
+    private static string BuildStillRenderArgs(string media, string output, double seconds, int w, int h, string motion, VideoProject project)
+    {
+        var duration = F(seconds);
+        var frames = Math.Max(30, (int)Math.Ceiling(seconds * 30));
+        if (motion == "parallax" && project.Options.SmartParallax)
+            return BuildParallaxArgs(media, output, duration, frames, w, h, project);
+
+        var vf = $"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h}";
+        if (project.Options.AddMotion && !motion.Equals("static", StringComparison.OrdinalIgnoreCase))
+            vf += "," + BuildZoomPanFilter(motion, frames, w, h, project.Options);
+        else
+            vf += ",fps=30";
+
+        var styleFx = BuildStyleEffectFilter(project);
+        if (!string.IsNullOrWhiteSpace(styleFx)) vf += "," + styleFx;
+        return $"-y -loop 1 -i \"{media}\" -t {duration} -vf \"{vf}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
+    }
+
+    private static string BuildParallaxArgs(string media, string output, string duration, int frames, int w, int h, VideoProject project)
+    {
+        var cycle = Math.Clamp(project.Options.MotionCycleSeconds, 2.0, 12.0);
+        var step = 2.0 * Math.PI / (cycle * 30.0);
+        var s = F(step);
+        var strength = EffectStrength(project.Options);
+        var bgAmp = F(0.10 + 0.03 * strength);
+        var fgAmp = F(0.26 + 0.05 * strength);
+        var bgZoom = F(1.018 + 0.005 * strength);
+        var fgZoom = F(1.045 + 0.010 * strength);
+        var blur = F(5.0 + 2.0 * strength);
+        var feather = F(Math.Max(26, Math.Min(w, h) * 0.035));
+        var styleFx = BuildStyleEffectFilter(project);
+        var tailFx = string.IsNullOrWhiteSpace(styleFx) ? "" : "," + styleFx;
+
+        var filter = $"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h},split=2[bg0][fg0];" +
+                     $"[bg0]zoompan=z='{bgZoom}+0.009*sin(on*{s})':x='(iw-iw/zoom)*(0.5+{bgAmp}*sin(on*{s}))':y='(ih-ih/zoom)*(0.5+{bgAmp}*cos(on*{s}))':d={frames}:s={w}x{h}:fps=30,gblur=sigma={blur}[bg];" +
+                     $"[fg0]zoompan=z='{fgZoom}+0.022*sin(on*{s})':x='(iw-iw/zoom)*(0.5+{fgAmp}*sin(on*{s}))':y='(ih-ih/zoom)*(0.5+{fgAmp}*cos(on*{s}))':d={frames}:s={w}x{h}:fps=30,format=rgba[fg];" +
+                     $"color=c=black:s={w}x{h}:r=30:d={duration},format=gray,drawbox=x=iw*0.09:y=ih*0.04:w=iw*0.82:h=ih*0.92:color=white:t=fill,gblur=sigma={feather}[mask];" +
+                     $"[fg][mask]alphamerge[fgm];[bg][fgm]overlay=0:0:format=auto{tailFx},fps=30[outv]";
+
+        return $"-y -loop 1 -i \"{media}\" -t {duration} -filter_complex \"{filter}\" -map \"[outv]\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
+    }
+
+    private static string BuildZoomPanFilter(string motion, int frames, int w, int h, ProjectOptions options)
+    {
+        var cycle = Math.Clamp(options.MotionCycleSeconds, 2.0, 12.0);
+        var step = 2.0 * Math.PI / (cycle * 30.0);
+        var s = F(step);
+        var strength = EffectStrength(options);
+        var pan = F(0.40 + 0.05 * strength);
+        var zoomAmp = F(0.020 + 0.009 * strength);
+        var zoomBase = F(1.040 + 0.006 * strength);
+        var dynamicStep = F(step * 3.5);
+
+        if (!options.ContinuousMotion)
+        {
+            return motion switch
+            {
+                "pull-back" => $"zoompan=z='max(1.0,1.09-on*0.00065)':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d={frames}:s={w}x{h}:fps=30",
+                "pan-horizontal" => $"zoompan=z='1.075':x='(iw-iw/zoom)*on/{Math.Max(1, frames - 1)}':y='(ih-ih/zoom)/2':d={frames}:s={w}x{h}:fps=30",
+                "pan-vertical" => $"zoompan=z='1.075':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)*on/{Math.Max(1, frames - 1)}':d={frames}:s={w}x{h}:fps=30",
+                _ => $"zoompan=z='min(1.085,1+on*0.00065)':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d={frames}:s={w}x{h}:fps=30"
+            };
+        }
+
+        return motion switch
+        {
+            "pan-horizontal" => $"zoompan=z='1.08':x='(iw-iw/zoom)*(0.5+{pan}*sin(on*{s}))':y='(ih-ih/zoom)/2':d={frames}:s={w}x{h}:fps=30",
+            "pan-vertical" => $"zoompan=z='1.08':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)*(0.5+{pan}*sin(on*{s}))':d={frames}:s={w}x{h}:fps=30",
+            "drift" => $"zoompan=z='{zoomBase}+{zoomAmp}*sin(on*{s})':x='(iw-iw/zoom)*(0.5+0.34*sin(on*{s}))':y='(ih-ih/zoom)*(0.5+0.28*cos(on*{s}))':d={frames}:s={w}x{h}:fps=30",
+            "pull-back" => $"zoompan=z='{zoomBase}+{zoomAmp}*cos(on*{s})':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d={frames}:s={w}x{h}:fps=30",
+            "handheld" => $"zoompan=z='1.055':x='(iw-iw/zoom)*(0.5+0.16*sin(on*{dynamicStep}))':y='(ih-ih/zoom)*(0.5+0.12*cos(on*{dynamicStep}))':d={frames}:s={w}x{h}:fps=30",
+            _ => $"zoompan=z='{zoomBase}+{zoomAmp}*sin(on*{s})':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d={frames}:s={w}x{h}:fps=30"
+        };
+    }
+
+    private static string BuildStyleEffectFilter(VideoProject project)
+    {
+        if (!project.Options.CinematicEffects) return "";
+        var style = (project.Style ?? "").ToLowerInvariant();
+        var strength = EffectStrength(project.Options);
+        var noise = Math.Clamp((int)Math.Round(1 + strength * 2), 1, 6);
+        var vignette = F(0.24 + 0.07 * strength);
+
+        if (!project.Options.StyleAwareEffects)
+            return $"eq=contrast={F(1.015 + 0.012 * strength)}:saturation={F(1.0 + 0.01 * strength)},vignette={vignette}";
+
+        if (style.Contains("mystery") || style.Contains("conspiracy"))
+            return $"eq=contrast={F(1.035 + 0.015 * strength)}:brightness={F(-0.006 * strength)}:saturation={F(0.95 - 0.025 * strength)},vignette={F(0.32 + 0.08 * strength)},noise=alls={noise}:allf=t+u";
+        if (style.Contains("history") || style.Contains("archival"))
+            return $"eq=contrast={F(1.025 + 0.012 * strength)}:saturation={F(0.94 - 0.025 * strength)},noise=alls={noise}:allf=t+u,vignette={vignette}";
+        if (style.Contains("vox") || style.Contains("paper") || style.Contains("editorial"))
+            return $"eq=contrast={F(1.035 + 0.012 * strength)}:saturation={F(0.97 - 0.018 * strength)},unsharp=5:5:{F(0.18 + 0.08 * strength)}:5:5:0,noise=alls={Math.Max(1, noise - 1)}:allf=t+u";
+        if (style.Contains("whiteboard") || style.Contains("stickman"))
+            return $"eq=contrast={F(1.02 + 0.012 * strength)}:saturation={F(1.0 + 0.008 * strength)}";
+        if (style.Contains("hand-drawn") || style.Contains("hand drawn"))
+            return $"eq=contrast={F(1.025 + 0.012 * strength)}:saturation={F(0.98 - 0.012 * strength)},noise=alls={Math.Max(1, noise - 1)}:allf=t+u";
+        if (style.Contains("cartoon"))
+            return $"eq=contrast={F(1.02 + 0.012 * strength)}:saturation={F(1.02 + 0.015 * strength)},unsharp=5:5:{F(0.12 + 0.05 * strength)}:5:5:0";
+
+        return $"eq=contrast={F(1.02 + 0.012 * strength)}:saturation={F(0.99 - 0.01 * strength)},vignette={vignette},noise=alls={Math.Max(1, noise - 1)}:allf=t+u";
+    }
+
+    private static string ChooseMotionPreset(VideoProject project, ProjectScene scene, RenderEffectsState state)
+    {
+        if (!project.Options.AddMotion || project.Options.MotionStyle.Equals("None", StringComparison.OrdinalIgnoreCase))
+            return "static";
+
+        var style = (project.Style ?? "").ToLowerInvariant();
+        var requested = project.Options.MotionStyle ?? "Automatic";
+        List<string> candidates;
+        if (requested.Equals("Cinematic", StringComparison.OrdinalIgnoreCase))
+            candidates = ["push-in", "drift", "pull-back", "parallax", "static", "pan-horizontal"];
+        else if (requested.Equals("Documentary", StringComparison.OrdinalIgnoreCase))
+            candidates = ["push-in", "pan-horizontal", "drift", "static", "pull-back", "parallax"];
+        else if (requested.Equals("Dynamic", StringComparison.OrdinalIgnoreCase))
+            candidates = ["push-in", "pan-horizontal", "pan-vertical", "drift", "handheld", "parallax"];
+        else if (requested.Equals("Minimal", StringComparison.OrdinalIgnoreCase))
+            candidates = ["push-in", "static", "pull-back", "pan-horizontal"];
+        else if (style.Contains("whiteboard") || style.Contains("stickman") || style.Contains("hand-drawn") || style.Contains("hand drawn"))
+            candidates = ["push-in", "pan-horizontal", "static", "pull-back", "pan-vertical"];
+        else if (style.Contains("mystery") || style.Contains("conspiracy"))
+            candidates = ["push-in", "drift", "static", "handheld", "pull-back", "parallax"];
+        else
+            candidates = ["push-in", "pan-horizontal", "drift", "static", "pull-back", "parallax", "pan-vertical"];
+
+        if (!project.Options.SmartParallax)
+            candidates.RemoveAll(x => x == "parallax");
+
+        var directed = MapShotDirection(scene.ShotDirection);
+        if (directed is not null && (directed != "parallax" || project.Options.SmartParallax))
+        {
+            candidates.Remove(directed);
+            candidates.Insert(0, directed);
+        }
+
+        return PickWithHistory(candidates, state.RecentMotions, ref state.MotionCursor, project.Options.AvoidRepeatedEffects, 3);
+    }
+
+    private static string ChooseTransitionPreset(VideoProject project, RenderEffectsState state)
+    {
+        if (!project.Options.SceneTransitions || project.Options.TransitionStyle.Equals("None", StringComparison.OrdinalIgnoreCase))
+            return "fade";
+
+        var requested = project.Options.TransitionStyle ?? "Automatic";
+        List<string> candidates = requested.ToLowerInvariant() switch
+        {
+            "crossfade" => ["fade"],
+            "fade black" => ["fadeblack"],
+            "fade white" => ["fadewhite"],
+            "slide" => ["slideleft", "slideright"],
+            "push" => ["smoothleft", "smoothright"],
+            "zoom" => ["zoomin", "fade"],
+            "blur" => ["hblur", "fade"],
+            "paper swipe" => ["wipeleft", "diagtl", "slideright"],
+            "marker wipe" => ["wipeleft", "wipeup", "smoothleft"],
+            _ => AutomaticTransitions(project.Style)
+        };
+        return PickWithHistory(candidates, state.RecentTransitions, ref state.TransitionCursor, project.Options.AvoidRepeatedEffects, 2);
+    }
+
+    private static List<string> AutomaticTransitions(string? style)
+    {
+        var s = (style ?? "").ToLowerInvariant();
+        if (s.Contains("vox") || s.Contains("paper") || s.Contains("editorial")) return ["wipeleft", "diagtl", "fade", "slideleft"];
+        if (s.Contains("whiteboard") || s.Contains("hand-drawn") || s.Contains("hand drawn")) return ["wipeleft", "wipeup", "fade"];
+        if (s.Contains("cartoon") || s.Contains("stickman")) return ["slideleft", "slideright", "fade", "zoomin"];
+        if (s.Contains("mystery") || s.Contains("conspiracy")) return ["fadeblack", "fade", "hblur", "dissolve"];
+        return ["fade", "smoothleft", "fadeblack", "dissolve"];
+    }
+
+    private static string? MapShotDirection(string? direction)
+    {
+        var s = (direction ?? "").ToLowerInvariant();
+        if (s.Contains("parallax")) return "parallax";
+        if (s.Contains("pull") || s.Contains("zoom out")) return "pull-back";
+        if (s.Contains("pan up") || s.Contains("pan down") || s.Contains("vertical")) return "pan-vertical";
+        if (s.Contains("pan") || s.Contains("left") || s.Contains("right")) return "pan-horizontal";
+        if (s.Contains("static") || s.Contains("hold")) return "static";
+        if (s.Contains("handheld") || s.Contains("shake")) return "handheld";
+        if (s.Contains("push") || s.Contains("zoom")) return "push-in";
+        return null;
+    }
+
+    private static string PickWithHistory(List<string> candidates, Queue<string> recent, ref int cursor, bool avoidRepeats, int remember)
+    {
+        if (candidates.Count == 0) return "static";
+        string? selected = null;
+        for (var attempt = 0; attempt < candidates.Count; attempt++)
+        {
+            var candidate = candidates[cursor++ % candidates.Count];
+            if (!avoidRepeats || !recent.Contains(candidate))
+            {
+                selected = candidate;
+                break;
+            }
+        }
+        selected ??= candidates[cursor++ % candidates.Count];
+        recent.Enqueue(selected);
+        while (recent.Count > remember) recent.Dequeue();
+        return selected;
+    }
+
+    private static double EffectStrength(ProjectOptions options)
+        => (options.EffectIntensity ?? "Subtle").ToLowerInvariant() switch
+        {
+            "strong" => 2.0,
+            "medium" => 1.45,
+            _ => 1.0
+        };
+
+    private static string F(double value) => value.ToString("0.#####", CultureInfo.InvariantCulture);
 
     private static TimelineMedia? FindNearestTimelineMedia(VideoProject project, ProjectChapter currentChapter, ProjectScene currentScene)
     {
@@ -286,4 +552,13 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
     }
 
     private sealed record TimelineMedia(string Path, int ChapterNumber, int SceneNumber);
+    private sealed record RenderedClip(string Path, double DurationSeconds, string Transition);
+
+    private sealed class RenderEffectsState
+    {
+        public Queue<string> RecentMotions { get; } = new();
+        public Queue<string> RecentTransitions { get; } = new();
+        public int MotionCursor;
+        public int TransitionCursor;
+    }
 }
