@@ -5,7 +5,7 @@ namespace ZeroVideo.App.Services;
 
 public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfileService profiles)
 {
-    private bool _manualVoiceConfirmedForNextChapter;
+    private bool _manualVoiceSessionActive;
 
     private static readonly string[] KnownVoiceNames =
     [
@@ -17,6 +17,7 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
 
     public async Task PrepareManualVoiceSelectionAsync(ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
+        _manualVoiceSessionActive = false;
         await browser.EnsureStartedAsync(settings);
         var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
         var page = await browser.GetOrCreatePageAsync("clipchamp");
@@ -38,18 +39,34 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
     }
 
     public void ConfirmManualVoiceSelection()
-        => _manualVoiceConfirmedForNextChapter = true;
+        => _manualVoiceSessionActive = true;
 
     public async Task<string> GenerateChapterAsync(ProjectChapter chapter, VideoProject project, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
         await browser.EnsureStartedAsync(settings);
         var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
         var page = await browser.GetOrCreatePageAsync("clipchamp");
-        var manualVoiceConfirmed = _manualVoiceConfirmedForNextChapter;
-        if (manualVoiceConfirmed)
+        if (_manualVoiceSessionActive)
         {
-            _manualVoiceConfirmedForNextChapter = false;
-            log?.Invoke($"Clipchamp chapter {chapter.Number}: using the voice you selected manually. ZeroVideo will not change it.");
+            log?.Invoke($"Clipchamp chapter {chapter.Number}: manual voice session active. ZeroVideo will not refresh Clipchamp or change the selected voice.");
+
+            var existingInput = await TryFindScriptInputOnceAsync(page, profile.Clipchamp.ScriptInputs);
+            if (existingInput is null)
+            {
+                // Stay in the current Clipchamp project/session. Never Goto() here: a reload resets
+                // Clipchamp's manually selected TTS voice back to its default.
+                var entry = await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.TextToSpeechButtons, 5000, ct)
+                    ?? await FirstVisibleAcrossFramesAsync(page, profile.Clipchamp.NewVideoButtons, 5000, ct);
+                if (entry is not null)
+                {
+                    try
+                    {
+                        await entry.ClickAsync(new() { Timeout = 10000 });
+                        await Task.Delay(1000, ct);
+                    }
+                    catch { }
+                }
+            }
         }
         else
         {
@@ -65,7 +82,7 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
                     await Task.Delay(1200, ct);
                 }
             }
-            log?.Invoke($"Clipchamp chapter {chapter.Number}: keeping the current manually selected Clipchamp voice.");
+            log?.Invoke($"Clipchamp chapter {chapter.Number}: using Clipchamp's current voice selection.");
         }
 
         log?.Invoke($"Clipchamp chapter {chapter.Number}: preparing text-to-speech.");
@@ -75,7 +92,7 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
             var input = await WaitForScriptInputAsync(page, profile.Clipchamp.ScriptInputs, 30000, ct)
                 ?? throw new InvalidOperationException("Clipchamp TTS controls are visible, but ZeroVideo could not find the narration editor in any Clipchamp frame.");
 
-            await input.FillAsync(chapter.Narration, new() { Timeout = 15000 });
+            await FillNarrationAndVerifyAsync(input, chapter.Narration, log, ct);
             await ClickFirstAcrossFramesAsync(page, profile.Clipchamp.SaveButtons, "Clipchamp TTS Save", 15000, ct);
             log?.Invoke("TTS created with the current manually selected Clipchamp voice. Preparing audio-only export...");
 
@@ -173,6 +190,54 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
             try { await page.ScreenshotAsync(new() { Path = shot, FullPage = true }); } catch { }
             throw new InvalidOperationException($"Clipchamp automation stopped safely: {ex.Message} Diagnostic: {shot}", ex);
         }
+    }
+
+    private static async Task FillNarrationAndVerifyAsync(ILocator input, string narration, Action<string>? log, CancellationToken ct)
+    {
+        var expected = narration.Trim();
+        if (expected.Length == 0)
+            throw new InvalidOperationException("The chapter narration is empty; TTS cannot be created.");
+
+        await input.ClickAsync(new() { Timeout = 10000 });
+        await input.FillAsync(expected, new() { Timeout = 20000 });
+        await Task.Delay(450, ct);
+
+        var actual = await ReadEditorTextAsync(input);
+        var required = Math.Min(120, Math.Max(20, expected.Length / 3));
+        if (actual.Trim().Length < required)
+        {
+            // React/contenteditable can occasionally ignore a first programmatic fill while hydrating.
+            // Retry once, then fail rather than exporting a five-second silent project.
+            await input.ClickAsync(new() { Timeout = 10000 });
+            await input.FillAsync(expected, new() { Timeout = 20000 });
+            await Task.Delay(650, ct);
+            actual = await ReadEditorTextAsync(input);
+        }
+
+        if (actual.Trim().Length < required)
+            throw new InvalidOperationException($"Clipchamp narration did not stick in the Text to speech editor (expected {expected.Length} chars, detected {actual.Trim().Length}). ZeroVideo will not export silent audio.");
+
+        log?.Invoke($"Clipchamp narration verified in the TTS editor ({actual.Trim().Length} characters detected).");
+    }
+
+    private static async Task<string> ReadEditorTextAsync(ILocator input)
+    {
+        try
+        {
+            var value = await input.InputValueAsync(new() { Timeout = 3000 });
+            if (!string.IsNullOrWhiteSpace(value)) return value;
+        }
+        catch { }
+
+        try
+        {
+            var text = await input.InnerTextAsync(new() { Timeout = 3000 });
+            if (!string.IsNullOrWhiteSpace(text)) return text;
+        }
+        catch { }
+
+        try { return await input.TextContentAsync(new() { Timeout = 3000 }) ?? ""; }
+        catch { return ""; }
     }
 
     private static async Task WaitForTtsPanelReadyAsync(IPage page, Action<string>? log, CancellationToken ct)

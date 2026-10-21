@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using ZeroVideo.App.Models;
 
 namespace ZeroVideo.App.Services;
@@ -43,6 +44,39 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         return double.TryParse(result.StdOut.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) ? seconds : 0;
     }
 
+    public async Task ValidateAudibleAudioAsync(string path, ZeroVideoSettings settings, string label, Action<string>? log = null, CancellationToken ct = default)
+    {
+        await EnsureToolsAsync(settings, log, ct);
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            throw new FileNotFoundException($"{label} audio file is missing.", path);
+
+        var streamArgs = $"-v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 \"{path}\"";
+        var stream = await runner.RunAsync(settings.FfprobePath, streamArgs, ct: ct);
+        if (stream.ExitCode != 0 || !stream.StdOut.Contains("audio", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"{label} has no audio stream.");
+
+        var duration = await ProbeDurationAsync(path, settings, ct);
+        if (duration < 0.5)
+            throw new InvalidOperationException($"{label} audio is only {duration:0.00}s long.");
+
+        var volume = await runner.RunAsync(settings.FfmpegPath, $"-hide_banner -nostats -i \"{path}\" -af volumedetect -f null NUL", ct: ct);
+        var report = (volume.StdOut ?? "") + "\n" + (volume.StdErr ?? "");
+        var match = Regex.Match(report, @"max_volume:\s*(?<v>-?inf|-?\d+(?:\.\d+)?)\s*dB", RegexOptions.IgnoreCase);
+        if (!match.Success)
+            throw new InvalidOperationException($"{label} audio could not be verified for audible sound.");
+
+        var raw = match.Groups["v"].Value;
+        if (raw.Equals("-inf", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"{label} is completely silent.");
+
+        if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var maxDb))
+            throw new InvalidOperationException($"{label} audio level could not be parsed.");
+        if (maxDb <= -60)
+            throw new InvalidOperationException($"{label} is effectively silent (max volume {maxDb:0.0} dB).");
+
+        log?.Invoke($"Audio validation passed: {label} ({duration:0.0}s, max {maxDb:0.0} dB).");
+    }
+
     public async Task<string> RenderAsync(VideoProject project, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
         await ValidateAsync(settings, log, ct);
@@ -73,7 +107,7 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         var concatList = Path.Combine(renderDir, "chapters.txt");
         await File.WriteAllLinesAsync(concatList, chapterOutputs.Select(p => $"file '{p.Replace("'", "'\\''")}'"), ct);
         var voiceFinal = Path.Combine(renderDir, "video-with-voice.mp4");
-        var concat = await runner.RunAsync(settings.FfmpegPath, $"-y -f concat -safe 0 -i \"{concatList}\" -c copy \"{voiceFinal}\"", renderDir, ct);
+        var concat = await runner.RunAsync(settings.FfmpegPath, $"-y -f concat -safe 0 -i \"{concatList}\" -map 0:v:0 -map 0:a:0 -c:v copy -c:a aac -b:a 192k \"{voiceFinal}\"", renderDir, ct);
         if (concat.ExitCode != 0) throw new InvalidOperationException($"FFmpeg concat failed: {concat.StdErr}");
 
         var finalPath = Path.Combine(exportsDir, Sanitize(project.Title) + ".mp4");
@@ -89,6 +123,7 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         if (project.Options.GenerateCaptions)
             await WriteSrtAsync(project, Path.ChangeExtension(finalPath, ".srt"), ct);
 
+        await ValidateAudibleAudioAsync(finalPath, settings, "Final video", log, ct);
         return finalPath;
     }
 
