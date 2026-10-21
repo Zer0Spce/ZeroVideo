@@ -19,6 +19,17 @@ jobs:
         with:
           ref: feature/phase2-smart-editing
           fetch-depth: 0
+      - name: Fix patch helper escaping
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tools/apply_phase2_smart_editing.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace(
+              'out, n = re.subn(pattern, replacement, text, count=1, flags=re.S)',
+              'out, n = re.subn(pattern, lambda _m: replacement, text, count=1, flags=re.S)')
+          p.write_text(s, encoding='utf-8')
+          PY
       - name: Apply patch
         run: python tools/apply_phase2_smart_editing.py
       - name: Commit app changes
