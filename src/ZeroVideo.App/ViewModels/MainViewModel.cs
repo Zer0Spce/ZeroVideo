@@ -216,7 +216,28 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
             await _settingsService.SaveAsync(Settings);
             if (string.IsNullOrWhiteSpace(Project.Voice)) Log("Clipchamp voice: using the current/default Clipchamp voice.");
             else Log($"Clipchamp voice selected: {Project.Voice}");
-            var needsTts = Project.Chapters.Any(c => string.IsNullOrWhiteSpace(c.AudioPath) || !File.Exists(c.AudioPath));
+            var needsTts = false;
+            foreach (var chapter in Project.Chapters)
+            {
+                if (string.IsNullOrWhiteSpace(chapter.AudioPath) || !File.Exists(chapter.AudioPath))
+                {
+                    needsTts = true;
+                    continue;
+                }
+
+                try
+                {
+                    await _ffmpeg.ValidateAudibleAudioAsync(chapter.AudioPath, Settings, $"Chapter {chapter.Number} existing audio", Log, _cts.Token);
+                }
+                catch (Exception ex)
+                {
+                    Log($"Chapter {chapter.Number}: existing audio failed validation and will be regenerated — {ex.Message}");
+                    try { File.Delete(chapter.AudioPath); } catch { }
+                    chapter.AudioPath = "";
+                    needsTts = true;
+                }
+            }
+            if (needsTts) await _store.SaveAsync(Project, Settings.ProjectsRoot);
             if (needsTts)
             {
                 _ttsContinueGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);

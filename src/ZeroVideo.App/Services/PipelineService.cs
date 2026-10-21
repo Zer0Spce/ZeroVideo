@@ -18,13 +18,30 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
             ct.ThrowIfCancellationRequested();
             var chapter = project.Chapters[i];
             AdoptExistingAudio(project, chapter);
+
+            if (!string.IsNullOrWhiteSpace(chapter.AudioPath) && File.Exists(chapter.AudioPath))
+            {
+                try
+                {
+                    await ffmpeg.ValidateAudibleAudioAsync(chapter.AudioPath, settings, $"Chapter {chapter.Number} existing audio", log, ct);
+                }
+                catch (Exception ex)
+                {
+                    log?.Invoke($"Chapter {chapter.Number}: existing audio is invalid/silent and will be regenerated — {ex.Message}");
+                    try { File.Delete(chapter.AudioPath); } catch { }
+                    chapter.AudioPath = "";
+                    await store.SaveAsync(project, settings.ProjectsRoot);
+                }
+            }
+
             if (string.IsNullOrWhiteSpace(chapter.AudioPath) || !File.Exists(chapter.AudioPath))
             {
                 log?.Invoke($"Generating TTS chapter {chapter.Number}/{project.Chapters.Count}: {chapter.Title}");
                 await clipchamp.GenerateChapterAsync(chapter, project, settings, log, ct);
+                await ffmpeg.ValidateAudibleAudioAsync(chapter.AudioPath, settings, $"Chapter {chapter.Number} generated TTS", log, ct);
                 await store.SaveAsync(project, settings.ProjectsRoot);
             }
-            else log?.Invoke($"Chapter {chapter.Number}: using existing audio.");
+            else log?.Invoke($"Chapter {chapter.Number}: using validated existing audio.");
             progress?.Report(70 + ((i + 1) / total * 20.0));
         }
 
