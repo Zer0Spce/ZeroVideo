@@ -80,6 +80,8 @@ IMAGES PER CHAPTER: EXACTLY {{sceneCount}}
 VOICEOVER / VISUAL SCENES: EXACTLY {{sceneCount}}
 AVERAGE SCENE LENGTH: about {{averageSceneSeconds:0.0}} seconds
 AVERAGE SPOKEN WORDS PER SCENE: about {{averageSceneWords}} words, adjusted naturally as needed
+AI EDITING DIRECTOR: {{(p.Options.AiEditingDirector ? "ON" : "OFF")}}
+IMAGE CONSISTENCY MODE: {{(p.Options.ImageConsistencyMode ? "ON" : "OFF")}}
 PREVIOUS CHAPTER: {{previous}}
 NEXT CHAPTER: {{next}}
 
@@ -103,6 +105,13 @@ Requirements:
 - imagePrompt must explicitly follow the VISUAL STYLE RULES above and describe one original still visual with no captions, readable text, logos, UI, or watermarks.
 - Keep the selected visual style consistent across every scene in this project.
 - Maintain visual continuity between adjacent scenes: recurring subjects should keep recognizable clothing, shapes, props, locations, and era unless the narration changes them.
+- When IMAGE CONSISTENCY MODE is ON, explicitly preserve stable recurring character traits (hair, face shape, age range, clothing palette and signature props) and recurring location design across imagePrompt fields. Do not randomly redesign the same recurring subject from scene to scene.
+- If AI EDITING DIRECTOR is ON, choose editMotion, editTransition, useParallax, editIntensity and editorNote to support the narration beat. Hooks may move faster, evidence should be readable, reveals may use a deliberate push/parallax, transitions can move laterally, and endings should usually settle or pull back. Avoid repeating the same edit choice in consecutive scenes.
+- If AI EDITING DIRECTOR is OFF, return Automatic for editMotion/editTransition/editIntensity and null for useParallax.
+- editMotion must be one of: Automatic, push-in, pull-back, pan-horizontal, pan-vertical, drift, handheld, parallax, static.
+- editTransition must be one of: Automatic, fade, fadeblack, fadewhite, dissolve, smoothleft, smoothright, slideleft, slideright, wipeleft, wipeup, zoomin, hblur.
+- editIntensity must be one of: Automatic, Subtle, Medium, Strong.
+- editorNote must be a very short editing rationale, not narration.
 - If the selected style is Stickman explainer, every human/character in every imagePrompt must be a stickman and realistic people are forbidden.
 - If the selected style is Cartoon, Hand-drawn, or Whiteboard explainer, do not drift into photorealistic human imagery.
 - shotDirection must be practical, such as slow push in, pan left, map zoom, document highlight, parallax, or hold.
@@ -125,6 +134,11 @@ Return ONLY valid JSON, no markdown and no commentary. Do NOT duplicate the narr
       "visualQuery": "specific subject search phrase",
       "imagePrompt": "one scene-specific visual that directly illustrates this narration while following the selected style",
       "shotDirection": "slow push in",
+      "editMotion": "Automatic",
+      "editTransition": "Automatic",
+      "useParallax": null,
+      "editIntensity": "Automatic",
+      "editorNote": "short edit rationale",
       "targetSeconds": {{Math.Max(1, (int)Math.Round(averageSceneSeconds))}}
     }
   ]

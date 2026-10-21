@@ -42,6 +42,21 @@ public sealed class ProjectOptions
     public bool AvoidRepeatedVisuals { get; set; } = true;
     public bool GenerateMissingVisuals { get; set; } = true;
 
+    // Phase 2 smart-editing controls. Defaults are conservative so old projects remain stable.
+    public bool SmartSceneTiming { get; set; } = true;
+    public bool AiEditingDirector { get; set; } = true;
+    public bool RoleAwareEditing { get; set; } = true;
+    public double VisualRefreshSeconds { get; set; } = 6.0;
+    public bool AudioMastering { get; set; } = true;
+    public bool AutoMusicDucking { get; set; } = true;
+    public bool RenderCache { get; set; } = true;
+    public string RenderQuality { get; set; } = "Final";
+    public bool VisualQa { get; set; } = true;
+    public bool FinalQc { get; set; } = true;
+    public bool ImageConsistencyMode { get; set; } = true;
+    public bool BurnInCaptions { get; set; }
+    public string CaptionStyle { get; set; } = "Documentary";
+
     /// <summary>
     /// Exact chapter count requested from ChatGPT for the master outline.
     /// </summary>
@@ -84,12 +99,19 @@ public sealed class ProjectChapter
 public sealed class ProjectScene
 {
     public int Number { get; set; }
+    public int ChapterNumber { get; set; }
     public string Role { get; set; } = "detail";
     public string Narration { get; set; } = "";
     public string VisualType { get; set; } = "broll";
     public string VisualQuery { get; set; } = "";
     public string ImagePrompt { get; set; } = "";
     public string ShotDirection { get; set; } = "slow push in";
+    // Optional AI Editing Director decisions. "Automatic" lets ZeroVideo decide locally.
+    public string EditMotion { get; set; } = "Automatic";
+    public string EditTransition { get; set; } = "Automatic";
+    public bool? UseParallax { get; set; }
+    public string EditIntensity { get; set; } = "Automatic";
+    public string EditorNote { get; set; } = "";
     public double TargetSeconds { get; set; } = 6;
     public string? MediaPath { get; set; }
     public List<string> MediaPaths { get; set; } = [];

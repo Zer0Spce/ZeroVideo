@@ -12,6 +12,8 @@ public static class VisualStylePresets
         "Stickman explainer",
         "Cartoon explainer",
         "Editorial Cartoon Explainer",
+        "Cinematic Comic Explainer",
+        "Comic Book Explainer",
         "Hand-drawn explainer",
         "Whiteboard explainer",
         "Custom"
@@ -41,6 +43,12 @@ public static class VisualStylePresets
 
             "Editorial Cartoon Explainer" =>
                 "Polished editorial cartoon documentary style for long-form YouTube storytelling: bold clean black outlines, expressive slightly exaggerated human faces and poses, colorful hand-illustrated environments, simplified but recognizable architecture, technology and props, dynamic perspective, strong foreground/midground/background separation, cinematic composition, warm cel-shaded lighting, and clear story-driven scenes. Keep characters and environments fully illustrated rather than photorealistic or 3D. Do not add thumbnail headlines, captions, logos, UI, watermarks, or readable text unless the scene explicitly requires a historically necessary sign or document.",
+
+            "Cinematic Comic Explainer" =>
+                "CINEMATIC COMIC EXPLAINER STYLE. Create a polished high-detail 2D digital comic illustration for long-form YouTube storytelling. Use bold clean black ink outlines around characters and important objects, expressive slightly exaggerated caricature faces, dynamic believable poses, detailed cel shading blended with smooth painted gradient lighting, cinematic rim light, warm highlights, deep colorful shadows, and vivid controlled color grading. Build strong foreground, midground and background depth with dynamic wide-angle compositions similar to premium illustrated documentary artwork or a modern comic-book movie poster. Keep vehicles, architecture, technology, clothing and environments recognizable and detailed. Fully illustrated, never photorealistic, never 3D, never anime, never watercolor. Do not add thumbnail headlines, captions, logos, UI, watermarks or readable text unless historically essential to the scene.",
+
+            "Comic Book Explainer" =>
+                "CLASSIC COMIC BOOK EXPLAINER STYLE. Create a fully illustrated traditional comic-book scene with strong black ink contours, confident line weight, graphic cel shading, selective crosshatching, subtle halftone or Ben-Day print texture, dramatic shadows, bold color blocks, energetic perspective and expressive character poses. Favor graphic-novel storytelling and panel-like composition while still producing ONE full-frame scene rather than a collage or multi-panel page. Keep locations, vehicles, clothing and technology recognizable. Avoid photorealism, 3D rendering, anime and children's-cartoon simplification. No speech bubbles, captions, headline text, logos, UI or watermarks unless the narration explicitly requires a historically necessary sign or document.",
 
             "Hand-drawn explainer" =>
                 "Hand-drawn editorial explainer style: organic ink or pencil lines, intentionally imperfect strokes, sketchbook texture, lightly textured paper, simple hand-rendered shading, clear visual hierarchy, and coherent illustration throughout. Avoid glossy 3D rendering and photorealism.",
