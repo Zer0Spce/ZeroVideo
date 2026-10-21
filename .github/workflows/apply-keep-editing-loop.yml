@@ -1,0 +1,23 @@
+name: Apply Clipchamp keep-editing loop fix
+on:
+  push:
+    branches: [ fix/clipchamp-keep-editing-loop ]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/clipchamp-keep-editing-loop
+      - name: Patch source
+        run: python .github/patches/keep_editing_patch.py
+      - name: Commit source fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/ZeroVideo.App/Services/ClipchampTtsService.cs
+          git commit -m "Return to Clipchamp editor between TTS chapters"
+          git push origin fix/clipchamp-keep-editing-loop
