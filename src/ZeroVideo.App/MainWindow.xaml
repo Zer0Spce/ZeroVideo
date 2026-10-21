@@ -28,7 +28,7 @@
               <Label Content="TOPIC"/><TextBox Text="{Binding Topic, UpdateSourceTrigger=PropertyChanged}" MinHeight="58" TextWrapping="Wrap" AcceptsReturn="True"/>
 
               <Grid Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="10"/><ColumnDefinition/></Grid.ColumnDefinitions>
-                <StackPanel><Label Content="LENGTH (MIN)"/><ComboBox ItemsSource="{Binding Durations}" IsEditable="True" Text="{Binding Duration, UpdateSourceTrigger=LostFocus}"/></StackPanel>
+                <StackPanel><Label Content="LENGTH (MIN)"/><ComboBox ItemsSource="{Binding Durations}" SelectedItem="{Binding Duration, Mode=TwoWay}" IsEditable="False" ToolTip="Click to choose the target video length."/></StackPanel>
                 <StackPanel Grid.Column="2"><Label Content="FORMAT"/><ComboBox ItemsSource="{Binding AspectRatios}" SelectedItem="{Binding AspectRatio}"/></StackPanel>
               </Grid>
 

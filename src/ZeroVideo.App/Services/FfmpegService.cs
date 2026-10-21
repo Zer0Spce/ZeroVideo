@@ -310,30 +310,35 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         var step = 2.0 * Math.PI / (cycle * 30.0);
         var s = F(step);
         var strength = EffectStrength(options);
-        var pan = F(0.40 + 0.05 * strength);
-        var zoomAmp = F(0.020 + 0.009 * strength);
-        var zoomBase = F(1.040 + 0.006 * strength);
-        var dynamicStep = F(step * 3.5);
+        // Render camera motion at 2x resolution, then Lanczos-downsample. This gives
+        // slow pans/zooms sub-pixel precision instead of visible one-pixel stepping.
+        var sw = w * 2;
+        var sh = h * 2;
+        var pan = F(0.30 + 0.035 * strength);
+        var zoomAmp = F(0.016 + 0.006 * strength);
+        var zoomBase = F(1.035 + 0.004 * strength);
+        var dynamicStep = F(step * 2.5);
+        string Smooth(string expr) => expr + $",scale={w}:{h}:flags=lanczos,fps=30";
 
         if (!options.ContinuousMotion)
         {
             return motion switch
             {
-                "pull-back" => $"zoompan=z='max(1.0,1.09-on*0.00065)':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d={frames}:s={w}x{h}:fps=30",
-                "pan-horizontal" => $"zoompan=z='1.075':x='(iw-iw/zoom)*on/{Math.Max(1, frames - 1)}':y='(ih-ih/zoom)/2':d={frames}:s={w}x{h}:fps=30",
-                "pan-vertical" => $"zoompan=z='1.075':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)*on/{Math.Max(1, frames - 1)}':d={frames}:s={w}x{h}:fps=30",
-                _ => $"zoompan=z='min(1.085,1+on*0.00065)':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d={frames}:s={w}x{h}:fps=30"
+                "pull-back" => Smooth($"zoompan=z='max(1.0,1.085-on*0.00055)':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d={frames}:s={sw}x{sh}:fps=30"),
+                "pan-horizontal" => Smooth($"zoompan=z='1.065':x='(iw-iw/zoom)*(0.5-0.5*cos(PI*on/{Math.Max(1, frames - 1)}))':y='(ih-ih/zoom)/2':d={frames}:s={sw}x{sh}:fps=30"),
+                "pan-vertical" => Smooth($"zoompan=z='1.065':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)*(0.5-0.5*cos(PI*on/{Math.Max(1, frames - 1)}))':d={frames}:s={sw}x{sh}:fps=30"),
+                _ => Smooth($"zoompan=z='min(1.08,1+on*0.00055)':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d={frames}:s={sw}x{sh}:fps=30")
             };
         }
 
         return motion switch
         {
-            "pan-horizontal" => $"zoompan=z='1.08':x='(iw-iw/zoom)*(0.5+{pan}*sin(on*{s}))':y='(ih-ih/zoom)/2':d={frames}:s={w}x{h}:fps=30",
-            "pan-vertical" => $"zoompan=z='1.08':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)*(0.5+{pan}*sin(on*{s}))':d={frames}:s={w}x{h}:fps=30",
-            "drift" => $"zoompan=z='{zoomBase}+{zoomAmp}*sin(on*{s})':x='(iw-iw/zoom)*(0.5+0.34*sin(on*{s}))':y='(ih-ih/zoom)*(0.5+0.28*cos(on*{s}))':d={frames}:s={w}x{h}:fps=30",
-            "pull-back" => $"zoompan=z='{zoomBase}+{zoomAmp}*cos(on*{s})':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d={frames}:s={w}x{h}:fps=30",
-            "handheld" => $"zoompan=z='1.055':x='(iw-iw/zoom)*(0.5+0.16*sin(on*{dynamicStep}))':y='(ih-ih/zoom)*(0.5+0.12*cos(on*{dynamicStep}))':d={frames}:s={w}x{h}:fps=30",
-            _ => $"zoompan=z='{zoomBase}+{zoomAmp}*sin(on*{s})':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d={frames}:s={w}x{h}:fps=30"
+            "pan-horizontal" => Smooth($"zoompan=z='1.065':x='(iw-iw/zoom)*(0.5+{pan}*sin(on*{s}))':y='(ih-ih/zoom)/2':d={frames}:s={sw}x{sh}:fps=30"),
+            "pan-vertical" => Smooth($"zoompan=z='1.065':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)*(0.5+{pan}*sin(on*{s}))':d={frames}:s={sw}x{sh}:fps=30"),
+            "drift" => Smooth($"zoompan=z='{zoomBase}+{zoomAmp}*sin(on*{s})':x='(iw-iw/zoom)*(0.5+0.25*sin(on*{s}))':y='(ih-ih/zoom)*(0.5+0.20*cos(on*{s}))':d={frames}:s={sw}x{sh}:fps=30"),
+            "pull-back" => Smooth($"zoompan=z='{zoomBase}+{zoomAmp}*cos(on*{s})':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d={frames}:s={sw}x{sh}:fps=30"),
+            "handheld" => Smooth($"zoompan=z='1.05':x='(iw-iw/zoom)*(0.5+0.10*sin(on*{dynamicStep}))':y='(ih-ih/zoom)*(0.5+0.08*cos(on*{dynamicStep}))':d={frames}:s={sw}x{sh}:fps=30"),
+            _ => Smooth($"zoompan=z='{zoomBase}+{zoomAmp}*sin(on*{s})':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d={frames}:s={sw}x{sh}:fps=30")
         };
     }
 
@@ -352,6 +357,8 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
             return $"eq=contrast={F(1.035 + 0.015 * strength)}:brightness={F(-0.006 * strength)}:saturation={F(0.95 - 0.025 * strength)},vignette={F(0.32 + 0.08 * strength)},noise=alls={noise}:allf=t+u";
         if (style.Contains("history") || style.Contains("archival"))
             return $"eq=contrast={F(1.025 + 0.012 * strength)}:saturation={F(0.94 - 0.025 * strength)},noise=alls={noise}:allf=t+u,vignette={vignette}";
+        if (style.Contains("editorial cartoon"))
+            return $"eq=contrast={F(1.025 + 0.010 * strength)}:saturation={F(1.025 + 0.012 * strength)},unsharp=5:5:{F(0.14 + 0.04 * strength)}:5:5:0";
         if (style.Contains("vox") || style.Contains("paper") || style.Contains("editorial"))
             return $"eq=contrast={F(1.035 + 0.012 * strength)}:saturation={F(0.97 - 0.018 * strength)},unsharp=5:5:{F(0.18 + 0.08 * strength)}:5:5:0,noise=alls={Math.Max(1, noise - 1)}:allf=t+u";
         if (style.Contains("whiteboard") || style.Contains("stickman"))
@@ -425,11 +432,12 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
     private static List<string> AutomaticTransitions(string? style)
     {
         var s = (style ?? "").ToLowerInvariant();
-        if (s.Contains("vox") || s.Contains("paper") || s.Contains("editorial")) return ["wipeleft", "diagtl", "fade", "slideleft"];
-        if (s.Contains("whiteboard") || s.Contains("hand-drawn") || s.Contains("hand drawn")) return ["wipeleft", "wipeup", "fade"];
-        if (s.Contains("cartoon") || s.Contains("stickman")) return ["slideleft", "slideright", "fade", "zoomin"];
-        if (s.Contains("mystery") || s.Contains("conspiracy")) return ["fadeblack", "fade", "hblur", "dissolve"];
-        return ["fade", "smoothleft", "fadeblack", "dissolve"];
+        if (s.Contains("editorial cartoon")) return ["fade", "dissolve", "smoothleft", "smoothright"];
+        if (s.Contains("vox") || s.Contains("paper") || s.Contains("editorial")) return ["fade", "dissolve", "smoothleft", "wipeleft"];
+        if (s.Contains("whiteboard") || s.Contains("hand-drawn") || s.Contains("hand drawn")) return ["fade", "smoothleft", "wipeleft"];
+        if (s.Contains("cartoon") || s.Contains("stickman")) return ["fade", "dissolve", "smoothleft", "smoothright"];
+        if (s.Contains("mystery") || s.Contains("conspiracy")) return ["fadeblack", "fade", "dissolve", "hblur"];
+        return ["fade", "dissolve", "smoothleft", "fadeblack"];
     }
 
     private static string? MapShotDirection(string? direction)

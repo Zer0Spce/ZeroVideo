@@ -11,6 +11,7 @@ public static class VisualStylePresets
         "Science explainer",
         "Stickman explainer",
         "Cartoon explainer",
+        "Editorial Cartoon Explainer",
         "Hand-drawn explainer",
         "Whiteboard explainer",
         "Custom"
@@ -37,6 +38,9 @@ public static class VisualStylePresets
 
             "Cartoon explainer" =>
                 "Clean 2D cartoon explainer style with simplified shapes, expressive characters, strong silhouettes, controlled flat color areas, light stylized shading, clear visual storytelling, consistent character design, and uncluttered backgrounds. Avoid photorealistic people and photographic rendering.",
+
+            "Editorial Cartoon Explainer" =>
+                "Polished editorial cartoon documentary style for long-form YouTube storytelling: bold clean black outlines, expressive slightly exaggerated human faces and poses, colorful hand-illustrated environments, simplified but recognizable architecture, technology and props, dynamic perspective, strong foreground/midground/background separation, cinematic composition, warm cel-shaded lighting, and clear story-driven scenes. Keep characters and environments fully illustrated rather than photorealistic or 3D. Do not add thumbnail headlines, captions, logos, UI, watermarks, or readable text unless the scene explicitly requires a historically necessary sign or document.",
 
             "Hand-drawn explainer" =>
                 "Hand-drawn editorial explainer style: organic ink or pencil lines, intentionally imperfect strokes, sketchbook texture, lightly textured paper, simple hand-rendered shading, clear visual hierarchy, and coherent illustration throughout. Avoid glossy 3D rendering and photorealism.",
