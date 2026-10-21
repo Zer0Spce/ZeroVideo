@@ -224,6 +224,7 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
         var minimumExpectedSeconds = Math.Max(8.0, words / 5.0); // very conservative: <= 300 spoken words/minute
         var deadline = DateTime.UtcNow.AddMinutes(3);
         var notBefore = DateTime.UtcNow.AddSeconds(12); // Clipchamp initially leaves a 5-second placeholder while synthesis runs.
+        var unreadableFallbackAt = DateTime.UtcNow.AddSeconds(25);
         var lastLog = DateTime.MinValue;
         var bestDuration = durationBeforeSave.GetValueOrDefault();
         var stableReadyPolls = 0;
@@ -250,6 +251,11 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
                 {
                     stableReadyPolls = 0;
                 }
+            }
+            else if (DateTime.UtcNow >= unreadableFallbackAt)
+            {
+                log?.Invoke("Clipchamp's finished TTS duration is visible in the browser but not exposed to automation. The synthesis grace period has elapsed, so ZeroVideo will export now and validate the downloaded audio duration/sound before accepting it.");
+                return;
             }
 
             if ((DateTime.UtcNow - lastLog).TotalSeconds >= 5)
