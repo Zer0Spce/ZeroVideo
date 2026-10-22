@@ -426,13 +426,16 @@ QUALITY REQUIREMENTS:
 
     private static async Task<string?> TryReadLatestResponseAsync(IPage page, IEnumerable<string> configuredSelectors)
     {
+        // Only accept content that can be proven to belong to an assistant turn.
+        // The user prompt itself contains a one-scene JSON example (five narration words),
+        // so whole-page scanning can otherwise misread ZeroVideo's own schema as the answer.
         var fallbacks = new[]
         {
             "[data-message-author-role='assistant']",
             "main article[data-testid^='conversation-turn-']",
             "main [data-testid^='conversation-turn-']",
-            "main .markdown",
-            "main [class*='markdown']"
+            "[data-message-author-role='assistant'] .markdown",
+            "[data-message-author-role='assistant'] [class*='markdown']"
         };
 
         foreach (var selector in configuredSelectors.Concat(fallbacks).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct())
@@ -446,40 +449,52 @@ QUALITY REQUIREMENTS:
                     var item = items.Nth(i);
                     if (!await item.IsVisibleAsync()) continue;
 
+                    string? ownerRole = null;
                     try
                     {
-                        if (await item.Locator("[data-message-author-role='user']").CountAsync() > 0 &&
-                            await item.Locator("[data-message-author-role='assistant']").CountAsync() == 0)
-                            continue;
+                        ownerRole = await item.EvaluateAsync<string?>("""
+                            el => {
+                                const direct = el.getAttribute && el.getAttribute('data-message-author-role');
+                                if (direct) return direct;
+
+                                const owner = el.closest && el.closest('[data-message-author-role]');
+                                if (owner) return owner.getAttribute('data-message-author-role');
+
+                                const turn = el.closest && el.closest('[data-testid^=\"conversation-turn-\"]');
+                                if (turn) {
+                                    if (turn.querySelector('[data-message-author-role=\"assistant\"]')) return 'assistant';
+                                    if (turn.querySelector('[data-message-author-role=\"user\"]')) return 'user';
+                                }
+
+                                if (el.querySelector) {
+                                    if (el.querySelector('[data-message-author-role=\"assistant\"]')) return 'assistant';
+                                    if (el.querySelector('[data-message-author-role=\"user\"]')) return 'user';
+                                }
+                                return null;
+                            }
+                            """);
                     }
-                    catch { }
+                    catch
+                    {
+                        // If ownership cannot be established, skip it rather than risk
+                        // accepting JSON copied from the user's prompt.
+                    }
+
+                    if (!string.Equals(ownerRole, "assistant", StringComparison.OrdinalIgnoreCase))
+                        continue;
 
                     var text = (await item.InnerTextAsync()).Trim();
-                    // Preserve the complete assistant response even if an otherwise-correct
-                    // chapter contains an accidentally unescaped quote inside narration.
-                    // ExtractJson performs a narrow repair pass later. Returning only a nested
-                    // valid object here could turn a five-scene chapter into one scene.
                     if (LooksLikeJsonPayload(text)) return text;
                 }
             }
             catch
             {
-                // ChatGPT can replace conversation turns while streaming; always re-query.
+                // ChatGPT may replace conversation nodes while streaming.
             }
         }
 
-        try
-        {
-            var main = page.Locator("main").First;
-            if (await main.CountAsync() > 0 && await main.IsVisibleAsync())
-            {
-                var text = await main.InnerTextAsync();
-                var json = TryExtractLastValidJsonObject(text);
-                if (json is not null) return json;
-            }
-        }
-        catch { }
-
+        // Deliberately no whole-main fallback. It can see the one-scene JSON schema
+        // embedded in ZeroVideo's own user prompt and mistake it for ChatGPT's answer.
         return null;
     }
 
