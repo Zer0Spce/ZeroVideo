@@ -2,6 +2,7 @@ namespace ZeroVideo.App.Services;
 
 public static class VisualStylePresets
 {
+    // Comic Book Explainer intentionally uses page/panel composition, unlike the single-frame cinematic comic preset.
     public static IReadOnlyList<string> Names { get; } =
     [
         "Documentary explainer with fast visual variety",
