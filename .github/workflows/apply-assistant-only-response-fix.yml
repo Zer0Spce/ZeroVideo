@@ -1,0 +1,121 @@
+name: Apply assistant-only ChatGPT response fix
+
+on:
+  push:
+    branches:
+      - fix/assistant-only-chatgpt-response
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/assistant-only-chatgpt-response
+          fetch-depth: 0
+
+      - name: Patch ChatGPT response capture
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/ZeroVideo.App/Services/ChatGptBrowserService.cs')
+          text = path.read_text(encoding='utf-8')
+          start_marker = '    private static async Task<string?> TryReadLatestResponseAsync(IPage page, IEnumerable<string> configuredSelectors)\n'
+          end_marker = '    private static async Task<bool> AnyVisibleAsync(IPage page, IEnumerable<string> selectors)\n'
+          start = text.index(start_marker)
+          end = text.index(end_marker, start)
+
+          replacement = r'''    private static async Task<string?> TryReadLatestResponseAsync(IPage page, IEnumerable<string> configuredSelectors)
+    {
+        // IMPORTANT: Only read content that can be proven to belong to an assistant turn.
+        // The user's ZeroVideo prompt contains a one-scene JSON schema example. If a real
+        // assistant response contains malformed JSON, scanning the whole page can otherwise
+        // mistake that user-prompt example for the new answer ("1 scene / 5 words").
+        var fallbacks = new[]
+        {
+            "[data-message-author-role='assistant']",
+            "main article[data-testid^='conversation-turn-']",
+            "main [data-testid^='conversation-turn-']",
+            "[data-message-author-role='assistant'] .markdown",
+            "[data-message-author-role='assistant'] [class*='markdown']"
+        };
+
+        foreach (var selector in configuredSelectors.Concat(fallbacks).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct())
+        {
+            try
+            {
+                var items = page.Locator(selector);
+                var count = await items.CountAsync();
+                for (var i = count - 1; i >= 0; i--)
+                {
+                    var item = items.Nth(i);
+                    if (!await item.IsVisibleAsync()) continue;
+
+                    string? ownerRole = null;
+                    try
+                    {
+                        ownerRole = await item.EvaluateAsync<string?>(@"el => {
+                            const direct = el.getAttribute && el.getAttribute('data-message-author-role');
+                            if (direct) return direct;
+
+                            const owner = el.closest && el.closest('[data-message-author-role]');
+                            if (owner) return owner.getAttribute('data-message-author-role');
+
+                            const turn = el.closest && el.closest('[data-testid^=\"conversation-turn-\"]');
+                            if (turn) {
+                                if (turn.querySelector('[data-message-author-role=\"assistant\"]')) return 'assistant';
+                                if (turn.querySelector('[data-message-author-role=\"user\"]')) return 'user';
+                            }
+
+                            if (el.querySelector) {
+                                if (el.querySelector('[data-message-author-role=\"assistant\"]')) return 'assistant';
+                                if (el.querySelector('[data-message-author-role=\"user\"]')) return 'user';
+                            }
+                            return null;
+                        }");
+                    }
+                    catch
+                    {
+                        // If ownership cannot be established, skip it rather than risk reading
+                        // ZeroVideo's own JSON example from the user prompt.
+                    }
+
+                    if (!string.Equals(ownerRole, "assistant", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var text = (await item.InnerTextAsync()).Trim();
+                    if (LooksLikeJsonPayload(text)) return text;
+                }
+            }
+            catch
+            {
+                // ChatGPT can replace conversation turns while streaming; always re-query.
+            }
+        }
+
+        // Deliberately no whole-<main> fallback here. Whole-page scanning can capture the
+        // JSON schema embedded in the user's prompt instead of ChatGPT's generated answer.
+        return null;
+    }
+
+'''
+
+          path.write_text(text[:start] + replacement + text[end:], encoding='utf-8')
+          PY
+
+      - name: Remove temporary patch helper
+        run: rm .github/workflows/apply-assistant-only-response-fix.yml
+
+      - name: Commit patched source
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/ZeroVideo.App/Services/ChatGptBrowserService.cs .github/workflows/apply-assistant-only-response-fix.yml
+          git commit -m "Fix ChatGPT response capture to ignore user prompt JSON"
+          git push origin HEAD:fix/assistant-only-chatgpt-response
