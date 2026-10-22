@@ -24,6 +24,9 @@ Create ONLY the master outline. Do not write the full narration yet.
 Requirements:
 - Return exactly {{chapterCount}} chapters. Not approximately {{chapterCount}} — exactly {{chapterCount}}.
 - Strong hook and clear narrative progression.
+- The FIRST chapter must be designed to begin with a true story introduction before the main chronology/explanation starts. The opening should frame the topic, establish the central question or promise, create curiosity, and tell the viewer why this story matters. Do not begin the finished video by abruptly dropping into a date, fact, event, or list with no setup.
+- The FINAL chapter must leave room for a true story outro after the final major fact/reveal. The ending should resolve the central question, explain the larger takeaway or meaning, and finish with a deliberate closing thought instead of stopping abruptly.
+- The intro and outro are part of the requested chapter/scene structure; do not add extra chapters beyond {{chapterCount}}.
 - Each chapter introduces genuinely new information; no filler or repeated facts.
 - Plan reveals and transitions so later chapters build on earlier ones.
 - Distribute the total runtime sensibly across exactly {{chapterCount}} chapters.
@@ -59,6 +62,35 @@ Return ONLY valid JSON, no markdown and no commentary, using exactly this shape:
         var sceneCount = Math.Clamp(p.Options.ImagesPerChapter, 1, 50);
         var averageSceneSeconds = Math.Max(1, chapter.TargetSeconds / (double)sceneCount);
         var averageSceneWords = Math.Max(8, (int)Math.Round(((lowWords + highWords) / 2.0) / sceneCount));
+        var isOpeningChapter = chapterIndex == 0;
+        var isFinalChapter = chapterIndex == p.Chapters.Count - 1;
+        var exampleRole = isOpeningChapter ? "hook" : "setup";
+        var storyBoundaryRules = isOpeningChapter && isFinalChapter
+            ? """
+STORY BOUNDARY REQUIREMENTS — THIS IS BOTH THE OPENING AND FINAL CHAPTER:
+- Scene 1 MUST begin with a real story intro before the main facts: orient the viewer, frame the central question/promise, create curiosity, and explain why the topic matters. Do not abruptly begin with raw chronology.
+- The LAST scene MUST become a real story outro after the final important information: answer or resolve the central question, state the larger takeaway, and end on a deliberate memorable closing line. Do not simply stop after the last fact.
+- The intro and outro must feel like part of one continuous documentary/explainer narration, not generic channel branding.
+"""
+            : isOpeningChapter
+                ? """
+STORY INTRO REQUIREMENT — THIS IS THE OPENING CHAPTER:
+- Scene 1 MUST be the video's story intro/hook before the main chronology or explanation begins.
+- Open by orienting the viewer to the topic, framing the central question/promise, creating curiosity, and explaining why this story matters.
+- Give the audience enough context to understand the journey they are about to follow. Do NOT abruptly start with a date, isolated fact, event, list, or technical detail.
+- After the intro beat, transition naturally into the first real story material.
+- Scene 1 role MUST be "hook".
+"""
+                : isFinalChapter
+                    ? """
+STORY OUTRO REQUIREMENT — THIS IS THE FINAL CHAPTER:
+- The LAST scene MUST be the video's story outro after the final major fact/reveal.
+- Resolve the central question or promise established at the beginning, connect the ending back to the larger story, and explain the key takeaway or why it matters now.
+- Finish with a deliberate, satisfying final line. Do NOT end immediately after a date, statistic, acquisition, reveal, or other final fact.
+- Keep it story-focused; do not add a generic subscribe/comment call-to-action unless the project explicitly asks for one.
+- The final scene role MUST be "ending".
+"""
+                    : "";
 
         return $$"""
 You are writing ONE chapter of a long-form ZeroVideo YouTube project. Do not write any other chapter.
@@ -83,6 +115,8 @@ AVERAGE SPOKEN WORDS PER SCENE: about {{averageSceneWords}} words, adjusted natu
 PREVIOUS CHAPTER: {{previous}}
 NEXT CHAPTER: {{next}}
 
+{{storyBoundaryRules}}
+
 Write an engaging, natural narration for only this chapter and split it into EXACTLY {{sceneCount}} scenes.
 Each scene is one voiceover beat and one target image. The narration must flow continuously when all {{sceneCount}} scene narration fields are joined in order.
 
@@ -95,6 +129,7 @@ Requirements:
 - Do not repeat material that belongs to earlier chapters.
 - Set up the next chapter naturally without summarizing the whole video.
 - Every scene must advance the narration.
+- Across the complete video, the narration must feel intentionally opened and intentionally closed: the first scene introduces the story, while the final scene resolves and lands it.
 - visualQuery must be a concise 2-8 word search phrase that names the actual subject, event, object, place, person, clue, document, or action in that scene. Avoid generic searches such as "mystery evidence", "dramatic background", "question marks", or "thinking person" when the narration contains something more specific.
 - imagePrompt must be directly derived from the SAME scene narration. It must depict the exact subject/action/place/object being discussed, not merely the general theme of the whole video.
 - When narration mentions a named person, location, vehicle, document, object, historical event, physical clue, technology, company, or institution, make that concrete item the primary visual subject when visually appropriate.
@@ -119,7 +154,7 @@ Return ONLY valid JSON, no markdown and no commentary. Do NOT duplicate the narr
   "scenes": [
     {
       "number": 1,
-      "role": "setup",
+      "role": "{{exampleRole}}",
       "narration": "spoken narration for this scene",
       "visualType": "broll",
       "visualQuery": "specific subject search phrase",
