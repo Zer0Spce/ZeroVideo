@@ -153,6 +153,7 @@ Requirements:
 - Use visualType from: archive, broll, photo, map, document, graphic, generated.
 - Use role from: hook, setup, detail, evidence, transition, reveal, ending.
 - Do not fabricate specific quotes, documents, statistics, or events.
+- JSON SAFETY: if narration or any other string contains a quotation mark, document title, nickname, or quoted phrase, escape every inner double quote as \\" so the response remains valid JSON. Never place a raw unescaped double quote inside a JSON string value.
 
 Return ONLY valid JSON, no markdown and no commentary. Do NOT duplicate the narration in a separate chapter-level narration field. Use exactly:
 {

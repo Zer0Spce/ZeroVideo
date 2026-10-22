@@ -56,7 +56,7 @@ public sealed class ChatGptBrowserService(BrowserSession browser, AutomationProf
             catch (Exception ex) when (attempt == 1)
             {
                 log?.Invoke($"Chapter {metadata.Number} JSON was invalid ({ex.Message}). Retrying in the same project chat.");
-                prompt += "\nIMPORTANT: Your previous response could not be parsed. Return one complete valid JSON object only, with all scenes included and no markdown fences.";
+                prompt += "\nIMPORTANT: Your previous response could not be parsed. Return one complete valid JSON object only, with all scenes included and no markdown fences. Escape every double quote that appears inside a JSON string value as \".";
             }
         }
         throw new InvalidDataException($"ChatGPT did not return valid JSON for chapter {metadata.Number} after two attempts.");
@@ -99,8 +99,8 @@ VISUAL RELEVANCE RULES:
 QUALITY REQUIREMENTS:
 - Generate the actual finished artwork at high resolution suitable for a 1080p YouTube video.
 - Fill the composition cleanly for {ratioWords}; do not create a screenshot, browser mockup, framed webpage, UI panel, or image-within-an-interface.
-- One single image only; no multi-panel layout.
-- No captions, no readable text, no logos, no watermark, and no UI.
+- Produce ONE finished image file for this scene. If VIDEO STYLE is Comic Book Explainer, that one image SHOULD use a true comic-page composition when it helps the narration: 2-4 illustrated panels inside the same frame, separated by thick black gutters/borders, angled panel dividers, or inset close-up panels. Keep every panel tied only to THIS scene's narration; do not depict future scenes. Vary the panel layout naturally instead of repeating the same grid every time. For all other styles, use one full-frame composition with no multi-panel layout.
+- No captions, no readable text, no logos, no watermark, and no UI. Comic Book Explainer may use empty graphic caption-box shapes only if they contain no readable text, but prefer pure visual panels.
 - Keep the subject and era accurate to the scene.
 - Do not add unrelated people or objects.
 - Follow the STYLE RULES exactly and keep the visual style consistent with the project.
@@ -455,8 +455,11 @@ QUALITY REQUIREMENTS:
                     catch { }
 
                     var text = (await item.InnerTextAsync()).Trim();
-                    var json = TryExtractLastValidJsonObject(text);
-                    if (json is not null) return json;
+                    // Preserve the complete assistant response even if an otherwise-correct
+                    // chapter contains an accidentally unescaped quote inside narration.
+                    // ExtractJson performs a narrow repair pass later. Returning only a nested
+                    // valid object here could turn a five-scene chapter into one scene.
+                    if (LooksLikeJsonPayload(text)) return text;
                 }
             }
             catch
@@ -584,9 +587,126 @@ QUALITY REQUIREMENTS:
         return seed;
     }
 
+    private static bool LooksLikeJsonPayload(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var first = text.IndexOf('{');
+        var last = text.LastIndexOf('}');
+        return first >= 0 && last > first;
+    }
+
+    private static string? TryExtractAndRepairTopLevelJsonObject(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+
+        // Assistant turns are expected to contain one chapter/outline object. Prefer the
+        // widest object first so malformed quoting cannot make us accidentally accept a
+        // smaller nested scene object.
+        var first = text.IndexOf('{');
+        var last = text.LastIndexOf('}');
+        if (first < 0 || last <= first) return null;
+
+        var candidate = text[first..(last + 1)].Trim();
+        if (IsValidJsonObject(candidate)) return candidate;
+
+        var repaired = RepairUnescapedJsonStringQuotes(candidate);
+        return IsValidJsonObject(repaired) ? repaired : null;
+    }
+
+    private static bool IsValidJsonObject(string candidate)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(candidate);
+            return doc.RootElement.ValueKind == JsonValueKind.Object;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string RepairUnescapedJsonStringQuotes(string candidate)
+    {
+        var output = new System.Text.StringBuilder(candidate.Length + 32);
+        var inString = false;
+        var escaped = false;
+
+        for (var i = 0; i < candidate.Length; i++)
+        {
+            var ch = candidate[i];
+
+            if (!inString)
+            {
+                output.Append(ch);
+                if (ch == '"') inString = true;
+                continue;
+            }
+
+            if (escaped)
+            {
+                output.Append(ch);
+                escaped = false;
+                continue;
+            }
+
+            if (ch == '\\')
+            {
+                output.Append(ch);
+                escaped = true;
+                continue;
+            }
+
+            if (ch != '"')
+            {
+                output.Append(ch);
+                continue;
+            }
+
+            if (IsLikelyJsonStringTerminator(candidate, i))
+            {
+                output.Append(ch);
+                inString = false;
+            }
+            else
+            {
+                // ChatGPT occasionally writes quoted titles inside narration without JSON
+                // escaping, e.g. titled "Some Document". Preserve the quote as content.
+                output.Append("\\\"");
+            }
+        }
+
+        return output.ToString();
+    }
+
+    private static bool IsLikelyJsonStringTerminator(string text, int quoteIndex)
+    {
+        var i = quoteIndex + 1;
+        while (i < text.Length && char.IsWhiteSpace(text[i])) i++;
+        if (i >= text.Length) return true;
+
+        var next = text[i];
+        if (next is ':' or '}' or ']') return true;
+
+        if (next == ',')
+        {
+            i++;
+            while (i < text.Length && char.IsWhiteSpace(text[i])) i++;
+            if (i >= text.Length) return true;
+            // Object properties and string arrays normally begin the next value with a quote.
+            // A comma followed by ordinary prose is more likely part of an inner quotation.
+            return text[i] is '"' or '}' or ']';
+        }
+
+        return false;
+    }
+
     private static string ExtractJson(string raw)
     {
-        var json = TryExtractLastValidJsonObject(raw);
+        // First try the complete assistant object, including a narrowly-scoped repair for
+        // accidental unescaped quotes inside JSON strings. Only then fall back to the older
+        // valid-object scanner for responses that contain surrounding conversation text.
+        var json = TryExtractAndRepairTopLevelJsonObject(raw) ?? TryExtractLastValidJsonObject(raw);
         if (json is null) throw new InvalidDataException("ChatGPT did not return a valid JSON object.");
         return json;
     }
