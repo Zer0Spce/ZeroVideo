@@ -398,40 +398,64 @@ QUALITY REQUIREMENTS:
                     stableSamples = 0;
                 }
 
+                var completeJsonVisible = TryExtractAndRepairTopLevelJsonObject(current) is not null;
+                if (completeJsonVisible && stableSamples >= 1)
+                {
+                    log?.Invoke("ChatGPT: complete assistant JSON is stable; accepting the response.");
+                    return current;
+                }
+
                 if (!isGenerating && stableSamples >= 1)
                     return current;
             }
 
             if (sawGeneration && !isGenerating && !string.IsNullOrWhiteSpace(last))
             {
-                await Task.Delay(1000, ct);
+                await Task.Delay(700, ct);
                 var finalRead = await TryReadLatestResponseAsync(page, configuredResponseSelectors);
                 if (!string.IsNullOrWhiteSpace(finalRead) &&
                     !string.Equals(finalRead, baseline, StringComparison.Ordinal))
                     return finalRead;
             }
 
-            await Task.Delay(1200, ct);
+            await Task.Delay(1000, ct);
         }
 
         if (!string.IsNullOrWhiteSpace(last) &&
             !string.Equals(last, baseline, StringComparison.Ordinal))
         {
-            log?.Invoke("ChatGPT: completion controls were inconclusive, but a new valid JSON response was visible; using it.");
+            log?.Invoke("ChatGPT: completion controls were inconclusive, but a new assistant JSON response was visible; using it.");
             return last;
         }
 
-        throw new TimeoutException("ChatGPT finished in the browser, but ZeroVideo could not find a new valid JSON response in the visible conversation.");
+        throw new TimeoutException("ChatGPT finished in the browser, but ZeroVideo could not find a new assistant JSON response in the visible conversation.");
     }
 
     private static async Task<string?> TryReadLatestResponseAsync(IPage page, IEnumerable<string> configuredSelectors)
     {
-        // Only accept content that can be proven to belong to an assistant turn.
-        // The user prompt itself contains a one-scene JSON example (five narration words),
-        // so whole-page scanning can otherwise misread ZeroVideo's own schema as the answer.
+        // Prefer ChatGPT's own author marker directly. Do not require the wrapper itself to
+        // report visible: ChatGPT can keep the role node as a layout wrapper while its child
+        // response content is visible on screen.
+        try
+        {
+            var directAssistant = page.Locator("[data-message-author-role='assistant']");
+            var directCount = await directAssistant.CountAsync();
+            for (var i = directCount - 1; i >= 0; i--)
+            {
+                var item = directAssistant.Nth(i);
+                var text = (await item.InnerTextAsync()).Trim();
+                if (LooksLikeJsonPayload(text)) return text;
+            }
+        }
+        catch
+        {
+            // ChatGPT can replace the latest conversation node while streaming.
+        }
+
+        // Fallback for alternate DOM layouts. Only accept nodes that can still be tied to
+        // assistant-authored content. Never scan the whole page or user prompt.
         var fallbacks = new[]
         {
-            "[data-message-author-role='assistant']",
             "main article[data-testid^='conversation-turn-']",
             "main [data-testid^='conversation-turn-']",
             "[data-message-author-role='assistant'] .markdown",
@@ -449,52 +473,43 @@ QUALITY REQUIREMENTS:
                     var item = items.Nth(i);
                     if (!await item.IsVisibleAsync()) continue;
 
-                    string? ownerRole = null;
+                    string? text = null;
                     try
                     {
-                        ownerRole = await item.EvaluateAsync<string?>("""
-                            el => {
-                                const direct = el.getAttribute && el.getAttribute('data-message-author-role');
-                                if (direct) return direct;
-
-                                const owner = el.closest && el.closest('[data-message-author-role]');
-                                if (owner) return owner.getAttribute('data-message-author-role');
-
-                                const turn = el.closest && el.closest('[data-testid^=\"conversation-turn-\"]');
-                                if (turn) {
-                                    if (turn.querySelector('[data-message-author-role=\"assistant\"]')) return 'assistant';
-                                    if (turn.querySelector('[data-message-author-role=\"user\"]')) return 'user';
-                                }
-
-                                if (el.querySelector) {
-                                    if (el.querySelector('[data-message-author-role=\"assistant\"]')) return 'assistant';
-                                    if (el.querySelector('[data-message-author-role=\"user\"]')) return 'user';
-                                }
-                                return null;
+                        var directRole = await item.GetAttributeAsync("data-message-author-role");
+                        if (string.Equals(directRole, "assistant", StringComparison.OrdinalIgnoreCase))
+                        {
+                            text = (await item.InnerTextAsync()).Trim();
+                        }
+                        else
+                        {
+                            var assistantAncestor = item.Locator("xpath=ancestor-or-self::*[@data-message-author-role='assistant']").First;
+                            if (await assistantAncestor.CountAsync() > 0)
+                            {
+                                text = (await assistantAncestor.InnerTextAsync()).Trim();
                             }
-                            """);
+                            else
+                            {
+                                var assistantChild = item.Locator("[data-message-author-role='assistant']").Last;
+                                if (await assistantChild.CountAsync() > 0)
+                                    text = (await assistantChild.InnerTextAsync()).Trim();
+                            }
+                        }
                     }
                     catch
                     {
-                        // If ownership cannot be established, skip it rather than risk
-                        // accepting JSON copied from the user's prompt.
+                        text = null;
                     }
 
-                    if (!string.Equals(ownerRole, "assistant", StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    var text = (await item.InnerTextAsync()).Trim();
                     if (LooksLikeJsonPayload(text)) return text;
                 }
             }
             catch
             {
-                // ChatGPT may replace conversation nodes while streaming.
+                // Keep trying alternate assistant-specific selectors.
             }
         }
 
-        // Deliberately no whole-main fallback. It can see the one-scene JSON schema
-        // embedded in ZeroVideo's own user prompt and mistake it for ChatGPT's answer.
         return null;
     }
 
