@@ -36,10 +36,6 @@ public sealed class ChatGptBrowserService(BrowserSession browser, AutomationProf
 
     public async Task<ProjectChapter> GenerateChapterAsync(VideoProject project, ProjectChapter metadata, ZeroVideoSettings settings, string prompt, Action<string>? log = null, CancellationToken ct = default)
     {
-        var expectedSceneCount = Math.Clamp(project.Options.ImagesPerChapter, 1, 50);
-        var isOpeningChapter = metadata.Number == 1;
-        var isFinalChapter = metadata.Number == project.Chapters.Count;
-
         for (var attempt = 1; attempt <= 2; attempt++)
         {
             var raw = await GenerateTextAsync(project, settings, prompt, log, ct);
@@ -47,35 +43,23 @@ public sealed class ChatGptBrowserService(BrowserSession browser, AutomationProf
             {
                 var json = ExtractJson(raw);
                 var chapter = JsonSerializer.Deserialize<ProjectChapter>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? throw new InvalidDataException("Chapter JSON was empty.");
-                ValidateChapterStructure(chapter, expectedSceneCount, isOpeningChapter, isFinalChapter);
-
+                if (chapter.Scenes.Count == 0) throw new InvalidDataException("Chapter has no scenes.");
                 chapter.Number = metadata.Number;
                 chapter.Title = string.IsNullOrWhiteSpace(chapter.Title) ? metadata.Title : chapter.Title;
                 chapter.Purpose = string.IsNullOrWhiteSpace(chapter.Purpose) ? metadata.Purpose : chapter.Purpose;
                 chapter.TargetSeconds = chapter.TargetSeconds <= 0 ? metadata.TargetSeconds : chapter.TargetSeconds;
                 chapter.Narration = string.Join(" ", chapter.Scenes.Select(s => s.Narration.Trim()).Where(s => s.Length > 0));
                 if (string.IsNullOrWhiteSpace(chapter.Narration)) throw new InvalidDataException("Chapter narration was empty.");
-                log?.Invoke($"Chapter {chapter.Number}: {chapter.Scenes.Count} scenes / {chapter.Narration.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length} words. Story boundaries verified.");
+                log?.Invoke($"Chapter {chapter.Number}: {chapter.Scenes.Count} scenes / {chapter.Narration.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length} words.");
                 return chapter;
             }
             catch (Exception ex) when (attempt == 1)
             {
-                var boundaryCorrection = isOpeningChapter && isFinalChapter
-                    ? expectedSceneCount == 1
-                        ? "Scene 1 must have role \"hook\" and its narration must open with the story hook and end with the story conclusion."
-                        : "Scene 1 must have role \"hook\" and the final scene must have role \"ending\"."
-                    : isOpeningChapter
-                        ? "Scene 1 must have role \"hook\" and function as the real video introduction."
-                        : isFinalChapter
-                            ? "The final scene must have role \"ending\" and function as the real video conclusion."
-                            : "Keep the requested scene structure exactly.";
-
-                log?.Invoke($"Chapter {metadata.Number} failed JSON/story-structure validation ({ex.Message}). Retrying in the same project chat.");
-                prompt += $"\nIMPORTANT STRUCTURE CORRECTION REQUIRED: Your previous response failed ZeroVideo validation: {ex.Message}\n" +
-                          $"Return one complete valid JSON object only, with EXACTLY {expectedSceneCount} scenes numbered 1 through {expectedSceneCount}, every scene containing spoken narration, and no markdown fences. {boundaryCorrection}";
+                log?.Invoke($"Chapter {metadata.Number} JSON was invalid ({ex.Message}). Retrying in the same project chat.");
+                prompt += "\nIMPORTANT: Your previous response could not be parsed. Return one complete valid JSON object only, with all scenes included and no markdown fences.";
             }
         }
-        throw new InvalidDataException($"ChatGPT did not return valid story structure for chapter {metadata.Number} after two attempts.");
+        throw new InvalidDataException($"ChatGPT did not return valid JSON for chapter {metadata.Number} after two attempts.");
     }
 
     public async Task<string> GenerateSceneImageAsync(VideoProject project, ProjectChapter chapter, ProjectScene scene, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
@@ -580,30 +564,6 @@ QUALITY REQUIREMENTS:
         }
 
         return lastValid;
-    }
-
-    private static void ValidateChapterStructure(ProjectChapter chapter, int expectedSceneCount, bool isOpeningChapter, bool isFinalChapter)
-    {
-        if (chapter.Scenes.Count != expectedSceneCount)
-            throw new InvalidDataException($"Expected exactly {expectedSceneCount} scenes but received {chapter.Scenes.Count}.");
-
-        for (var i = 0; i < chapter.Scenes.Count; i++)
-        {
-            var scene = chapter.Scenes[i];
-            var expectedNumber = i + 1;
-            if (scene.Number != expectedNumber)
-                throw new InvalidDataException($"Scene numbering must be consecutive 1-{expectedSceneCount}; expected scene {expectedNumber} but received {scene.Number}.");
-            if (string.IsNullOrWhiteSpace(scene.Narration))
-                throw new InvalidDataException($"Scene {expectedNumber} has no spoken narration.");
-        }
-
-        if (isOpeningChapter && !string.Equals(chapter.Scenes[0].Role?.Trim(), "hook", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("The opening scene must have role \"hook\".");
-
-        var singleSceneWholeVideo = isOpeningChapter && isFinalChapter && expectedSceneCount == 1;
-        if (isFinalChapter && !singleSceneWholeVideo &&
-            !string.Equals(chapter.Scenes[^1].Role?.Trim(), "ending", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("The final scene must have role \"ending\".");
     }
 
     private static VideoProject ParseOutline(string raw, VideoProject seed)
