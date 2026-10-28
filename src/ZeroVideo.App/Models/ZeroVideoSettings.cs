@@ -14,6 +14,6 @@ public sealed class ZeroVideoSettings
     public string AutomationProfilePath { get; set; } = "";
     public bool KeepBrowserOpen { get; set; } = true;
     public string BackgroundMusicPath { get; set; } = "";
-    public double BackgroundMusicDb { get; set; } = -15;
+    public double BackgroundMusicDb { get; set; } = 0;
 
 }
