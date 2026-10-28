@@ -93,6 +93,48 @@
         </Grid>
       </TabItem>
 
+      <TabItem Header="Automation Shorts">
+        <Grid Margin="0,12,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="330"/></Grid.ColumnDefinitions>
+          <Border Style="{StaticResource CardBorder}">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Top">
+                <TextBlock Text="Automation Shorts" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="Paste a link or idea into each row. Videos run sequentially using the existing Create pipeline, including its manual Clipchamp voice confirmation." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,12"/>
+              </StackPanel>
+              <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+                <WrapPanel>
+                  <Button Style="{StaticResource SecondaryButton}" Command="{Binding AddShortRowCommand}" Content="+ Add row"/>
+                  <Button Style="{StaticResource SecondaryButton}" Command="{Binding RemoveShortRowCommand}" Content="Remove last row"/>
+                  <Button Style="{StaticResource PrimaryButton}" Command="{Binding StartShortsCommand}" Content="Start automation"/>
+                </WrapPanel>
+              </StackPanel>
+              <DataGrid ItemsSource="{Binding ShortQueue}" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False">
+                <DataGrid.Columns>
+                  <DataGridTextColumn Header="Link / text idea" Binding="{Binding Idea, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
+                  <DataGridTextColumn Header="Status" Binding="{Binding Status}" IsReadOnly="True" Width="170"/>
+                </DataGrid.Columns>
+              </DataGrid>
+            </DockPanel>
+          </Border>
+          <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+            <StackPanel>
+              <TextBlock Text="Shorts settings" FontSize="21" FontWeight="SemiBold"/>
+              <Label Content="VIDEO LENGTH (MIN)" Margin="0,12,0,0"/>
+              <ComboBox ItemsSource="{Binding ShortDurations}" SelectedItem="{Binding ShortDuration, Mode=TwoWay}"/>
+              <TextBlock Text="Output format: 9:16 vertical" Margin="0,14,0,0"/>
+              <TextBlock Text="Style, voice, visual effects and output options follow the Create tab settings." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+              <Separator Margin="0,14"/>
+              <TextBlock Text="Thumbnail" FontWeight="SemiBold"/>
+              <TextBlock Text="After each video, ZeroVideo requests a title-specific vertical cover and saves thumbnail.png in the project folder." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+              <Separator Margin="0,14"/>
+              <TextBlock Text="Publishing" FontWeight="SemiBold"/>
+              <TextBlock Text="Direct YouTube / TikTok posting requires account authorization and platform API approval; it is not enabled in this build." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+            </StackPanel>
+          </Border>
+        </Grid>
+      </TabItem>
+
       <TabItem Header="Effects">
         <Grid Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
           <Border Style="{StaticResource CardBorder}">
