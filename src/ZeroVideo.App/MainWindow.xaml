@@ -248,6 +248,24 @@
             <StackPanel MaxWidth="850" HorizontalAlignment="Left">
               <TextBlock Text="YouTube / TikTok Publishing" FontSize="21" FontWeight="SemiBold"/>
               <TextBlock Text="Official API uploads require your own authorized OAuth access tokens and appropriate platform app approval. Tokens stay in memory only, never in settings. Nothing uploads automatically: review and authorize each upload." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
+              <TextBlock Text="FINISHED VIDEO QUEUE" FontSize="17" FontWeight="SemiBold" Margin="0,6,0,5"/>
+              <TextBlock Text="Completed Create and Automation Shorts renders are added here automatically with their generated thumbnails. Queue survives restarts." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+              <ListBox Width="760" Height="145" ItemsSource="{Binding PublishingQueue}" SelectedItem="{Binding SelectedPublishItem}" DisplayMemberPath="Display" Margin="0,8,0,6"/>
+              <StackPanel Orientation="Horizontal">
+                <Button Style="{StaticResource SecondaryButton}" Content="Remove selected from queue" Command="{Binding RemovePublishQueueCommand}"/>
+              </StackPanel>
+              <Label Content="MATCHING THUMBNAIL" Margin="0,9,0,0"/>
+              <TextBox Width="760" Text="{Binding PublishThumbnail}" IsReadOnly="True"/>
+              <TextBlock Text="YouTube Shorts and TikTok may limit custom cover selection; the thumbnail is retained with the video for review." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+              <Separator Margin="0,14"/>
+              <TextBlock Text="Bulk schedule: automatically assign slots" FontSize="17" FontWeight="SemiBold"/>
+              <TextBlock Text="Choose a future first slot in your PC's local time. The next ready video receives the next interval slot. This plans the queue; uploads still require your approval." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+              <Label Content="FIRST POST (YYYY-MM-DD HH:MM)"/>
+              <TextBox Width="250" HorizontalAlignment="Left" Text="{Binding PublishFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
+              <Label Content="INTERVAL BETWEEN VIDEOS (HOURS)"/>
+              <ComboBox Width="160" HorizontalAlignment="Left" ItemsSource="{Binding PublishIntervals}" SelectedItem="{Binding PublishIntervalHours}"/>
+              <Button Style="{StaticResource SecondaryButton}" Content="Assign schedule to ready videos" Command="{Binding SchedulePublishQueueCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+              <Separator Margin="0,14"/>
               <Label Content="EXPORTED VIDEO (MP4)"/>
               <TextBox Width="760" Text="{Binding PublishFile, UpdateSourceTrigger=PropertyChanged}"/>
               <Button Style="{StaticResource SecondaryButton}" Command="{Binding BrowsePublishFileCommand}" Content="Browse exported video..." HorizontalAlignment="Left" Margin="0,8,0,0"/>
