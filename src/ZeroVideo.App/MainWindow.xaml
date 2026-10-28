@@ -292,6 +292,14 @@
             <Label Content="LANGUAGE LABEL" Margin="0,10,0,0"/><TextBox Width="740" Text="{Binding Settings.ClipchampLanguage}"/>
             <Label Content="VOICE LABEL" Margin="0,10,0,0"/><TextBox Width="740" Text="{Binding Settings.ClipchampVoice}"/>
             <TextBlock Text="The Create tab voice overrides this default for the active project. Leave blank to keep Clipchamp's current/default voice." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+            <Separator Margin="0,18"/>
+            <TextBlock Text="Custom background music" FontSize="18" FontWeight="SemiBold"/>
+            <TextBlock Text="Choose a licensed audio file. When Music is checked in Create or Shorts, it loops until the video ends." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
+            <Label Content="MUSIC FILE"/>
+            <TextBox Width="740" Text="{Binding Settings.BackgroundMusicPath, UpdateSourceTrigger=PropertyChanged}"/>
+            <Button Style="{StaticResource SecondaryButton}" Command="{Binding BrowseMusicCommand}" Content="Browse music file..." HorizontalAlignment="Left" Margin="0,8,0,0"/>
+            <Label Content="BACKGROUND MUSIC LEVEL (dB)" Margin="0,10,0,0"/>
+            <ComboBox Width="220" HorizontalAlignment="Left" ItemsSource="{Binding MusicLevelsDb}" SelectedItem="{Binding Settings.BackgroundMusicDb, Mode=TwoWay}"/>
             <WrapPanel Margin="0,14,0,0"><Button Style="{StaticResource PrimaryButton}" Command="{Binding InstallFfmpegCommand}" Content="Install FFmpeg automatically"/><Button Style="{StaticResource SecondaryButton}" Command="{Binding SaveSettingsCommand}" Content="Save settings"/></WrapPanel>
             <TextBlock Margin="0,14,0,0" Foreground="{StaticResource Muted}" TextWrapping="Wrap">FFmpeg is installed in ZeroVideo's persistent tools folder so app updates do not remove it.</TextBlock>
           </StackPanel></ScrollViewer>
