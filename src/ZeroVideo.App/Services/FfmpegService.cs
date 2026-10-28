@@ -131,7 +131,7 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
             var volume = project.Options.BackgroundMusicVolume.ToString("0.###", CultureInfo.InvariantCulture);
             log?.Invoke("Mixing custom background music: " + Path.GetFileName(musicPath) +
                 " (linear gain " + volume + ", looped to video duration).");
-            var args = $"-y -i \\"{voiceFinal}\\" -stream_loop -1 -i \\"{musicPath}\\" -filter_complex \\"[1:a]volume={volume}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]\\" -map 0:v -map \\"[a]\\" -c:v copy -c:a aac -b:a 192k -shortest \\"{finalPath}\\"";
+            var args = $"-y -i \"{voiceFinal}\" -stream_loop -1 -i \"{musicPath}\" -filter_complex \"[1:a]volume={volume}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]\" -map 0:v -map \"[a]\" -c:v copy -c:a aac -b:a 192k -shortest \"{finalPath}\"";
             var mixed = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
             if (mixed.ExitCode != 0) throw new InvalidOperationException("Music mix failed: " + mixed.StdErr);
             log?.Invoke("Custom music mix completed in final MP4.");
