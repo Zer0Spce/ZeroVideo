@@ -26,10 +26,16 @@ public sealed class PublishQueueItem : ObservableObject
     public string ScheduleDateText { get => _scheduleDateText; set => Set(ref _scheduleDateText, value); }
     public string SeoTitle => string.IsNullOrWhiteSpace(YouTubeTitle) ? Title : YouTubeTitle;
     public string SeoDescription => string.IsNullOrWhiteSpace(YouTubeDescription) ? Description : YouTubeDescription;
-    public string SeoHashtags => Hashtags;
+    public string SeoHashtags => !string.IsNullOrWhiteSpace(Hashtags) ? Hashtags : string.Join(" ", TikTokCaption.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(tag => tag.StartsWith("#")));
     public DateTimeOffset? ScheduledAt { get; set; }
     public string YouTubeStatus { get; set; } = "Ready";
     public string TikTokStatus { get; set; } = "Ready";
+    public void RaiseSeoChanged()
+    {
+        Raise(nameof(SeoTitle));
+        Raise(nameof(SeoDescription));
+        Raise(nameof(SeoHashtags));
+    }
     public string Display => $"{Title}  |  YouTube: {YouTubeStatus}  |  TikTok: {TikTokStatus}" +
         (ScheduledAt.HasValue ? $"  |  {ScheduledAt.Value:yyyy-MM-dd HH:mm zzz}" : "");
 }
@@ -197,7 +203,7 @@ public sealed partial class MainViewModel
     private string _tikTokPrivacy = "SELF_ONLY";
     private string _publishSchedule = "";
     private bool _publishConsent;
-    private string _publishStatus = "Select an exported MP4, enter authorized credentials and review before posting.";
+    private string _publishStatus = "Select a finished video to prepare browser publishing.";
     // Access tokens remain in process memory and are never written to ZeroVideo settings or logs.
     public string YouTubeAccessToken { private get; set; } = "";
     public string TikTokAccessToken { private get; set; } = "";
@@ -278,6 +284,8 @@ public sealed partial class MainViewModel
                 item.YouTubeTitle = youtubeTitle;
                 item.YouTubeDescription = youtubeDescription;
                 item.TikTokCaption = tiktokCaption;
+                item.Hashtags = string.Join(" ", tiktokCaption.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(tag => tag.StartsWith("#")));
+                item.RaiseSeoChanged();
                 YouTubeTitleText = youtubeTitle;
                 YouTubeDescriptionText = youtubeDescription;
                 TikTokCaptionText = tiktokCaption;
