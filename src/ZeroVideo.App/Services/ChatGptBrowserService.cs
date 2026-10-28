@@ -132,88 +132,25 @@ QUALITY REQUIREMENTS:
 
     public Task<string> GenerateVideoIdeasAsync(string niche, int count, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
-        var prompt = $"Generate {count} distinct, compelling, factual video ideas for the niche: {niche}. " +
-            "Each must have a specific curiosity-driven YouTube/TikTok-ready title, clear storytelling promise, " +
-            "and an intriguing opening hook. Avoid clickbait that cannot be delivered, repetition, made-up factual claims, " +
-            "and guaranteed-view claims. Return exactly one idea per line in this format: " +
-            "TITLE | HOOK. No introduction, no headings, no markdown bullets, no code block.";
-        return GeneratePlainTextAsync(settings, prompt, log, ct);
-    }
+        // Use the same JSON capture pipeline as working outline generation.
+        // A marker prevents accidental acceptance of unrelated JSON in the conversation.
+        var prompt = $"""
+Generate exactly {count} distinct factual, compelling video ideas for the niche "{niche}".
+Write curiosity-driven YouTube/TikTok titles and specific opening hooks that deliver on the title.
+Avoid repetition, fabricated facts, misleading clickbait, and promises of guaranteed views.
 
-    // ChatGPT idea responses are plain text. Capture the actual visible assistant message,
-    // rather than relying on profile selectors configured for structured JSON responses.
-    private async Task<string> GeneratePlainTextAsync(ZeroVideoSettings settings, string prompt, Action<string>? log, CancellationToken ct)
-    {
-        var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
-        await browser.EnsureStartedAsync(settings);
-        var page = await browser.GetOrCreatePageAsync("chatgpt.com");
-        await page.GotoAsync(settings.ChatGptUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120000 });
-        await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, prompt, ct);
-        await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
-        log?.Invoke("Idea Generation: waiting for assistant message to finish...");
-
-        string previous = "";
-        int stable = 0;
-        var started = DateTime.UtcNow;
-        while (DateTime.UtcNow - started < TimeSpan.FromMinutes(4))
-        {
-            ct.ThrowIfCancellationRequested();
-            var current = await ReadIdeaResponseFromDomAsync(page);
-            var ideas = current.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
-                .Count(line => line.Contains('|') && line.Split('|', 2)[0].Trim().Length > 8);
-            if (ideas > 0)
-            {
-                if (current == previous) stable++; else { previous = current; stable = 0; }
-                // Four consecutive unchanged polls prevent prematurely capturing a streaming response.
-                // ChatGPT's Stop control is not reliable across all interface versions.
-                if (stable >= 4)
-                {
-                    log?.Invoke($"Idea Generation: captured {ideas} titles from ChatGPT.");
-                    return current;
-                }
-            }
-            await Task.Delay(1200, ct);
-        }
-        if (!string.IsNullOrWhiteSpace(previous))
-        {
-            log?.Invoke("Idea Generation: response timeout; using available completed text.");
-            return previous;
-        }
-        throw new TimeoutException("ChatGPT response was visible but could not be captured. Check ChatGPT login and browser selectors.");
-    }
-
-    private static async Task<string> ReadIdeaResponseFromDomAsync(IPage page)
-    {
-        try
-        {
-            return await page.EvaluateAsync<string>("""
-                () => {
-                    const visible = e => {
-                        const r = e.getBoundingClientRect();
-                        const style = getComputedStyle(e);
-                        return r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-                    };
-                    const selectors = [
-                        '[data-message-author-role="assistant"]',
-                        '[data-testid^="conversation-turn-"] [data-message-author-role="assistant"]',
-                        'article[data-testid*="conversation-turn"] .markdown',
-                        'main .markdown',
-                        'main [class*="markdown"]'
-                    ];
-                    for (const selector of selectors) {
-                        const nodes = Array.from(document.querySelectorAll(selector)).filter(visible);
-                        for (let i = nodes.length - 1; i >= 0; i--) {
-                            const node = nodes[i];
-                            if (node.closest('[data-message-author-role="user"]')) continue;
-                            const value = (node.innerText || node.textContent || '').trim();
-                            if (value.includes('|') && value.length > 25) return value;
-                        }
-                    }
-                    return '';
-                }
-                """) ?? "";
-        }
-        catch (PlaywrightException) { return ""; }
+CRITICAL OUTPUT FORMAT: Return ONLY one complete, valid JSON object. No markdown, no commentary.
+Use exactly this schema, including the marker:
+{{
+  "response_type": "zerovideo_ideas_v1",
+  "niche": "{niche.Replace("\\", "\\\\").Replace("\"", "\\\"")}",
+  "ideas": [
+    {{ "title": "Specific video title", "hook": "Compelling opening hook" }}
+  ]
+}}
+The ideas array MUST contain exactly {count} objects with nonempty title and hook.
+""";
+        return GenerateTextAsync(new VideoProject { Title = $"Ideas: {niche}", Topic = niche }, settings, prompt, log, ct);
     }
 
     public Task OpenAsync(ZeroVideoSettings settings)
