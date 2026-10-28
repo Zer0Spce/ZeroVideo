@@ -130,6 +130,16 @@ QUALITY REQUIREMENTS:
         return destination;
     }
 
+    public Task<string> GenerateVideoIdeasAsync(string niche, int count, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
+    {
+        var prompt = $"Generate {count} distinct, compelling, factual video ideas for the niche: {niche}. " +
+            "Each must have a specific curiosity-driven YouTube/TikTok-ready title, clear storytelling promise, " +
+            "and an intriguing opening hook. Avoid clickbait that cannot be delivered, repetition, made-up factual claims, " +
+            "and guaranteed-view claims. Return exactly one idea per line in this format: " +
+            "TITLE | HOOK. No introduction, no headings, no markdown bullets, no code block.";
+        return GenerateTextAsync(new VideoProject { Title = $"Ideas: {niche}", Topic = niche }, settings, prompt, log, ct);
+    }
+
     public Task OpenAsync(ZeroVideoSettings settings)
         => browser.OpenManualAsync(settings, settings.ChatGptUrl);
 

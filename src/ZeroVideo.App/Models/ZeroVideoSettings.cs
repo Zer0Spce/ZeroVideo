@@ -13,4 +13,7 @@ public sealed class ZeroVideoSettings
     public double ClipchampPace { get; set; } = 1.0;
     public string AutomationProfilePath { get; set; } = "";
     public bool KeepBrowserOpen { get; set; } = true;
+    public string BackgroundMusicPath { get; set; } = "";
+    public double BackgroundMusicDb { get; set; } = -15;
+
 }

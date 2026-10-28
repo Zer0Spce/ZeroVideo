@@ -47,6 +47,7 @@ public sealed partial class MainViewModel
         }
 
         ShortsRunning = true;
+        _shortsTtsConfirmed = false;
         (StartShortsCommand as AsyncCommand)?.RaiseCanExecuteChanged();
         var previousTopic = Topic;
         var previousDuration = Duration;
@@ -105,6 +106,7 @@ public sealed partial class MainViewModel
             AspectRatio = previousAspect;
             Style = previousStyle;
             NewChat = previousNewChat;
+            _shortsTtsConfirmed = false;
             ShortsRunning = false;
             (StartShortsCommand as AsyncCommand)?.RaiseCanExecuteChanged();
         }
