@@ -59,6 +59,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         CancelCommand = new RelayCommand(() => _cts.Cancel());
         InitializeShortsCommands();
         InitializeIdeasCommands();
+        InitializePublishingCommands();
         BrowseMusicCommand = new RelayCommand(BrowseMusic);
     }
 
