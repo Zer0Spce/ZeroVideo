@@ -154,6 +154,39 @@
         </Grid>
       </TabItem>
 
+      <TabItem Header="Idea Generation">
+        <Grid Margin="0,12,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="340"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Border Style="{StaticResource CardBorder}">
+            <StackPanel>
+              <TextBlock Text="Idea Generation" FontSize="21" FontWeight="SemiBold"/>
+              <TextBlock Text="Generate compelling video titles and opening hooks for any niche. Ideas aim for curiosity and retention, not guaranteed views." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,14"/>
+              <Label Content="NICHE"/>
+              <TextBox Text="{Binding IdeaNiche, UpdateSourceTrigger=PropertyChanged}" ToolTip="Examples: Horror, True Crime, History, Science, Space"/>
+              <Label Content="NUMBER OF IDEAS" Margin="0,10,0,0"/>
+              <TextBox Text="{Binding IdeaCount, UpdateSourceTrigger=LostFocus}"/>
+              <Button Style="{StaticResource PrimaryButton}" Content="Generate video ideas" Command="{Binding GenerateIdeasCommand}" HorizontalAlignment="Left" Margin="0,14,0,0"/>
+              <TextBlock Text="{Binding IdeaStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,14,0,0"/>
+              <Separator Margin="0,14"/>
+              <TextBlock Text="Select an idea from the list, then add it to your Shorts queue or copy it into Create." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+              <Button Style="{StaticResource PrimaryButton}" Content="+ Add selected to Shorts queue" Command="{Binding QueueSelectedIdeaCommand}" HorizontalAlignment="Left" Margin="0,14,0,0"/>
+              <Button Style="{StaticResource SecondaryButton}" Content="Use selected idea in Create" Command="{Binding UseSelectedIdeaCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+            </StackPanel>
+          </Border>
+          <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+            <DockPanel>
+              <TextBlock DockPanel.Dock="Top" Text="Generated ideas — title and hook" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,12"/>
+              <DataGrid ItemsSource="{Binding GeneratedIdeas}" SelectedItem="{Binding SelectedIdea, Mode=TwoWay}" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single">
+                <DataGrid.Columns>
+                  <DataGridTextColumn Header="Video title" Binding="{Binding Title}" Width="2*"/>
+                  <DataGridTextColumn Header="Opening hook" Binding="{Binding Hook}" Width="3*"/>
+                </DataGrid.Columns>
+              </DataGrid>
+            </DockPanel>
+          </Border>
+        </Grid>
+      </TabItem>
+
       <TabItem Header="Effects">
         <Grid Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
           <Border Style="{StaticResource CardBorder}">
