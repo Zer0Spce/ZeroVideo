@@ -274,6 +274,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             Progress = 100;
             Log($"FINAL VIDEO: {output}");
             QueueCompletedVideo(output);
+            if (ShortsRunning)
+                Log("Shorts automation: video finished and queued for Publishing; continuing to the next video.");
+            else
             MessageBox.Show($"Video finished:\n{output}", "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex) { Fail(ex); }
