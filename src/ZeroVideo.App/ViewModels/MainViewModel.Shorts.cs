@@ -127,5 +127,6 @@ public sealed partial class MainViewModel
         var destination = Path.Combine(Project.ProjectDirectory, "thumbnail.png");
         File.Copy(path, destination, true);
         Log($"Shorts thumbnail: {destination}");
+        UpdateQueuedThumbnail();
     }
 }
