@@ -19,6 +19,14 @@ public sealed class PublishQueueItem : ObservableObject
     public string YouTubeTitle { get; set; } = "";
     public string YouTubeDescription { get; set; } = "";
     public string TikTokCaption { get; set; } = "";
+    private bool _isScheduled;
+    public bool IsScheduled { get => _isScheduled; set { if (Set(ref _isScheduled, value)) Raise(nameof(IsInstant)); } }
+    public bool IsInstant { get => !IsScheduled; set { if (value) IsScheduled = false; } }
+    private string _scheduleDateText = "";
+    public string ScheduleDateText { get => _scheduleDateText; set => Set(ref _scheduleDateText, value); }
+    public string SeoTitle => string.IsNullOrWhiteSpace(YouTubeTitle) ? Title : YouTubeTitle;
+    public string SeoDescription => string.IsNullOrWhiteSpace(YouTubeDescription) ? Description : YouTubeDescription;
+    public string SeoHashtags => Hashtags;
     public DateTimeOffset? ScheduledAt { get; set; }
     public string YouTubeStatus { get; set; } = "Ready";
     public string TikTokStatus { get; set; } = "Ready";
@@ -94,9 +102,28 @@ public sealed partial class MainViewModel
             if (!File.Exists(QueueFile)) return;
             foreach (var item in JsonSerializer.Deserialize<List<PublishQueueItem>>(File.ReadAllText(QueueFile)) ?? [])
                 if (File.Exists(item.VideoPath) && !PublishingQueue.Any(x => x.VideoPath.Equals(item.VideoPath, StringComparison.OrdinalIgnoreCase)))
+                {
+                    item.IsScheduled = item.ScheduledAt.HasValue;
+                    item.ScheduleDateText = item.ScheduledAt?.LocalDateTime.ToString("yyyy-MM-dd HH:mm") ?? "";
+                    TrackPublishingItem(item);
                     PublishingQueue.Add(item);
+                }
         }
         catch (Exception ex) { Log("Publishing queue could not be loaded: " + ex.Message); }
+    }
+
+    private void TrackPublishingItem(PublishQueueItem item)
+    {
+        item.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(PublishQueueItem.ScheduleDateText) && item.IsScheduled &&
+                DateTime.TryParseExact(item.ScheduleDateText, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeLocal, out var scheduled) && scheduled > DateTime.Now)
+                item.ScheduledAt = new DateTimeOffset(scheduled);
+            if (args.PropertyName == nameof(PublishQueueItem.IsScheduled) && !item.IsScheduled)
+                item.ScheduledAt = null;
+            SavePublishingQueue();
+        };
     }
 
     private void SavePublishingQueue()
@@ -123,6 +150,7 @@ public sealed partial class MainViewModel
             Title = string.IsNullOrWhiteSpace(Project.Title) ? Path.GetFileNameWithoutExtension(output) : Project.Title,
             Description = Project.Topic
         };
+        TrackPublishingItem(item);
         PublishingQueue.Add(item);
         SavePublishingQueue();
         Log("Publishing queue: added " + item.Title);
@@ -147,17 +175,18 @@ public sealed partial class MainViewModel
         { PublishStatus = "Choose a future first slot: YYYY-MM-DD HH:MM (computer local time)."; return; }
         var interval = PublishIntervalHours;
         if (!PublishIntervals.Contains(interval)) { PublishStatus = "Choose a valid interval."; return; }
-        var ready = PublishingQueue.Where(x => x.YouTubeStatus == "Ready").ToList();
+        var ready = PublishingQueue.Where(x => x.YouTubeStatus == "Ready" && x.IsScheduled).ToList();
         if (ready.Count == 0) { PublishStatus = "No ready videos to schedule."; return; }
         var slot = new DateTimeOffset(first);
         foreach (var item in ready)
         {
             item.ScheduledAt = slot;
+            item.ScheduleDateText = slot.LocalDateTime.ToString("yyyy-MM-dd HH:mm");
             slot = slot.AddHours(interval);
         }
         SavePublishingQueue();
         SelectedPublishItem = ready[0];
-        PublishStatus = $"Assigned {ready.Count} YouTube schedule slots every {interval} hours. Review and upload each video to confirm with YouTube.";
+        PublishStatus = $"Assigned {ready.Count} schedule slots every {interval} hours. Review each in Studio.";
     }
 
     private readonly PublishingService _publishing = new();
@@ -317,6 +346,7 @@ public sealed partial class MainViewModel
         var thumbnail = Path.Combine(Path.GetDirectoryName(path)!, "thumbnail.png");
         var item = new PublishQueueItem { VideoPath = path, Title = Path.GetFileNameWithoutExtension(path),
             ThumbnailPath = File.Exists(thumbnail) ? thumbnail : "" };
+        TrackPublishingItem(item);
         PublishingQueue.Add(item);
         SavePublishingQueue();
         SelectedPublishItem = item;
