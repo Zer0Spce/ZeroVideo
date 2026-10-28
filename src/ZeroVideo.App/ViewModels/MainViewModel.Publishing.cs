@@ -303,14 +303,13 @@ public sealed partial class MainViewModel
                 "Prepare browser publishing", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
             try
             {
-                var url = youtube ? "https://studio.youtube.com/" : "https://www.tiktok.com/tiktokstudio/upload";
-                await _browser.OpenManualAsync(Settings, url);
-                if (SelectedPublishItem is not null && PublishCheckpointStage == "Not started")
-                {
-                    PublishCheckpointStage = "Studio opened";
-                    SaveSelectedCheckpoint();
-                }
-                PublishStatus = site + " opened. Select the MP4, use the prepared metadata and thumbnail where supported, then confirm publishing or scheduling in Studio. Submission is not automated yet.";
+                var uploader = new StudioUploadService(_browser);
+                PublishStatus = "Preparing " + site + " upload with Playwright...";
+                var result = await uploader.PrepareAsync(Settings, PublishDestination, PublishFile,
+                    YouTubeTitleText, YouTubeDescriptionText, TikTokCaptionText, PublishThumbnail, Log, _cts.Token);
+                PublishCheckpointStage = "Video selected";
+                SaveSelectedCheckpoint();
+                PublishStatus = result;
             }
             catch (Exception ex) { PublishStatus = "Browser publishing: " + ex.Message; }
             finally { PublishConsent = false; }
