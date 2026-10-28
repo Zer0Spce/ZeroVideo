@@ -64,6 +64,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
     public ObservableCollection<string> Logs { get; } = [];
     public ObservableCollection<string> PreflightLines { get; } = [];
+    public ObservableCollection<double> MusicLevelsDb { get; } = [-5, -10, -15, -20, -25, -30, -35, -40];
     public ObservableCollection<int> Durations { get; } = [5, 10, 15, 20, 30, 45, 60, 90, 120];
     public ObservableCollection<string> AspectRatios { get; } = ["16:9", "9:16"];
     public ObservableCollection<string> Styles { get; } = new(VisualStylePresets.Names);
