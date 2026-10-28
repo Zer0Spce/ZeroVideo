@@ -118,19 +118,38 @@
             </DockPanel>
           </Border>
           <Border Grid.Column="2" Style="{StaticResource CardBorder}">
-            <StackPanel>
-              <TextBlock Text="Shorts settings" FontSize="21" FontWeight="SemiBold"/>
-              <Label Content="VIDEO LENGTH (MIN)" Margin="0,12,0,0"/>
-              <ComboBox ItemsSource="{Binding ShortDurations}" SelectedItem="{Binding ShortDuration, Mode=TwoWay}"/>
-              <TextBlock Text="Output format: 9:16 vertical" Margin="0,14,0,0"/>
-              <TextBlock Text="Style, voice, visual effects and output options follow the Create tab settings." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
-              <Separator Margin="0,14"/>
-              <TextBlock Text="Thumbnail" FontWeight="SemiBold"/>
-              <TextBlock Text="After each video, ZeroVideo requests a title-specific vertical cover and saves thumbnail.png in the project folder." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0"/>
-              <Separator Margin="0,14"/>
-              <TextBlock Text="Publishing" FontWeight="SemiBold"/>
-              <TextBlock Text="Direct YouTube / TikTok posting requires account authorization and platform API approval; it is not enabled in this build." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0"/>
-            </StackPanel>
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel>
+                <TextBlock Text="Shorts settings" FontSize="21" FontWeight="SemiBold"/>
+                <Label Content="VIDEO LENGTH (MIN)" Margin="0,10,0,0"/>
+                <ComboBox ItemsSource="{Binding ShortDurations}" SelectedItem="{Binding ShortDuration, Mode=TwoWay}"/>
+                <TextBlock Text="Format: 9:16 vertical" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
+                <Label Content="STORY / EDIT STYLE" Margin="0,8,0,0"/>
+                <ComboBox ItemsSource="{Binding Styles}" SelectedItem="{Binding Style, Mode=TwoWay}"/>
+                <Label Content="CLIPCHAMP VOICE" Margin="0,8,0,0"/>
+                <ComboBox ItemsSource="{Binding ClipchampVoices}" SelectedItem="{Binding Project.Voice, Mode=TwoWay}"/>
+                <Separator Margin="0,12"/>
+                <TextBlock Text="Output options" FontSize="16" FontWeight="SemiBold"/>
+                <CheckBox Content="Generate missing visuals with ChatGPT" IsChecked="{Binding Project.Options.GenerateMissingVisuals}" Margin="0,7,0,0"/>
+                <Label Content="HOW MANY CHAPTERS"/>
+                <TextBox Text="{Binding Project.Options.HowManyChapters, UpdateSourceTrigger=LostFocus}"/>
+                <Label Content="IMAGES PER CHAPTER"/>
+                <TextBox Text="{Binding Project.Options.ImagesPerChapter, UpdateSourceTrigger=LostFocus}"/>
+                <Label Content="SAFETY TOTAL IMAGE CAP"/>
+                <TextBox Text="{Binding Project.Options.MaxGeneratedVisuals, UpdateSourceTrigger=LostFocus}"/>
+                <CheckBox Content=".SRT captions" IsChecked="{Binding Project.Options.GenerateCaptions}" Margin="0,8,0,0"/>
+                <CheckBox Content="Visual motion" IsChecked="{Binding Project.Options.AddMotion}"/>
+                <CheckBox Content="Music" IsChecked="{Binding Project.Options.AddBackgroundMusic}"/>
+                <CheckBox Content="SFX hooks" IsChecked="{Binding Project.Options.AddSoundEffects}"/>
+                <Button Style="{StaticResource SecondaryButton}" Command="{Binding ContinueTtsCommand}" Content="Continue TTS" IsEnabled="{Binding WaitingForTtsContinue}" HorizontalAlignment="Left" Margin="0,10,0,0"/>
+                <Separator Margin="0,12"/>
+                <TextBlock Text="Thumbnail" FontWeight="SemiBold"/>
+                <TextBlock Text="Creates a title-specific vertical cover saved as thumbnail.png in each project folder." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                <Separator Margin="0,12"/>
+                <TextBlock Text="Publishing" FontWeight="SemiBold"/>
+                <TextBlock Text="YouTube / TikTok automatic posting and scheduling are not enabled yet; account authorization and platform integration are required." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+              </StackPanel>
+            </ScrollViewer>
           </Border>
         </Grid>
       </TabItem>
