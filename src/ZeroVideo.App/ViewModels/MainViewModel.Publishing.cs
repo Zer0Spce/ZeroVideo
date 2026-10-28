@@ -19,9 +19,29 @@ public sealed class PublishQueueItem : ObservableObject
     public string YouTubeTitle { get; set; } = "";
     public string YouTubeDescription { get; set; } = "";
     public string TikTokCaption { get; set; } = "";
+    private bool _isScheduled;
+    public bool IsScheduled { get => _isScheduled; set { if (Set(ref _isScheduled, value)) Raise(nameof(IsInstant)); } }
+    public bool IsInstant { get => !IsScheduled; set { if (value) IsScheduled = false; } }
+    private string _scheduleDateText = "";
+    public string ScheduleDateText { get => _scheduleDateText; set => Set(ref _scheduleDateText, value); }
+    public string SeoTitle => string.IsNullOrWhiteSpace(YouTubeTitle) ? Title : YouTubeTitle;
+    public string SeoDescription => string.IsNullOrWhiteSpace(YouTubeDescription) ? Description : YouTubeDescription;
+    public string SeoHashtags => !string.IsNullOrWhiteSpace(Hashtags) ? Hashtags : string.Join(" ", TikTokCaption.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(tag => tag.StartsWith("#")));
     public DateTimeOffset? ScheduledAt { get; set; }
+    public string YouTubeCheckpoint { get; set; } = "Not started";
+    public string TikTokCheckpoint { get; set; } = "Not started";
+    public string YouTubeCheckpointNote { get; set; } = "";
+    public string TikTokCheckpointNote { get; set; } = "";
+    public DateTimeOffset? YouTubeCheckpointUpdated { get; set; }
+    public DateTimeOffset? TikTokCheckpointUpdated { get; set; }
     public string YouTubeStatus { get; set; } = "Ready";
     public string TikTokStatus { get; set; } = "Ready";
+    public void RaiseSeoChanged()
+    {
+        Raise(nameof(SeoTitle));
+        Raise(nameof(SeoDescription));
+        Raise(nameof(SeoHashtags));
+    }
     public string Display => $"{Title}  |  YouTube: {YouTubeStatus}  |  TikTok: {TikTokStatus}" +
         (ScheduledAt.HasValue ? $"  |  {ScheduledAt.Value:yyyy-MM-dd HH:mm zzz}" : "");
 }
@@ -42,6 +62,7 @@ public sealed partial class MainViewModel
         {
             if (!Set(ref _selectedPublishItem, value) || value is null) return;
             PublishFile = value.VideoPath;
+            LoadSelectedCheckpoint();
             PublishTitle = value.Title;
             PublishDescription = value.Description;
             PublishHashtags = value.Hashtags;
@@ -81,6 +102,46 @@ public sealed partial class MainViewModel
     public ICommand GeneratePublishMetadataCommand { get; private set; } = null!;
     public ICommand OpenYouTubeStudioCommand { get; private set; } = null!;
     public ICommand OpenTikTokStudioCommand { get; private set; } = null!;
+    public ICommand BrowserPublishCommand { get; private set; } = null!;
+    public ICommand SavePublishCheckpointCommand { get; private set; } = null!;
+    public ICommand ResumePublishCheckpointCommand { get; private set; } = null!;
+    public ObservableCollection<string> PublishCheckpointStages { get; } =
+        ["Not started", "Studio opened", "Video selected", "Upload accepted", "Metadata entered", "Schedule entered", "Platform confirmed"];
+    private string _publishCheckpointStage = "Not started";
+    private string _publishCheckpointNote = "";
+    public string PublishCheckpointStage { get => _publishCheckpointStage; set => Set(ref _publishCheckpointStage, value); }
+    public string PublishCheckpointNote { get => _publishCheckpointNote; set => Set(ref _publishCheckpointNote, value); }
+    private void LoadSelectedCheckpoint()
+    {
+        if (SelectedPublishItem is null) return;
+        var youtube = PublishDestination == "YouTube";
+        PublishCheckpointStage = youtube ? SelectedPublishItem.YouTubeCheckpoint : SelectedPublishItem.TikTokCheckpoint;
+        PublishCheckpointNote = youtube ? SelectedPublishItem.YouTubeCheckpointNote : SelectedPublishItem.TikTokCheckpointNote;
+    }
+    private void SaveSelectedCheckpoint()
+    {
+        var item = SelectedPublishItem;
+        if (item is null) { PublishStatus = "Select a video first."; return; }
+        if (!PublishCheckpointStages.Contains(PublishCheckpointStage))
+        { PublishStatus = "Choose a valid checkpoint."; return; }
+        if (PublishDestination == "YouTube")
+        {
+            item.YouTubeCheckpoint = PublishCheckpointStage;
+            item.YouTubeCheckpointNote = PublishCheckpointNote;
+            item.YouTubeCheckpointUpdated = DateTimeOffset.Now;
+        }
+        else
+        {
+            item.TikTokCheckpoint = PublishCheckpointStage;
+            item.TikTokCheckpointNote = PublishCheckpointNote;
+            item.TikTokCheckpointUpdated = DateTimeOffset.Now;
+        }
+        SavePublishingQueue();
+        PublishStatus = "Checkpoint saved locally. This is user-confirmed progress, not platform verification.";
+    }
+    private string _publishDestination = "YouTube";
+    public string PublishDestination { get => _publishDestination; set { if (Set(ref _publishDestination, value)) LoadSelectedCheckpoint(); } }
+    public ObservableCollection<string> PublishDestinations { get; } = ["YouTube", "TikTok"];
     public ICommand RemovePublishQueueCommand { get; private set; } = null!;
 
     private void LoadPublishingQueue()
@@ -90,9 +151,28 @@ public sealed partial class MainViewModel
             if (!File.Exists(QueueFile)) return;
             foreach (var item in JsonSerializer.Deserialize<List<PublishQueueItem>>(File.ReadAllText(QueueFile)) ?? [])
                 if (File.Exists(item.VideoPath) && !PublishingQueue.Any(x => x.VideoPath.Equals(item.VideoPath, StringComparison.OrdinalIgnoreCase)))
+                {
+                    item.IsScheduled = item.ScheduledAt.HasValue;
+                    item.ScheduleDateText = item.ScheduledAt?.LocalDateTime.ToString("yyyy-MM-dd HH:mm") ?? "";
+                    TrackPublishingItem(item);
                     PublishingQueue.Add(item);
+                }
         }
         catch (Exception ex) { Log("Publishing queue could not be loaded: " + ex.Message); }
+    }
+
+    private void TrackPublishingItem(PublishQueueItem item)
+    {
+        item.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(PublishQueueItem.ScheduleDateText) && item.IsScheduled &&
+                DateTime.TryParseExact(item.ScheduleDateText, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeLocal, out var scheduled) && scheduled > DateTime.Now)
+                item.ScheduledAt = new DateTimeOffset(scheduled);
+            if (args.PropertyName == nameof(PublishQueueItem.IsScheduled) && !item.IsScheduled)
+                item.ScheduledAt = null;
+            SavePublishingQueue();
+        };
     }
 
     private void SavePublishingQueue()
@@ -119,6 +199,7 @@ public sealed partial class MainViewModel
             Title = string.IsNullOrWhiteSpace(Project.Title) ? Path.GetFileNameWithoutExtension(output) : Project.Title,
             Description = Project.Topic
         };
+        TrackPublishingItem(item);
         PublishingQueue.Add(item);
         SavePublishingQueue();
         Log("Publishing queue: added " + item.Title);
@@ -143,17 +224,18 @@ public sealed partial class MainViewModel
         { PublishStatus = "Choose a future first slot: YYYY-MM-DD HH:MM (computer local time)."; return; }
         var interval = PublishIntervalHours;
         if (!PublishIntervals.Contains(interval)) { PublishStatus = "Choose a valid interval."; return; }
-        var ready = PublishingQueue.Where(x => x.YouTubeStatus == "Ready").ToList();
+        var ready = PublishingQueue.Where(x => x.YouTubeStatus == "Ready" && x.IsScheduled).ToList();
         if (ready.Count == 0) { PublishStatus = "No ready videos to schedule."; return; }
         var slot = new DateTimeOffset(first);
         foreach (var item in ready)
         {
             item.ScheduledAt = slot;
+            item.ScheduleDateText = slot.LocalDateTime.ToString("yyyy-MM-dd HH:mm");
             slot = slot.AddHours(interval);
         }
         SavePublishingQueue();
         SelectedPublishItem = ready[0];
-        PublishStatus = $"Assigned {ready.Count} YouTube schedule slots every {interval} hours. Review and upload each video to confirm with YouTube.";
+        PublishStatus = $"Assigned {ready.Count} schedule slots every {interval} hours. Review each in Studio.";
     }
 
     private readonly PublishingService _publishing = new();
@@ -164,7 +246,7 @@ public sealed partial class MainViewModel
     private string _tikTokPrivacy = "SELF_ONLY";
     private string _publishSchedule = "";
     private bool _publishConsent;
-    private string _publishStatus = "Select an exported MP4, enter authorized credentials and review before posting.";
+    private string _publishStatus = "Select a finished video to prepare browser publishing.";
     // Access tokens remain in process memory and are never written to ZeroVideo settings or logs.
     public string YouTubeAccessToken { private get; set; } = "";
     public string TikTokAccessToken { private get; set; } = "";
@@ -185,6 +267,55 @@ public sealed partial class MainViewModel
     private void InitializePublishingCommands()
     {
         LoadPublishingQueue();
+        SavePublishCheckpointCommand = new RelayCommand(SaveSelectedCheckpoint);
+        ResumePublishCheckpointCommand = new AsyncCommand(async () =>
+        {
+            if (SelectedPublishItem is null) { PublishStatus = "Select a video first."; return; }
+            var stage = PublishCheckpointStage;
+            if (stage == "Platform confirmed")
+            {
+                PublishStatus = "Marked confirmed. Check the post in Studio before attempting another upload.";
+                return;
+            }
+            if (!File.Exists(SelectedPublishItem.VideoPath))
+            { PublishStatus = "The video file is missing; cannot resume."; return; }
+            try
+            {
+                await _browser.OpenManualAsync(Settings, PublishDestination == "YouTube" ?
+                    "https://studio.youtube.com/" : "https://www.tiktok.com/tiktokstudio/upload");
+                PublishStatus = "Saved checkpoint: " + stage +
+                    ". Inspect existing drafts/uploads before retrying to prevent duplicate posts. A browser upload cannot be restored automatically.";
+            }
+            catch (Exception ex) { PublishStatus = "Resume browser: " + ex.Message; }
+        });
+
+        BrowserPublishCommand = new AsyncCommand(async () =>
+        {
+            if (!File.Exists(PublishFile)) { PublishStatus = "Select a queued MP4 first."; return; }
+            if (!PublishConsent) { PublishStatus = "Review the content and check the authorization box first."; return; }
+            var youtube = PublishDestination == "YouTube";
+            if (youtube && (string.IsNullOrWhiteSpace(YouTubeTitleText) || YouTubeTitleText.Length > 100))
+            { PublishStatus = "YouTube title including hashtags must be 1-100 characters."; return; }
+            if (!youtube && string.IsNullOrWhiteSpace(TikTokCaptionText))
+            { PublishStatus = "Generate or enter the TikTok caption first."; return; }
+            var site = youtube ? "YouTube Studio" : "TikTok Studio";
+            if (MessageBox.Show("Open " + site + " for this video? The browser uploader still requires manual review and final submission.",
+                "Prepare browser publishing", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+            try
+            {
+                var url = youtube ? "https://studio.youtube.com/" : "https://www.tiktok.com/tiktokstudio/upload";
+                await _browser.OpenManualAsync(Settings, url);
+                if (SelectedPublishItem is not null && PublishCheckpointStage == "Not started")
+                {
+                    PublishCheckpointStage = "Studio opened";
+                    SaveSelectedCheckpoint();
+                }
+                PublishStatus = site + " opened. Select the MP4, use the prepared metadata and thumbnail where supported, then confirm publishing or scheduling in Studio. Submission is not automated yet.";
+            }
+            catch (Exception ex) { PublishStatus = "Browser publishing: " + ex.Message; }
+            finally { PublishConsent = false; }
+        });
+
         OpenYouTubeStudioCommand = new AsyncCommand(async () =>
         {
             try { await _browser.OpenManualAsync(Settings, "https://studio.youtube.com/"); PublishStatus = "YouTube Studio opened. Sign in and use Create > Upload videos. Review metadata and scheduling."; }
@@ -223,6 +354,8 @@ public sealed partial class MainViewModel
                 item.YouTubeTitle = youtubeTitle;
                 item.YouTubeDescription = youtubeDescription;
                 item.TikTokCaption = tiktokCaption;
+                item.Hashtags = string.Join(" ", tiktokCaption.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(tag => tag.StartsWith("#")));
+                item.RaiseSeoChanged();
                 YouTubeTitleText = youtubeTitle;
                 YouTubeDescriptionText = youtubeDescription;
                 TikTokCaptionText = tiktokCaption;
@@ -291,6 +424,7 @@ public sealed partial class MainViewModel
         var thumbnail = Path.Combine(Path.GetDirectoryName(path)!, "thumbnail.png");
         var item = new PublishQueueItem { VideoPath = path, Title = Path.GetFileNameWithoutExtension(path),
             ThumbnailPath = File.Exists(thumbnail) ? thumbnail : "" };
+        TrackPublishingItem(item);
         PublishingQueue.Add(item);
         SavePublishingQueue();
         SelectedPublishItem = item;

@@ -26,12 +26,6 @@ public partial class MainWindow : Window
         await _vm.InitializeAsync();
     }
 
-    private void YouTubeTokenChanged(object sender, RoutedEventArgs e)
-        => _vm.YouTubeAccessToken = YouTubeTokenBox.Password;
-
-    private void TikTokTokenChanged(object sender, RoutedEventArgs e)
-        => _vm.TikTokAccessToken = TikTokTokenBox.Password;
-
     private void AnimateShellIn()
     {
         var easing = new QuadraticEase { EasingMode = EasingMode.EaseOut };
