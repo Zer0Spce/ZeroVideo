@@ -15,6 +15,7 @@ public sealed class PublishQueueItem : ObservableObject
     public string ThumbnailPath { get; set; } = "";
     public string Title { get; set; } = "";
     public string Description { get; set; } = "";
+    public string Hashtags { get; set; } = "";
     public DateTimeOffset? ScheduledAt { get; set; }
     public string YouTubeStatus { get; set; } = "Ready";
     public string TikTokStatus { get; set; } = "Ready";
@@ -40,15 +41,21 @@ public sealed partial class MainViewModel
             PublishFile = value.VideoPath;
             PublishTitle = value.Title;
             PublishDescription = value.Description;
+            PublishHashtags = value.Hashtags;
             PublishSchedule = value.ScheduledAt?.LocalDateTime.ToString("yyyy-MM-dd HH:mm") ?? "";
             PublishThumbnail = value.ThumbnailPath;
         }
     }
+    private string _publishHashtags = "";
+    public string PublishHashtags { get => _publishHashtags; set => Set(ref _publishHashtags, value); }
     private string _publishThumbnail = "";
     public string PublishThumbnail { get => _publishThumbnail; set => Set(ref _publishThumbnail, value); }
     public int PublishIntervalHours { get => _publishIntervalHours; set => Set(ref _publishIntervalHours, value); }
     public string PublishFirstSlot { get => _publishFirstSlot; set => Set(ref _publishFirstSlot, value); }
     public ICommand SchedulePublishQueueCommand { get; private set; } = null!;
+    public ICommand GeneratePublishMetadataCommand { get; private set; } = null!;
+    public ICommand OpenYouTubeStudioCommand { get; private set; } = null!;
+    public ICommand OpenTikTokStudioCommand { get; private set; } = null!;
     public ICommand RemovePublishQueueCommand { get; private set; } = null!;
 
     private void LoadPublishingQueue()
@@ -153,6 +160,51 @@ public sealed partial class MainViewModel
     private void InitializePublishingCommands()
     {
         LoadPublishingQueue();
+        OpenYouTubeStudioCommand = new AsyncCommand(async () =>
+        {
+            try { await _browser.OpenManualAsync(Settings, "https://studio.youtube.com/"); PublishStatus = "YouTube Studio opened. Sign in and use Create > Upload videos. Review metadata and scheduling."; }
+            catch (Exception ex) { PublishStatus = "YouTube Studio: " + ex.Message; }
+        });
+        OpenTikTokStudioCommand = new AsyncCommand(async () =>
+        {
+            try { await _browser.OpenManualAsync(Settings, "https://www.tiktok.com/tiktokstudio/upload"); PublishStatus = "TikTok Studio opened. Sign in and review cover and scheduling controls."; }
+            catch (Exception ex) { PublishStatus = "TikTok Studio: " + ex.Message; }
+        });
+        GeneratePublishMetadataCommand = new AsyncCommand(async () =>
+        {
+            if (SelectedPublishItem is null) { PublishStatus = "Select a queued video first."; return; }
+            try
+            {
+                var item = SelectedPublishItem;
+                PublishStatus = "Generating SEO metadata in ChatGPT...";
+                var subject = string.IsNullOrWhiteSpace(item.Description) ? item.Title : item.Description;
+                var prompt = "Generate accurate, curiosity-driven SEO metadata for a finished YouTube Shorts / TikTok video. " +
+                    "Return ONLY valid JSON with response_type zerovideo_publish_v1 and string properties title, description, hashtags. " +
+                    "Hashtags is a space-separated string of 3-6 relevant #tags. No fabricated facts, clickbait or guaranteed views. " +
+                    "Title maximum 100 characters. Video title: " + item.Title + ". Subject: " + subject;
+                var raw = await _chat.GenerateTextAsync(Project, Settings, prompt, Log, _cts.Token);
+                using var doc = JsonDocument.Parse(raw);
+                var root = doc.RootElement;
+                if (root.GetProperty("response_type").GetString() != "zerovideo_publish_v1")
+                    throw new InvalidDataException("Unexpected metadata response.");
+                var title = root.GetProperty("title").GetString()?.Trim() ?? "";
+                var description = root.GetProperty("description").GetString()?.Trim() ?? "";
+                var tags = root.GetProperty("hashtags").GetString()?.Trim() ?? "";
+                if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(description))
+                    throw new InvalidDataException("ChatGPT returned empty metadata.");
+                item.Title = title.Length > 100 ? title[..100] : title;
+                item.Description = description;
+                item.Hashtags = tags;
+                PublishTitle = item.Title;
+                PublishDescription = item.Description;
+                PublishHashtags = item.Hashtags;
+                SavePublishingQueue();
+                Raise(nameof(PublishingQueue));
+                PublishStatus = "SEO metadata ready. Review before publishing; views are not guaranteed.";
+            }
+            catch (Exception ex) { PublishStatus = "Metadata generation: " + ex.Message; }
+        });
+
         SchedulePublishQueueCommand = new RelayCommand(SchedulePublishingQueue);
         RemovePublishQueueCommand = new RelayCommand(() =>
         {
