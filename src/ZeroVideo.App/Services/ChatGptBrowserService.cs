@@ -140,73 +140,80 @@ QUALITY REQUIREMENTS:
         return GeneratePlainTextAsync(settings, prompt, log, ct);
     }
 
-    // Idea responses are plain text, not JSON. The outline/chapter JSON reader must stay unchanged.
+    // ChatGPT idea responses are plain text. Capture the actual visible assistant message,
+    // rather than relying on profile selectors configured for structured JSON responses.
     private async Task<string> GeneratePlainTextAsync(ZeroVideoSettings settings, string prompt, Action<string>? log, CancellationToken ct)
     {
         var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
         await browser.EnsureStartedAsync(settings);
         var page = await browser.GetOrCreatePageAsync("chatgpt.com");
-        // Keep ideas isolated from the project chat so subsequent outline/scene prompts remain unaffected.
         await page.GotoAsync(settings.ChatGptUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120000 });
         await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, prompt, ct);
-        var baseline = await TryReadLatestPlainTextAsync(page, profile.ChatGpt.AssistantMessages) ?? "";
         await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
-        log?.Invoke("Idea Generation: waiting for plain-text ChatGPT response...");
-        var last = "";
-        var stable = 0;
+        log?.Invoke("Idea Generation: waiting for assistant message to finish...");
+
+        string previous = "";
+        int stable = 0;
         var started = DateTime.UtcNow;
         while (DateTime.UtcNow - started < TimeSpan.FromMinutes(4))
         {
             ct.ThrowIfCancellationRequested();
-            var generating = await AnyVisibleAsync(page, profile.ChatGpt.StopButtons);
-            var current = await TryReadLatestPlainTextAsync(page, profile.ChatGpt.AssistantMessages);
-            if (!string.IsNullOrWhiteSpace(current) && current != baseline && current.Contains('|'))
+            var current = await ReadIdeaResponseFromDomAsync(page);
+            var ideas = current.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                .Count(line => line.Contains('|') && line.Split('|', 2)[0].Trim().Length > 8);
+            if (ideas > 0)
             {
-                if (current == last) stable++; else { last = current; stable = 0; }
-                if (!generating && stable >= 2)
+                if (current == previous) stable++; else { previous = current; stable = 0; }
+                // Four consecutive unchanged polls prevent prematurely capturing a streaming response.
+                // ChatGPT's Stop control is not reliable across all interface versions.
+                if (stable >= 4)
                 {
-                    log?.Invoke("Idea Generation: text response captured.");
+                    log?.Invoke($"Idea Generation: captured {ideas} titles from ChatGPT.");
                     return current;
                 }
             }
             await Task.Delay(1200, ct);
         }
-        if (!string.IsNullOrWhiteSpace(last))
+        if (!string.IsNullOrWhiteSpace(previous))
         {
-            log?.Invoke("Idea Generation: completion indicator inconclusive; using the captured text.");
-            return last;
+            log?.Invoke("Idea Generation: response timeout; using available completed text.");
+            return previous;
         }
-        throw new TimeoutException("No usable idea text was detected in the ChatGPT response.");
+        throw new TimeoutException("ChatGPT response was visible but could not be captured. Check ChatGPT login and browser selectors.");
     }
 
-    private static async Task<string?> TryReadLatestPlainTextAsync(IPage page, IEnumerable<string> selectors)
+    private static async Task<string> ReadIdeaResponseFromDomAsync(IPage page)
     {
-        var candidates = selectors.Concat(new[]
+        try
         {
-            "[data-message-author-role='assistant']",
-            "main [data-message-author-role='assistant']",
-            "main .markdown",
-            "main [class*='markdown']"
-        }).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct();
-        foreach (var selector in candidates)
-        {
-            try
-            {
-                var items = page.Locator(selector);
-                for (var i = await items.CountAsync() - 1; i >= 0; i--)
-                {
-                    var item = items.Nth(i);
-                    if (!await item.IsVisibleAsync()) continue;
-                    if (await item.GetAttributeAsync("data-message-author-role") == "user") continue;
-                    if (await item.Locator("[data-message-author-role='user']").CountAsync() > 0 &&
-                        await item.Locator("[data-message-author-role='assistant']").CountAsync() == 0) continue;
-                    var text = (await item.InnerTextAsync()).Trim();
-                    if (text.Contains('|') && text.Length >= 20) return text;
+            return await page.EvaluateAsync<string>("""
+                () => {
+                    const visible = e => {
+                        const r = e.getBoundingClientRect();
+                        const style = getComputedStyle(e);
+                        return r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+                    };
+                    const selectors = [
+                        '[data-message-author-role="assistant"]',
+                        '[data-testid^="conversation-turn-"] [data-message-author-role="assistant"]',
+                        'article[data-testid*="conversation-turn"] .markdown',
+                        'main .markdown',
+                        'main [class*="markdown"]'
+                    ];
+                    for (const selector of selectors) {
+                        const nodes = Array.from(document.querySelectorAll(selector)).filter(visible);
+                        for (let i = nodes.length - 1; i >= 0; i--) {
+                            const node = nodes[i];
+                            if (node.closest('[data-message-author-role="user"]')) continue;
+                            const value = (node.innerText || node.textContent || '').trim();
+                            if (value.includes('|') && value.length > 25) return value;
+                        }
+                    }
+                    return '';
                 }
-            }
-            catch { /* The DOM can change while ChatGPT streams. */ }
+                """) ?? "";
         }
-        return null;
+        catch (PlaywrightException) { return ""; }
     }
 
     public Task OpenAsync(ZeroVideoSettings settings)
