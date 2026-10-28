@@ -123,14 +123,24 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         if (concat.ExitCode != 0) throw new InvalidOperationException($"FFmpeg concat failed: {concat.StdErr}");
 
         var finalPath = Path.Combine(exportsDir, Sanitize(project.Title) + ".mp4");
-        if (project.Options.AddBackgroundMusic && !string.IsNullOrWhiteSpace(project.Options.BackgroundMusicPath) && File.Exists(project.Options.BackgroundMusicPath))
+        if (project.Options.AddBackgroundMusic)
         {
+            var musicPath = project.Options.BackgroundMusicPath;
+            if (string.IsNullOrWhiteSpace(musicPath) || !File.Exists(musicPath))
+                throw new FileNotFoundException("Background music was enabled but its file is missing.", musicPath);
             var volume = project.Options.BackgroundMusicVolume.ToString("0.###", CultureInfo.InvariantCulture);
-            var args = $"-y -i \"{voiceFinal}\" -stream_loop -1 -i \"{project.Options.BackgroundMusicPath}\" -filter_complex \"[1:a]volume={volume}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]\" -map 0:v -map \"[a]\" -c:v copy -c:a aac -b:a 192k -shortest \"{finalPath}\"";
+            log?.Invoke("Mixing custom background music: " + Path.GetFileName(musicPath) +
+                " (linear gain " + volume + ", looped to video duration).");
+            var args = $"-y -i \\"{voiceFinal}\\" -stream_loop -1 -i \\"{musicPath}\\" -filter_complex \\"[1:a]volume={volume}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]\\" -map 0:v -map \\"[a]\\" -c:v copy -c:a aac -b:a 192k -shortest \\"{finalPath}\\"";
             var mixed = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
-            if (mixed.ExitCode != 0) throw new InvalidOperationException($"Music mix failed: {mixed.StdErr}");
+            if (mixed.ExitCode != 0) throw new InvalidOperationException("Music mix failed: " + mixed.StdErr);
+            log?.Invoke("Custom music mix completed in final MP4.");
         }
-        else File.Copy(voiceFinal, finalPath, true);
+        else
+        {
+            log?.Invoke("Background music disabled; exporting narration-only video.");
+            File.Copy(voiceFinal, finalPath, true);
+        }
 
         if (project.Options.GenerateCaptions)
             await WriteSrtAsync(project, Path.ChangeExtension(finalPath, ".srt"), ct);
