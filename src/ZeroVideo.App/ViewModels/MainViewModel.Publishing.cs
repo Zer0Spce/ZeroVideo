@@ -16,6 +16,9 @@ public sealed class PublishQueueItem : ObservableObject
     public string Title { get; set; } = "";
     public string Description { get; set; } = "";
     public string Hashtags { get; set; } = "";
+    public string YouTubeTitle { get; set; } = "";
+    public string YouTubeDescription { get; set; } = "";
+    public string TikTokCaption { get; set; } = "";
     public DateTimeOffset? ScheduledAt { get; set; }
     public string YouTubeStatus { get; set; } = "Ready";
     public string TikTokStatus { get; set; } = "Ready";
@@ -42,10 +45,32 @@ public sealed partial class MainViewModel
             PublishTitle = value.Title;
             PublishDescription = value.Description;
             PublishHashtags = value.Hashtags;
+            YouTubeTitleText = string.IsNullOrWhiteSpace(value.YouTubeTitle) ? value.Title : value.YouTubeTitle;
+            YouTubeDescriptionText = string.IsNullOrWhiteSpace(value.YouTubeDescription) ? value.Description : value.YouTubeDescription;
+            TikTokCaptionText = value.TikTokCaption;
             PublishSchedule = value.ScheduledAt?.LocalDateTime.ToString("yyyy-MM-dd HH:mm") ?? "";
             PublishThumbnail = value.ThumbnailPath;
         }
     }
+    private string _youTubeTitleText = "";
+    private string _youTubeDescriptionText = "";
+    private string _tikTokCaptionText = "";
+    public string YouTubeTitleText
+    {
+        get => _youTubeTitleText;
+        set { if (Set(ref _youTubeTitleText, value)) { Raise(nameof(YouTubeTitleCount)); if (SelectedPublishItem is not null) { SelectedPublishItem.YouTubeTitle = value; SavePublishingQueue(); } } }
+    }
+    public string YouTubeDescriptionText
+    {
+        get => _youTubeDescriptionText;
+        set { if (Set(ref _youTubeDescriptionText, value) && SelectedPublishItem is not null) { SelectedPublishItem.YouTubeDescription = value; SavePublishingQueue(); } }
+    }
+    public string TikTokCaptionText
+    {
+        get => _tikTokCaptionText;
+        set { if (Set(ref _tikTokCaptionText, value) && SelectedPublishItem is not null) { SelectedPublishItem.TikTokCaption = value; SavePublishingQueue(); } }
+    }
+    public string YouTubeTitleCount => $"{YouTubeTitleText.Length}/100 characters" + (YouTubeTitleText.Length > 100 ? " — TOO LONG" : "");
     private string _publishHashtags = "";
     public string PublishHashtags { get => _publishHashtags; set => Set(ref _publishHashtags, value); }
     private string _publishThumbnail = "";
@@ -178,29 +203,32 @@ public sealed partial class MainViewModel
                 var item = SelectedPublishItem;
                 PublishStatus = "Generating SEO metadata in ChatGPT...";
                 var subject = string.IsNullOrWhiteSpace(item.Description) ? item.Title : item.Description;
-                var prompt = "Generate accurate, curiosity-driven SEO metadata for a finished YouTube Shorts / TikTok video. " +
-                    "Return ONLY valid JSON with response_type zerovideo_publish_v1 and string properties title, description, hashtags. " +
-                    "Hashtags is a space-separated string of 3-6 relevant #tags. No fabricated facts, clickbait or guaranteed views. " +
-                    "Title maximum 100 characters. Video title: " + item.Title + ". Subject: " + subject;
+                var prompt = "Generate platform-specific accurate metadata for a finished video. Return ONLY one valid JSON object with " +
+                    "response_type zerovideo_publish_v2, youtube_title (one string including 1-2 relevant #hashtags, total <=100 characters), " +
+                    "youtube_description (separate detailed description and optional relevant hashtags), " +
+                    "tiktok_caption (ONE combined string: compelling hook, short description, 3-6 relevant hashtags). " +
+                    "Avoid false facts, spam, misleading clickbait, promises of views. " +
+                    "Video title: " + item.Title + ". Subject: " + subject;
                 var raw = await _chat.GenerateTextAsync(Project, Settings, prompt, Log, _cts.Token);
                 using var doc = JsonDocument.Parse(raw);
                 var root = doc.RootElement;
-                if (root.GetProperty("response_type").GetString() != "zerovideo_publish_v1")
+                if (root.GetProperty("response_type").GetString() != "zerovideo_publish_v2")
                     throw new InvalidDataException("Unexpected metadata response.");
-                var title = root.GetProperty("title").GetString()?.Trim() ?? "";
-                var description = root.GetProperty("description").GetString()?.Trim() ?? "";
-                var tags = root.GetProperty("hashtags").GetString()?.Trim() ?? "";
-                if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(description))
-                    throw new InvalidDataException("ChatGPT returned empty metadata.");
-                item.Title = title.Length > 100 ? title[..100] : title;
-                item.Description = description;
-                item.Hashtags = tags;
-                PublishTitle = item.Title;
-                PublishDescription = item.Description;
-                PublishHashtags = item.Hashtags;
+                var youtubeTitle = root.GetProperty("youtube_title").GetString()?.Trim() ?? "";
+                var youtubeDescription = root.GetProperty("youtube_description").GetString()?.Trim() ?? "";
+                var tiktokCaption = root.GetProperty("tiktok_caption").GetString()?.Trim() ?? "";
+                if (string.IsNullOrWhiteSpace(youtubeTitle) || string.IsNullOrWhiteSpace(youtubeDescription) ||
+                    string.IsNullOrWhiteSpace(tiktokCaption) || youtubeTitle.Length > 100)
+                    throw new InvalidDataException("Invalid metadata: YouTube title must be 1-100 characters including hashtags, and both descriptions must be nonempty. Regenerate.");
+                item.YouTubeTitle = youtubeTitle;
+                item.YouTubeDescription = youtubeDescription;
+                item.TikTokCaption = tiktokCaption;
+                YouTubeTitleText = youtubeTitle;
+                YouTubeDescriptionText = youtubeDescription;
+                TikTokCaptionText = tiktokCaption;
                 SavePublishingQueue();
                 Raise(nameof(PublishingQueue));
-                PublishStatus = "SEO metadata ready. Review before publishing; views are not guaranteed.";
+                PublishStatus = "YouTube and TikTok metadata ready in separate fields. Review before publishing.";
             }
             catch (Exception ex) { PublishStatus = "Metadata generation: " + ex.Message; }
         });
@@ -233,8 +261,9 @@ public sealed partial class MainViewModel
                         throw new FormatException("Schedule format invalid. Use e.g. 2026-11-01 18:00 (local time).");
                     scheduled = date;
                 }
+                if (YouTubeTitleText.Length > 100 || string.IsNullOrWhiteSpace(YouTubeTitleText)) throw new InvalidDataException("YouTube title plus hashtags must be 1-100 characters.");
                 PublishStatus = "Uploading to YouTube...";
-                PublishStatus = await _publishing.UploadYouTubeAsync(PublishFile, PublishTitle, PublishDescription,
+                PublishStatus = await _publishing.UploadYouTubeAsync(PublishFile, YouTubeTitleText, YouTubeDescriptionText,
                     YouTubeAccessToken, YouTubePrivacy, scheduled, _cts.Token);
                 if (SelectedPublishItem is not null) { SelectedPublishItem.YouTubeStatus = scheduled.HasValue ? "Scheduled" : "Uploaded"; SavePublishingQueue(); Raise(nameof(PublishingQueue)); }
             }
@@ -247,7 +276,7 @@ public sealed partial class MainViewModel
             try
             {
                 PublishStatus = "Uploading to TikTok...";
-                PublishStatus = await _publishing.UploadTikTokAsync(PublishFile, PublishTitle,
+                PublishStatus = await _publishing.UploadTikTokAsync(PublishFile, TikTokCaptionText,
                     TikTokAccessToken, TikTokPrivacy, _cts.Token);
                 if (SelectedPublishItem is not null) { SelectedPublishItem.TikTokStatus = "Processing"; SavePublishingQueue(); Raise(nameof(PublishingQueue)); }
             }
