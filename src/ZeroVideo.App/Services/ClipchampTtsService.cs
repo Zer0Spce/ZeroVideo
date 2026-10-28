@@ -66,13 +66,14 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
                         log?.Invoke($"Clipchamp chapter {chapter.Number}: clicked Keep editing after the previous audio export.");
                         await Task.Delay(1500, ct);
 
-                        if (chapter.Number > 1)
+                        if (chapter.Number >= 1)
                         {
                             var pastedNarrations = project.Chapters
                                 .Where(c => c.Number <= chapter.Number && !string.IsNullOrWhiteSpace(c.Narration))
                                 .Select(c => c.Narration)
                                 .ToArray();
                             await DeleteExistingTtsTimelineItemsAsync(page, pastedNarrations, log, ct);
+                            await ClearWholeTtsTimelineAsync(page, log, ct);
 
                             // Keep editing returns Clipchamp to the empty editor. Re-enter the TTS tool
                             // through Record & create -> Text to speech without reloading the page, so the
@@ -144,6 +145,12 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
             var input = await WaitForScriptInputAsync(page, profile.Clipchamp.ScriptInputs, 30000, ct)
                 ?? throw new InvalidOperationException("Clipchamp TTS controls are visible, but ZeroVideo could not find the narration editor in any Clipchamp frame.");
 
+            if (_manualVoiceSessionActive)
+            {
+                await ClearWholeTtsTimelineAsync(page, log, ct);
+                input = await TryFindScriptInputOnceAsync(page, profile.Clipchamp.ScriptInputs)
+                    ?? throw new InvalidOperationException("TTS editor closed during timeline cleanup. Reopen Text to speech and retry.");
+            }
             await FillNarrationAndVerifyAsync(input, chapter.Narration, log, ct);
             var durationBeforeSave = await TryReadPlaybackTotalSecondsAsync(page);
             await ClickFirstAcrossFramesAsync(page, profile.Clipchamp.SaveButtons, "Clipchamp TTS Save", 15000, ct);
@@ -245,6 +252,29 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
             try { await page.ScreenshotAsync(new() { Path = shot, FullPage = true }); } catch { }
             throw new InvalidOperationException($"Clipchamp automation stopped safely: {ex.Message} Diagnostic: {shot}", ex);
         }
+    }
+
+    private static async Task ClearWholeTtsTimelineAsync(IPage page, Action<string>? log, CancellationToken ct)
+    {
+        // Clipchamp retains clips from earlier Shorts projects. Never trust the
+        // current chapter's narration list to identify every old audio track.
+        var before = await TryReadPlaybackTotalSecondsAsync(page);
+        if (!before.HasValue || before.Value <= 1.5) return;
+        var width = await page.MainFrame.EvaluateAsync<double>("() => window.innerWidth");
+        var height = await page.MainFrame.EvaluateAsync<double>("() => window.innerHeight");
+        if (width < 500 || height < 400)
+            throw new InvalidOperationException("Clipchamp editor too small to safely clear old TTS clips.");
+        // Focus a timeline track, never the text editor, before Select All / Delete.
+        await page.Mouse.ClickAsync((float)(width * 0.40), (float)(height * 0.84));
+        await Task.Delay(200, ct);
+        await page.Keyboard.PressAsync("ControlOrMeta+A");
+        await page.Keyboard.PressAsync("Delete");
+        await Task.Delay(550, ct);
+        var after = await TryReadPlaybackTotalSecondsAsync(page);
+        if (after.HasValue && after.Value > 1.5)
+            throw new InvalidOperationException("Clipchamp still has old audio on its timeline (" +
+                after.Value.ToString("0.0") + " seconds). Stopping to prevent doubled voices.");
+        log?.Invoke("Clipchamp: cleared all previous timeline clips before new narration.");
     }
 
     private static async Task OpenFreshTtsEditorAsync(IPage page, AutomationProfile profile, Action<string>? log, CancellationToken ct)
