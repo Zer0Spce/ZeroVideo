@@ -159,7 +159,7 @@ QUALITY REQUIREMENTS:
         {
             ct.ThrowIfCancellationRequested();
             var current = await ReadIdeaResponseFromDomAsync(page);
-            var ideas = current.Split(['\\r', '\\n'], StringSplitOptions.RemoveEmptyEntries)
+            var ideas = current.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
                 .Count(line => line.Contains('|') && line.Split('|', 2)[0].Trim().Length > 8);
             if (ideas > 0)
             {
