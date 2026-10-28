@@ -35,6 +35,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private string _projectDirectory = "";
     private bool _newChat;
     private bool _waitingForTtsContinue;
+    private bool _shortsTtsConfirmed;
     private TaskCompletionSource<bool>? _ttsContinueGate;
 
     public MainViewModel()
@@ -57,6 +58,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         LoadProjectCommand = new AsyncCommand(LoadProjectAsync);
         CancelCommand = new RelayCommand(() => _cts.Cancel());
         InitializeShortsCommands();
+        InitializeIdeasCommands();
+        BrowseMusicCommand = new RelayCommand(BrowseMusic);
     }
 
     public ObservableCollection<string> Logs { get; } = [];
@@ -93,6 +96,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public ICommand RunPreflightCommand { get; }
     public ICommand OpenProjectFolderCommand { get; }
     public ICommand LoadProjectCommand { get; }
+    public ICommand BrowseMusicCommand { get; }
     public ICommand CancelCommand { get; }
 
     public async Task InitializeAsync()
@@ -217,6 +221,13 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             await _settingsService.SaveAsync(Settings);
             if (string.IsNullOrWhiteSpace(Project.Voice)) Log("Clipchamp voice: using the current/default Clipchamp voice.");
             else Log($"Clipchamp voice selected: {Project.Voice}");
+            if (Project.Options.AddBackgroundMusic && !string.IsNullOrWhiteSpace(Settings.BackgroundMusicPath))
+            {
+                if (!File.Exists(Settings.BackgroundMusicPath)) throw new FileNotFoundException("Selected background music file not found", Settings.BackgroundMusicPath);
+                Project.Options.BackgroundMusicPath = Settings.BackgroundMusicPath;
+                Project.Options.BackgroundMusicVolume = Math.Pow(10.0, Math.Clamp(Settings.BackgroundMusicDb, -60, 0) / 20.0);
+                Log($"Background music: {Settings.BackgroundMusicDb:0} dB, looping until video ends.");
+            }
             var needsTts = false;
             foreach (var chapter in Project.Chapters)
             {
@@ -239,7 +250,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 }
             }
             if (needsTts) await _store.SaveAsync(Project, Settings.ProjectsRoot);
-            if (needsTts)
+            if (needsTts && !_shortsTtsConfirmed)
             {
                 _ttsContinueGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 WaitingForTtsContinue = true;
@@ -249,6 +260,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 await _ttsContinueGate.Task.WaitAsync(_cts.Token);
                 WaitingForTtsContinue = false;
                 _clip.ConfirmManualVoiceSelection();
+                if (ShortsRunning) _shortsTtsConfirmed = true;
                 Log("Manual Clipchamp voice confirmed. ZeroVideo will paste narration and continue without changing your voice.");
             }
 
@@ -262,6 +274,22 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             MessageBox.Show($"Video finished:\n{output}", "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex) { Fail(ex); }
+    }
+
+    private void BrowseMusic()
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Select background music",
+            Filter = "Audio files|*.mp3;*.wav;*.m4a;*.aac;*.flac;*.ogg|All files|*.*",
+            CheckFileExists = true
+        };
+        if (dialog.ShowDialog() == true)
+        {
+            Settings.BackgroundMusicPath = dialog.FileName;
+            Raise(nameof(Settings));
+            Log($"Background music selected: {dialog.FileName}");
+        }
     }
 
     private void ContinueTts()
