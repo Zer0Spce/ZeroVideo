@@ -1,5 +1,5 @@
 using System.Collections.ObjectModel;
-using System.Text.RegularExpressions;
+using System.Text.Json;
 using System.Windows.Input;
 using ZeroVideo.App.Infrastructure;
 
@@ -58,20 +58,23 @@ public sealed partial class MainViewModel
         {
             IdeaStatus = "Generating ideas in ChatGPT...";
             var raw = await _chat.GenerateVideoIdeasAsync(IdeaNiche.Trim(), IdeaCount, Settings, Log, _cts.Token);
-            var lines = raw.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            using var document = JsonDocument.Parse(raw);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("response_type", out var type) ||
+                type.GetString() != "zerovideo_ideas_v1")
+                throw new InvalidDataException("ChatGPT returned JSON, but not the tagged ZeroVideo ideas response.");
+            if (!root.TryGetProperty("ideas", out var ideas) || ideas.ValueKind != JsonValueKind.Array)
+                throw new InvalidDataException("ChatGPT did not return the ideas array.");
             GeneratedIdeas.Clear();
-            foreach (var original in lines)
+            foreach (var item in ideas.EnumerateArray())
             {
-                var line = Regex.Replace(original, @"^\s*(?:[-*•]\s*|\d+[.)]\s*)", "").Trim();
-                var parts = line.Split('|', 2, StringSplitOptions.TrimEntries);
-                var title = parts[0].Trim(' ', '"', '*');
-                if (title.Length < 8 || title.Length > 180 || title.StartsWith("code")) continue;
-                GeneratedIdeas.Add(new VideoIdea
-                {
-                    Title = title,
-                    Hook = parts.Length > 1 ? parts[1] : "A curiosity-driven opening that delivers on the title.",
-                    Niche = IdeaNiche.Trim()
-                });
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                var title = item.TryGetProperty("title", out var titleNode) && titleNode.ValueKind == JsonValueKind.String
+                    ? titleNode.GetString()?.Trim() : null;
+                var hook = item.TryGetProperty("hook", out var hookNode) && hookNode.ValueKind == JsonValueKind.String
+                    ? hookNode.GetString()?.Trim() : null;
+                if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(hook)) continue;
+                GeneratedIdeas.Add(new VideoIdea { Title = title, Hook = hook, Niche = IdeaNiche.Trim() });
             }
             IdeaStatus = GeneratedIdeas.Count > 0
                 ? $"{GeneratedIdeas.Count} ideas ready. Select one to add it to Shorts or Create."
