@@ -134,22 +134,15 @@ QUALITY REQUIREMENTS:
     {
         // Use the same JSON capture pipeline as working outline generation.
         // A marker prevents accidental acceptance of unrelated JSON in the conversation.
-        var prompt = $"""
-Generate exactly {count} distinct factual, compelling video ideas for the niche "{niche}".
-Write curiosity-driven YouTube/TikTok titles and specific opening hooks that deliver on the title.
-Avoid repetition, fabricated facts, misleading clickbait, and promises of guaranteed views.
-
-CRITICAL OUTPUT FORMAT: Return ONLY one complete, valid JSON object. No markdown, no commentary.
-Use exactly this schema, including the marker:
-{{
-  "response_type": "zerovideo_ideas_v1",
-  "niche": "{niche.Replace("\\", "\\\\").Replace("\"", "\\\"")}",
-  "ideas": [
-    {{ "title": "Specific video title", "hook": "Compelling opening hook" }}
-  ]
-}}
-The ideas array MUST contain exactly {count} objects with nonempty title and hook.
-""";
+        var prompt = $"Generate exactly {count} distinct, factual and compelling video ideas for the niche: {niche}. " +
+            "Use curiosity-driven YouTube/TikTok titles and specific opening hooks that deliver on the title. " +
+            "Avoid repetition, invented facts, misleading clickbait and guaranteed-view claims. " +
+            "IMPORTANT: Return ONLY one complete valid JSON object, without markdown or commentary. " +
+            "Required JSON schema: " +
+            """ 
+            {"response_type":"zerovideo_ideas_v1","niche":"the requested niche","ideas":[{"title":"Specific video title","hook":"Compelling opening hook"}]}
+            """ +
+            $" The ideas array must contain exactly {count} entries. Every title and hook must be nonempty.";
         return GenerateTextAsync(new VideoProject { Title = $"Ideas: {niche}", Topic = niche }, settings, prompt, log, ct);
     }
 
