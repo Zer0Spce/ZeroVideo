@@ -273,6 +273,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             Status = "Finished";
             Progress = 100;
             Log($"FINAL VIDEO: {output}");
+            QueueCompletedVideo(output);
             MessageBox.Show($"Video finished:\n{output}", "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex) { Fail(ex); }
