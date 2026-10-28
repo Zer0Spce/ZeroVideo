@@ -81,6 +81,10 @@ public sealed partial class MainViewModel
     public ICommand GeneratePublishMetadataCommand { get; private set; } = null!;
     public ICommand OpenYouTubeStudioCommand { get; private set; } = null!;
     public ICommand OpenTikTokStudioCommand { get; private set; } = null!;
+    public ICommand BrowserPublishCommand { get; private set; } = null!;
+    private string _publishDestination = "YouTube";
+    public string PublishDestination { get => _publishDestination; set => Set(ref _publishDestination, value); }
+    public ObservableCollection<string> PublishDestinations { get; } = ["YouTube", "TikTok"];
     public ICommand RemovePublishQueueCommand { get; private set; } = null!;
 
     private void LoadPublishingQueue()
@@ -185,6 +189,28 @@ public sealed partial class MainViewModel
     private void InitializePublishingCommands()
     {
         LoadPublishingQueue();
+        BrowserPublishCommand = new AsyncCommand(async () =>
+        {
+            if (!File.Exists(PublishFile)) { PublishStatus = "Select a queued MP4 first."; return; }
+            if (!PublishConsent) { PublishStatus = "Review the content and check the authorization box first."; return; }
+            var youtube = PublishDestination == "YouTube";
+            if (youtube && (string.IsNullOrWhiteSpace(YouTubeTitleText) || YouTubeTitleText.Length > 100))
+            { PublishStatus = "YouTube title including hashtags must be 1-100 characters."; return; }
+            if (!youtube && string.IsNullOrWhiteSpace(TikTokCaptionText))
+            { PublishStatus = "Generate or enter the TikTok caption first."; return; }
+            var site = youtube ? "YouTube Studio" : "TikTok Studio";
+            if (MessageBox.Show("Open " + site + " for this video? The browser uploader still requires manual review and final submission.",
+                "Prepare browser publishing", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+            try
+            {
+                var url = youtube ? "https://studio.youtube.com/" : "https://www.tiktok.com/tiktokstudio/upload";
+                await _browser.OpenManualAsync(Settings, url);
+                PublishStatus = site + " opened. Select the MP4, use the prepared metadata and thumbnail where supported, then confirm publishing or scheduling in Studio. Submission is not automated yet.";
+            }
+            catch (Exception ex) { PublishStatus = "Browser publishing: " + ex.Message; }
+            finally { PublishConsent = false; }
+        });
+
         OpenYouTubeStudioCommand = new AsyncCommand(async () =>
         {
             try { await _browser.OpenManualAsync(Settings, "https://studio.youtube.com/"); PublishStatus = "YouTube Studio opened. Sign in and use Create > Upload videos. Review metadata and scheduling."; }
