@@ -149,7 +149,7 @@ QUALITY REQUIREMENTS:
     public Task OpenAsync(ZeroVideoSettings settings)
         => browser.OpenManualAsync(settings, settings.ChatGptUrl);
 
-    private async Task<string> GenerateTextAsync(VideoProject project, ZeroVideoSettings settings, string prompt, Action<string>? log, CancellationToken ct)
+    public async Task<string> GenerateTextAsync(VideoProject project, ZeroVideoSettings settings, string prompt, Action<string>? log, CancellationToken ct)
     {
         var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
         var page = await GetProjectPageAsync(project, settings, log, ct);
