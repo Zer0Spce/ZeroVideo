@@ -9,7 +9,7 @@ using ZeroVideo.App.Services;
 
 namespace ZeroVideo.App.ViewModels;
 
-public sealed class MainViewModel : ObservableObject, IAsyncDisposable
+public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 {
     private readonly SettingsService _settingsService = new();
     private readonly ProjectStore _store = new();
@@ -56,6 +56,7 @@ public sealed class MainViewModel : ObservableObject, IAsyncDisposable
         OpenProjectFolderCommand = new AsyncCommand(OpenProjectFolderAsync, () => Directory.Exists(ProjectDirectory));
         LoadProjectCommand = new AsyncCommand(LoadProjectAsync);
         CancelCommand = new RelayCommand(() => _cts.Cancel());
+        InitializeShortsCommands();
     }
 
     public ObservableCollection<string> Logs { get; } = [];
