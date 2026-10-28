@@ -223,13 +223,19 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             await _settingsService.SaveAsync(Settings);
             if (string.IsNullOrWhiteSpace(Project.Voice)) Log("Clipchamp voice: using the current/default Clipchamp voice.");
             else Log($"Clipchamp voice selected: {Project.Voice}");
-            if (Project.Options.AddBackgroundMusic && !string.IsNullOrWhiteSpace(Settings.BackgroundMusicPath))
+            if (!string.IsNullOrWhiteSpace(Settings.BackgroundMusicPath))
             {
-                if (!File.Exists(Settings.BackgroundMusicPath)) throw new FileNotFoundException("Selected background music file not found", Settings.BackgroundMusicPath);
+                if (!File.Exists(Settings.BackgroundMusicPath))
+                    throw new FileNotFoundException("Selected background music file not found", Settings.BackgroundMusicPath);
+                Project.Options.AddBackgroundMusic = true;
                 Project.Options.BackgroundMusicPath = Settings.BackgroundMusicPath;
                 Project.Options.BackgroundMusicVolume = Math.Pow(10.0, Math.Clamp(Settings.BackgroundMusicDb, -60, 0) / 20.0);
-                Log($"Background music: {Settings.BackgroundMusicDb:0} dB, looping until video ends.");
+                Log("Custom background music enabled: " + Path.GetFileName(Settings.BackgroundMusicPath) +
+                    " at " + Settings.BackgroundMusicDb.ToString("0") + " dB.");
             }
+            else if (Project.Options.AddBackgroundMusic &&
+                (string.IsNullOrWhiteSpace(Project.Options.BackgroundMusicPath) || !File.Exists(Project.Options.BackgroundMusicPath)))
+                throw new FileNotFoundException("Music is enabled but the project music file is missing.", Project.Options.BackgroundMusicPath);
             var needsTts = false;
             foreach (var chapter in Project.Chapters)
             {
@@ -293,7 +299,10 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         if (dialog.ShowDialog() == true)
         {
             Settings.BackgroundMusicPath = dialog.FileName;
+            Project.Options.AddBackgroundMusic = true;
+            Project.Options.BackgroundMusicPath = dialog.FileName;
             Raise(nameof(Settings));
+            Raise(nameof(Project));
             Log($"Background music selected: {dialog.FileName}");
         }
     }
