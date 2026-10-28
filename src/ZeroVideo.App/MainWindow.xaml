@@ -281,6 +281,17 @@
               <TextBox Width="760" Height="65" TextWrapping="Wrap" AcceptsReturn="True" Text="{Binding PublishDescription, UpdateSourceTrigger=PropertyChanged}"/>
               <Label Content="SEO HASHTAGS" Margin="0,8,0,0"/>
               <TextBox Width="760" Text="{Binding PublishHashtags, UpdateSourceTrigger=PropertyChanged}"/>
+              <Separator Margin="0,14"/>
+              <TextBlock Text="YOUTUBE SHORTS METADATA" FontSize="17" FontWeight="SemiBold"/>
+              <Label Content="TITLE + HASHTAGS (100 CHARACTERS MAX)"/>
+              <TextBox Width="760" MaxLength="100" Text="{Binding YouTubeTitleText, UpdateSourceTrigger=PropertyChanged}"/>
+              <TextBlock Text="{Binding YouTubeTitleCount}" Foreground="{StaticResource Muted}" Margin="0,3,0,6"/>
+              <Label Content="YOUTUBE DESCRIPTION (SEPARATE FIELD)"/>
+              <TextBox Width="760" Height="75" TextWrapping="Wrap" AcceptsReturn="True" Text="{Binding YouTubeDescriptionText, UpdateSourceTrigger=PropertyChanged}"/>
+              <Separator Margin="0,14"/>
+              <TextBlock Text="TIKTOK METADATA" FontSize="17" FontWeight="SemiBold"/>
+              <Label Content="ONE CAPTION: HOOK + DESCRIPTION + HASHTAGS"/>
+              <TextBox Width="760" Height="100" TextWrapping="Wrap" AcceptsReturn="True" Text="{Binding TikTokCaptionText, UpdateSourceTrigger=PropertyChanged}"/>
               <Separator Margin="0,16"/>
               <TextBlock Text="YouTube Data API" FontSize="18" FontWeight="SemiBold"/>
               <TextBlock Text="Requires OAuth youtube.upload scope. Scheduled uploads are uploaded private and published by YouTube at the specified local time." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
