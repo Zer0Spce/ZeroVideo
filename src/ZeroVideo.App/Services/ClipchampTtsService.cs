@@ -265,7 +265,7 @@ public sealed class ClipchampTtsService(BrowserSession browser, AutomationProfil
         if (width < 500 || height < 400)
             throw new InvalidOperationException("Clipchamp editor too small to safely clear old TTS clips.");
         // Focus a timeline track, never the text editor, before Select All / Delete.
-        await page.Mouse.ClickAsync(width * 0.40, height * 0.84);
+        await page.Mouse.ClickAsync((float)(width * 0.40), (float)(height * 0.84));
         await Task.Delay(200, ct);
         await page.Keyboard.PressAsync("ControlOrMeta+A");
         await page.Keyboard.PressAsync("Delete");
