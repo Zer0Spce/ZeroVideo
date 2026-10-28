@@ -247,7 +247,7 @@
           <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel MaxWidth="850" HorizontalAlignment="Left">
               <TextBlock Text="YouTube / TikTok Publishing" FontSize="21" FontWeight="SemiBold"/>
-              <TextBlock Text="Official API uploads require your own authorized OAuth access tokens and appropriate platform app approval. Tokens stay in memory only, never in settings. Nothing uploads automatically: review and authorize each upload." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
+              <TextBlock Text="Select a video, review the generated metadata and thumbnail, choose a destination, then open its browser uploader. No API tokens needed." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
               <TextBlock Text="FINISHED VIDEO QUEUE" FontSize="17" FontWeight="SemiBold" Margin="0,6,0,5"/>
               <TextBlock Text="Completed Create and Automation Shorts renders are added here automatically with their generated thumbnails. Queue survives restarts." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
               <ListBox Width="760" Height="145" ItemsSource="{Binding PublishingQueue}" SelectedItem="{Binding SelectedPublishItem}" DisplayMemberPath="Display" Margin="0,8,0,6"/>
@@ -293,24 +293,11 @@
               <Label Content="ONE CAPTION: HOOK + DESCRIPTION + HASHTAGS"/>
               <TextBox Width="760" Height="100" TextWrapping="Wrap" AcceptsReturn="True" Text="{Binding TikTokCaptionText, UpdateSourceTrigger=PropertyChanged}"/>
               <Separator Margin="0,16"/>
-              <TextBlock Text="YouTube Data API" FontSize="18" FontWeight="SemiBold"/>
-              <TextBlock Text="Requires OAuth youtube.upload scope. Scheduled uploads are uploaded private and published by YouTube at the specified local time." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
-              <Label Content="YOUTUBE OAUTH ACCESS TOKEN (NOT SAVED)"/>
-              <PasswordBox x:Name="YouTubeTokenBox" Width="760" PasswordChanged="YouTubeTokenChanged"/>
-              <Label Content="PRIVACY" Margin="0,8,0,0"/>
-              <ComboBox Width="260" HorizontalAlignment="Left" ItemsSource="{Binding YouTubePrivacyOptions}" SelectedItem="{Binding YouTubePrivacy}"/>
-              <Label Content="OPTIONAL SCHEDULE (LOCAL: YYYY-MM-DD HH:MM)" Margin="0,8,0,0"/>
-              <TextBox Width="320" HorizontalAlignment="Left" Text="{Binding PublishSchedule, UpdateSourceTrigger=PropertyChanged}"/>
-              <Button Style="{StaticResource PrimaryButton}" Command="{Binding PublishYouTubeCommand}" Content="Upload to YouTube" HorizontalAlignment="Left" Margin="0,10,0,0"/>
-              <Separator Margin="0,16"/>
-              <TextBlock Text="TikTok Content Posting API" FontSize="18" FontWeight="SemiBold"/>
-              <TextBlock Text="Requires an approved TikTok developer app and OAuth video.publish scope. Unreviewed apps may be restricted to private posts. TikTok checks allowed privacy settings and processes uploads asynchronously." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
-              <Label Content="TIKTOK OAUTH ACCESS TOKEN (NOT SAVED)"/>
-              <PasswordBox x:Name="TikTokTokenBox" Width="760" PasswordChanged="TikTokTokenChanged"/>
-              <Label Content="PRIVACY" Margin="0,8,0,0"/>
-              <ComboBox Width="280" HorizontalAlignment="Left" ItemsSource="{Binding TikTokPrivacyOptions}" SelectedItem="{Binding TikTokPrivacy}"/>
-              <Button Style="{StaticResource PrimaryButton}" Command="{Binding PublishTikTokCommand}" Content="Upload to TikTok" HorizontalAlignment="Left" Margin="0,10,0,0"/>
-              <Separator Margin="0,16"/>
+              <TextBlock Text="PUBLISH" FontSize="18" FontWeight="SemiBold"/>
+              <TextBlock Text="Choose a platform. Publish opens its Studio uploader in your signed-in browser. Review and submit the video there; ZeroVideo does not yet automate final submission." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
+              <Label Content="DESTINATION"/>
+              <ComboBox Width="220" HorizontalAlignment="Left" ItemsSource="{Binding PublishDestinations}" SelectedItem="{Binding PublishDestination}"/>
+              <Button Style="{StaticResource PrimaryButton}" Command="{Binding BrowserPublishCommand}" Content="Publish" HorizontalAlignment="Left" Margin="0,12,0,12"/>
               <CheckBox Content="I own or have rights to this video and music, reviewed the destination account and privacy, and explicitly authorize this upload." IsChecked="{Binding PublishConsent}"/>
               <TextBlock Text="{Binding PublishStatus}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,12,0,0"/>
             </StackPanel>
