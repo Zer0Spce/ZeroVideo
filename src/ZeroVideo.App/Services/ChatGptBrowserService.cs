@@ -137,7 +137,76 @@ QUALITY REQUIREMENTS:
             "and an intriguing opening hook. Avoid clickbait that cannot be delivered, repetition, made-up factual claims, " +
             "and guaranteed-view claims. Return exactly one idea per line in this format: " +
             "TITLE | HOOK. No introduction, no headings, no markdown bullets, no code block.";
-        return GenerateTextAsync(new VideoProject { Title = $"Ideas: {niche}", Topic = niche }, settings, prompt, log, ct);
+        return GeneratePlainTextAsync(settings, prompt, log, ct);
+    }
+
+    // Idea responses are plain text, not JSON. The outline/chapter JSON reader must stay unchanged.
+    private async Task<string> GeneratePlainTextAsync(ZeroVideoSettings settings, string prompt, Action<string>? log, CancellationToken ct)
+    {
+        var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
+        await browser.EnsureStartedAsync(settings);
+        var page = await browser.GetOrCreatePageAsync("chatgpt.com");
+        // Keep ideas isolated from the project chat so subsequent outline/scene prompts remain unaffected.
+        await page.GotoAsync(settings.ChatGptUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120000 });
+        await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, prompt, ct);
+        var baseline = await TryReadLatestPlainTextAsync(page, profile.ChatGpt.AssistantMessages) ?? "";
+        await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
+        log?.Invoke("Idea Generation: waiting for plain-text ChatGPT response...");
+        var last = "";
+        var stable = 0;
+        var started = DateTime.UtcNow;
+        while (DateTime.UtcNow - started < TimeSpan.FromMinutes(4))
+        {
+            ct.ThrowIfCancellationRequested();
+            var generating = await AnyVisibleAsync(page, profile.ChatGpt.StopButtons);
+            var current = await TryReadLatestPlainTextAsync(page, profile.ChatGpt.AssistantMessages);
+            if (!string.IsNullOrWhiteSpace(current) && current != baseline && current.Contains('|'))
+            {
+                if (current == last) stable++; else { last = current; stable = 0; }
+                if (!generating && stable >= 2)
+                {
+                    log?.Invoke("Idea Generation: text response captured.");
+                    return current;
+                }
+            }
+            await Task.Delay(1200, ct);
+        }
+        if (!string.IsNullOrWhiteSpace(last))
+        {
+            log?.Invoke("Idea Generation: completion indicator inconclusive; using the captured text.");
+            return last;
+        }
+        throw new TimeoutException("No usable idea text was detected in the ChatGPT response.");
+    }
+
+    private static async Task<string?> TryReadLatestPlainTextAsync(IPage page, IEnumerable<string> selectors)
+    {
+        var candidates = selectors.Concat(new[]
+        {
+            "[data-message-author-role='assistant']",
+            "main [data-message-author-role='assistant']",
+            "main .markdown",
+            "main [class*='markdown']"
+        }).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct();
+        foreach (var selector in candidates)
+        {
+            try
+            {
+                var items = page.Locator(selector);
+                for (var i = await items.CountAsync() - 1; i >= 0; i--)
+                {
+                    var item = items.Nth(i);
+                    if (!await item.IsVisibleAsync()) continue;
+                    if (await item.GetAttributeAsync("data-message-author-role") == "user") continue;
+                    if (await item.Locator("[data-message-author-role='user']").CountAsync() > 0 &&
+                        await item.Locator("[data-message-author-role='assistant']").CountAsync() == 0) continue;
+                    var text = (await item.InnerTextAsync()).Trim();
+                    if (text.Contains('|') && text.Length >= 20) return text;
+                }
+            }
+            catch { /* The DOM can change while ChatGPT streams. */ }
+        }
+        return null;
     }
 
     public Task OpenAsync(ZeroVideoSettings settings)
