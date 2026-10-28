@@ -246,60 +246,62 @@
         <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
           <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel MaxWidth="850" HorizontalAlignment="Left">
-              <TextBlock Text="YouTube / TikTok Publishing" FontSize="21" FontWeight="SemiBold"/>
-              <TextBlock Text="Select a video, review the generated metadata and thumbnail, choose a destination, then open its browser uploader. No API tokens needed." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
-              <TextBlock Text="FINISHED VIDEO QUEUE" FontSize="17" FontWeight="SemiBold" Margin="0,6,0,5"/>
-              <TextBlock Text="Completed Create and Automation Shorts renders are added here automatically with their generated thumbnails. Queue survives restarts." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
-              <ListBox Width="760" Height="145" ItemsSource="{Binding PublishingQueue}" SelectedItem="{Binding SelectedPublishItem}" DisplayMemberPath="Display" Margin="0,8,0,6"/>
+              <TextBlock Text="Finished Video Queue" FontSize="23" FontWeight="SemiBold" Margin="0,0,0,12"/>
+              <TextBlock Text="Finished Create and Automation Shorts videos appear here with their thumbnails and SEO metadata." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,10"/>
+              <ListBox Width="790" MinHeight="150" MaxHeight="540" ItemsSource="{Binding PublishingQueue}" SelectedItem="{Binding SelectedPublishItem}" Margin="0,0,0,12">
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <Border BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="9" Padding="12" Margin="0,5" Width="750">
+                      <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="140"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <Border Width="126" Height="175" CornerRadius="6" ClipToBounds="True" VerticalAlignment="Top">
+                          <Image Source="{Binding ThumbnailPath}" Stretch="UniformToFill"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                          <TextBlock Text="{Binding SeoTitle}" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                          <TextBlock Text="{Binding SeoDescription}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" MaxHeight="52" Margin="0,5,0,0"/>
+                          <TextBlock Text="{Binding SeoHashtags}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
+                          <StackPanel Orientation="Horizontal">
+                            <CheckBox Content="Instant Publish" IsChecked="{Binding IsInstant, Mode=TwoWay}" Margin="0,0,22,0"/>
+                            <CheckBox Content="Schedule" IsChecked="{Binding IsScheduled, Mode=TwoWay}"/>
+                          </StackPanel>
+                          <StackPanel Margin="0,8,0,0">
+                            <StackPanel.Style>
+                              <Style TargetType="StackPanel">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers><DataTrigger Binding="{Binding IsScheduled}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
+                              </Style>
+                            </StackPanel.Style>
+                            <TextBlock Text="Schedule date &amp; time (local: YYYY-MM-DD HH:MM)" Foreground="{StaticResource Muted}"/>
+                            <TextBox Width="250" HorizontalAlignment="Left" Text="{Binding ScheduleDateText, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0"/>
+                          </StackPanel>
+                        </StackPanel>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+              <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                <Button Style="{StaticResource SecondaryButton}" Content="Generate SEO Metadata" Command="{Binding GeneratePublishMetadataCommand}"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Remove Selected" Command="{Binding RemovePublishQueueCommand}"/>
+              </StackPanel>
+              <Separator Margin="0,8,0,14"/>
+              <TextBlock Text="Bulk Schedule Interval" FontSize="17" FontWeight="SemiBold"/>
+              <TextBlock Text="Applies to videos with Schedule checked. Choose the first local posting date/time and spacing between videos." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,8"/>
               <StackPanel Orientation="Horizontal">
-                <Button Style="{StaticResource SecondaryButton}" Content="Remove selected from queue" Command="{Binding RemovePublishQueueCommand}"/>
+                <TextBox Width="220" Text="{Binding PublishFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
+                <ComboBox Width="110" Margin="10,0,0,0" ItemsSource="{Binding PublishIntervals}" SelectedItem="{Binding PublishIntervalHours}"/>
+                <TextBlock Text="hours" VerticalAlignment="Center" Margin="6,0,0,0"/>
               </StackPanel>
-              <Label Content="MATCHING THUMBNAIL" Margin="0,9,0,0"/>
-              <TextBox Width="760" Text="{Binding PublishThumbnail}" IsReadOnly="True"/>
-              <TextBlock Text="YouTube Shorts and TikTok may limit custom cover selection; the thumbnail is retained with the video for review." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
-              <Separator Margin="0,14"/>
-              <TextBlock Text="Bulk schedule: automatically assign slots" FontSize="17" FontWeight="SemiBold"/>
-              <TextBlock Text="Choose a future first slot in your PC's local time. The next ready video receives the next interval slot. This plans the queue; uploads still require your approval." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
-              <Label Content="FIRST POST (YYYY-MM-DD HH:MM)"/>
-              <TextBox Width="250" HorizontalAlignment="Left" Text="{Binding PublishFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
-              <Label Content="INTERVAL BETWEEN VIDEOS (HOURS)"/>
-              <ComboBox Width="160" HorizontalAlignment="Left" ItemsSource="{Binding PublishIntervals}" SelectedItem="{Binding PublishIntervalHours}"/>
-              <Button Style="{StaticResource SecondaryButton}" Content="Assign schedule to ready videos" Command="{Binding SchedulePublishQueueCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
-              <Separator Margin="0,14"/>
-              <Label Content="EXPORTED VIDEO (MP4)"/>
-              <TextBox Width="760" Text="{Binding PublishFile, UpdateSourceTrigger=PropertyChanged}"/>
-              <Button Style="{StaticResource SecondaryButton}" Command="{Binding BrowsePublishFileCommand}" Content="Browse exported video..." HorizontalAlignment="Left" Margin="0,8,0,0"/>
-              <Label Content="VIDEO TITLE" Margin="0,10,0,0"/>
-              <TextBox Width="760" Text="{Binding PublishTitle, UpdateSourceTrigger=PropertyChanged}"/>
-              <StackPanel Orientation="Horizontal" Margin="0,12,0,5">
-                <Button Style="{StaticResource SecondaryButton}" Content="Generate SEO title + description + hashtags" Command="{Binding GeneratePublishMetadataCommand}"/>
-                <Button Style="{StaticResource SecondaryButton}" Content="Open YouTube Studio" Command="{Binding OpenYouTubeStudioCommand}"/>
-                <Button Style="{StaticResource SecondaryButton}" Content="Open TikTok Studio" Command="{Binding OpenTikTokStudioCommand}"/>
+              <Button Style="{StaticResource SecondaryButton}" Content="Apply Bulk Schedule" Command="{Binding SchedulePublishQueueCommand}" HorizontalAlignment="Left" Margin="0,9,0,14"/>
+              <Separator Margin="0,0,0,14"/>
+              <StackPanel Orientation="Horizontal">
+                <ComboBox Width="160" ItemsSource="{Binding PublishDestinations}" SelectedItem="{Binding PublishDestination}"/>
+                <Button Style="{StaticResource PrimaryButton}" Content="Publish Selected" Command="{Binding BrowserPublishCommand}" Margin="12,0,0,0"/>
               </StackPanel>
-              <TextBlock Text="Browser-assisted publishing: sign in manually. Studio scheduling and final submission must be reviewed on each platform. No guaranteed views." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
-              <Label Content="DESCRIPTION" Margin="0,10,0,0"/>
-              <TextBox Width="760" Height="65" TextWrapping="Wrap" AcceptsReturn="True" Text="{Binding PublishDescription, UpdateSourceTrigger=PropertyChanged}"/>
-              <Label Content="SEO HASHTAGS" Margin="0,8,0,0"/>
-              <TextBox Width="760" Text="{Binding PublishHashtags, UpdateSourceTrigger=PropertyChanged}"/>
-              <Separator Margin="0,14"/>
-              <TextBlock Text="YOUTUBE SHORTS METADATA" FontSize="17" FontWeight="SemiBold"/>
-              <Label Content="TITLE + HASHTAGS (100 CHARACTERS MAX)"/>
-              <TextBox Width="760" MaxLength="100" Text="{Binding YouTubeTitleText, UpdateSourceTrigger=PropertyChanged}"/>
-              <TextBlock Text="{Binding YouTubeTitleCount}" Foreground="{StaticResource Muted}" Margin="0,3,0,6"/>
-              <Label Content="YOUTUBE DESCRIPTION (SEPARATE FIELD)"/>
-              <TextBox Width="760" Height="75" TextWrapping="Wrap" AcceptsReturn="True" Text="{Binding YouTubeDescriptionText, UpdateSourceTrigger=PropertyChanged}"/>
-              <Separator Margin="0,14"/>
-              <TextBlock Text="TIKTOK METADATA" FontSize="17" FontWeight="SemiBold"/>
-              <Label Content="ONE CAPTION: HOOK + DESCRIPTION + HASHTAGS"/>
-              <TextBox Width="760" Height="100" TextWrapping="Wrap" AcceptsReturn="True" Text="{Binding TikTokCaptionText, UpdateSourceTrigger=PropertyChanged}"/>
-              <Separator Margin="0,16"/>
-              <TextBlock Text="PUBLISH" FontSize="18" FontWeight="SemiBold"/>
-              <TextBlock Text="Choose a platform. Publish opens its Studio uploader in your signed-in browser. Review and submit the video there; ZeroVideo does not yet automate final submission." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
-              <Label Content="DESTINATION"/>
-              <ComboBox Width="220" HorizontalAlignment="Left" ItemsSource="{Binding PublishDestinations}" SelectedItem="{Binding PublishDestination}"/>
-              <Button Style="{StaticResource PrimaryButton}" Command="{Binding BrowserPublishCommand}" Content="Publish" HorizontalAlignment="Left" Margin="0,12,0,12"/>
-              <CheckBox Content="I own or have rights to this video and music, reviewed the destination account and privacy, and explicitly authorize this upload." IsChecked="{Binding PublishConsent}"/>
-              <TextBlock Text="{Binding PublishStatus}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,12,0,0"/>
+              <CheckBox Content="I have rights to this video and authorize opening the platform uploader." IsChecked="{Binding PublishConsent}" Margin="0,12,0,0"/>
+              <TextBlock Text="{Binding PublishStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
+              <TextBlock Text="Browser publishing currently opens Studio for manual upload and confirmation. It does not automatically submit or schedule posts." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
             </StackPanel>
           </ScrollViewer>
         </Border>
