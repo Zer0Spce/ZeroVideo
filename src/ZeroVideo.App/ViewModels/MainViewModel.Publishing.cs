@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Input;
 using ZeroVideo.App.Infrastructure;
@@ -7,8 +8,122 @@ using ZeroVideo.App.Services;
 
 namespace ZeroVideo.App.ViewModels;
 
+public sealed class PublishQueueItem : ObservableObject
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string VideoPath { get; set; } = "";
+    public string ThumbnailPath { get; set; } = "";
+    public string Title { get; set; } = "";
+    public string Description { get; set; } = "";
+    public DateTimeOffset? ScheduledAt { get; set; }
+    public string YouTubeStatus { get; set; } = "Ready";
+    public string TikTokStatus { get; set; } = "Ready";
+    public string Display => $"{Title}  |  YouTube: {YouTubeStatus}  |  TikTok: {TikTokStatus}" +
+        (ScheduledAt.HasValue ? $"  |  {ScheduledAt.Value:yyyy-MM-dd HH:mm zzz}" : "");
+}
+
 public sealed partial class MainViewModel
 {
+    private static readonly string QueueFile = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZeroVideo", "publishing-queue.json");
+    public ObservableCollection<PublishQueueItem> PublishingQueue { get; } = [];
+    private PublishQueueItem? _selectedPublishItem;
+    private int _publishIntervalHours = 6;
+    private string _publishFirstSlot = DateTime.Now.AddDays(1).ToString("yyyy-MM-dd HH:mm");
+    public ObservableCollection<int> PublishIntervals { get; } = [6, 12, 24, 48];
+    public PublishQueueItem? SelectedPublishItem
+    {
+        get => _selectedPublishItem;
+        set
+        {
+            if (!Set(ref _selectedPublishItem, value) || value is null) return;
+            PublishFile = value.VideoPath;
+            PublishTitle = value.Title;
+            PublishDescription = value.Description;
+            PublishSchedule = value.ScheduledAt?.LocalDateTime.ToString("yyyy-MM-dd HH:mm") ?? "";
+            PublishThumbnail = value.ThumbnailPath;
+        }
+    }
+    private string _publishThumbnail = "";
+    public string PublishThumbnail { get => _publishThumbnail; set => Set(ref _publishThumbnail, value); }
+    public int PublishIntervalHours { get => _publishIntervalHours; set => Set(ref _publishIntervalHours, value); }
+    public string PublishFirstSlot { get => _publishFirstSlot; set => Set(ref _publishFirstSlot, value); }
+    public ICommand SchedulePublishQueueCommand { get; private set; } = null!;
+    public ICommand RemovePublishQueueCommand { get; private set; } = null!;
+
+    private void LoadPublishingQueue()
+    {
+        try
+        {
+            if (!File.Exists(QueueFile)) return;
+            foreach (var item in JsonSerializer.Deserialize<List<PublishQueueItem>>(File.ReadAllText(QueueFile)) ?? [])
+                if (File.Exists(item.VideoPath) && !PublishingQueue.Any(x => x.VideoPath.Equals(item.VideoPath, StringComparison.OrdinalIgnoreCase)))
+                    PublishingQueue.Add(item);
+        }
+        catch (Exception ex) { Log("Publishing queue could not be loaded: " + ex.Message); }
+    }
+
+    private void SavePublishingQueue()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(QueueFile)!);
+            var temporary = QueueFile + ".tmp";
+            File.WriteAllText(temporary, JsonSerializer.Serialize(PublishingQueue.ToList()));
+            File.Move(temporary, QueueFile, true);
+        }
+        catch (Exception ex) { Log("Publishing queue could not be saved: " + ex.Message); }
+    }
+
+    private void QueueCompletedVideo(string output)
+    {
+        if (!File.Exists(output)) { Log("Publishing queue: rendered file missing, not added."); return; }
+        if (PublishingQueue.Any(x => x.VideoPath.Equals(output, StringComparison.OrdinalIgnoreCase))) return;
+        var thumbnail = Path.Combine(Project.ProjectDirectory, "thumbnail.png");
+        var item = new PublishQueueItem
+        {
+            VideoPath = output,
+            ThumbnailPath = File.Exists(thumbnail) ? thumbnail : "",
+            Title = string.IsNullOrWhiteSpace(Project.Title) ? Path.GetFileNameWithoutExtension(output) : Project.Title,
+            Description = Project.Topic
+        };
+        PublishingQueue.Add(item);
+        SavePublishingQueue();
+        Log("Publishing queue: added " + item.Title);
+    }
+
+    private void UpdateQueuedThumbnail()
+    {
+        var thumbnail = Path.Combine(Project.ProjectDirectory, "thumbnail.png");
+        if (!File.Exists(thumbnail)) return;
+        foreach (var item in PublishingQueue.Where(x => x.VideoPath.StartsWith(Project.ProjectDirectory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)))
+        {
+            item.ThumbnailPath = thumbnail;
+            if (ReferenceEquals(item, SelectedPublishItem)) PublishThumbnail = thumbnail;
+        }
+        SavePublishingQueue();
+    }
+
+    private void SchedulePublishingQueue()
+    {
+        if (!DateTime.TryParseExact(PublishFirstSlot, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeLocal, out var first) || first <= DateTime.Now)
+        { PublishStatus = "Choose a future first slot: YYYY-MM-DD HH:MM (computer local time)."; return; }
+        var interval = PublishIntervalHours;
+        if (!PublishIntervals.Contains(interval)) { PublishStatus = "Choose a valid interval."; return; }
+        var ready = PublishingQueue.Where(x => x.YouTubeStatus == "Ready").ToList();
+        if (ready.Count == 0) { PublishStatus = "No ready videos to schedule."; return; }
+        var slot = new DateTimeOffset(first);
+        foreach (var item in ready)
+        {
+            item.ScheduledAt = slot;
+            slot = slot.AddHours(interval);
+        }
+        SavePublishingQueue();
+        SelectedPublishItem = ready[0];
+        PublishStatus = $"Assigned {ready.Count} YouTube schedule slots every {interval} hours. Review and upload each video to confirm with YouTube.";
+    }
+
     private readonly PublishingService _publishing = new();
     private string _publishFile = "";
     private string _publishTitle = "";
@@ -37,12 +152,22 @@ public sealed partial class MainViewModel
 
     private void InitializePublishingCommands()
     {
+        LoadPublishingQueue();
+        SchedulePublishQueueCommand = new RelayCommand(SchedulePublishingQueue);
+        RemovePublishQueueCommand = new RelayCommand(() =>
+        {
+            if (SelectedPublishItem is null) return;
+            PublishingQueue.Remove(SelectedPublishItem);
+            SelectedPublishItem = null;
+            SavePublishingQueue();
+        });
         BrowsePublishFileCommand = new RelayCommand(() =>
         {
             var dialog = new Microsoft.Win32.OpenFileDialog { Filter = "MP4 videos|*.mp4", CheckFileExists = true };
             if (dialog.ShowDialog() != true) return;
             PublishFile = dialog.FileName;
             PublishTitle = Path.GetFileNameWithoutExtension(dialog.FileName);
+            QueueCompletedVideoFromBrowse(dialog.FileName);
         });
         PublishYouTubeCommand = new AsyncCommand(async () =>
         {
@@ -59,6 +184,7 @@ public sealed partial class MainViewModel
                 PublishStatus = "Uploading to YouTube...";
                 PublishStatus = await _publishing.UploadYouTubeAsync(PublishFile, PublishTitle, PublishDescription,
                     YouTubeAccessToken, YouTubePrivacy, scheduled, _cts.Token);
+                if (SelectedPublishItem is not null) { SelectedPublishItem.YouTubeStatus = scheduled.HasValue ? "Scheduled" : "Uploaded"; SavePublishingQueue(); Raise(nameof(PublishingQueue)); }
             }
             catch (Exception ex) { PublishStatus = "YouTube: " + ex.Message; }
             finally { PublishConsent = false; }
@@ -71,10 +197,22 @@ public sealed partial class MainViewModel
                 PublishStatus = "Uploading to TikTok...";
                 PublishStatus = await _publishing.UploadTikTokAsync(PublishFile, PublishTitle,
                     TikTokAccessToken, TikTokPrivacy, _cts.Token);
+                if (SelectedPublishItem is not null) { SelectedPublishItem.TikTokStatus = "Processing"; SavePublishingQueue(); Raise(nameof(PublishingQueue)); }
             }
             catch (Exception ex) { PublishStatus = "TikTok: " + ex.Message; }
             finally { PublishConsent = false; }
         });
+    }
+
+    private void QueueCompletedVideoFromBrowse(string path)
+    {
+        if (PublishingQueue.Any(x => x.VideoPath.Equals(path, StringComparison.OrdinalIgnoreCase))) return;
+        var thumbnail = Path.Combine(Path.GetDirectoryName(path)!, "thumbnail.png");
+        var item = new PublishQueueItem { VideoPath = path, Title = Path.GetFileNameWithoutExtension(path),
+            ThumbnailPath = File.Exists(thumbnail) ? thumbnail : "" };
+        PublishingQueue.Add(item);
+        SavePublishingQueue();
+        SelectedPublishItem = item;
     }
 
     private bool ValidatePublish()
