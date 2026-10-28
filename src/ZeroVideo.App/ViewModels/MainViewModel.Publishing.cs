@@ -28,6 +28,12 @@ public sealed class PublishQueueItem : ObservableObject
     public string SeoDescription => string.IsNullOrWhiteSpace(YouTubeDescription) ? Description : YouTubeDescription;
     public string SeoHashtags => !string.IsNullOrWhiteSpace(Hashtags) ? Hashtags : string.Join(" ", TikTokCaption.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(tag => tag.StartsWith("#")));
     public DateTimeOffset? ScheduledAt { get; set; }
+    public string YouTubeCheckpoint { get; set; } = "Not started";
+    public string TikTokCheckpoint { get; set; } = "Not started";
+    public string YouTubeCheckpointNote { get; set; } = "";
+    public string TikTokCheckpointNote { get; set; } = "";
+    public DateTimeOffset? YouTubeCheckpointUpdated { get; set; }
+    public DateTimeOffset? TikTokCheckpointUpdated { get; set; }
     public string YouTubeStatus { get; set; } = "Ready";
     public string TikTokStatus { get; set; } = "Ready";
     public void RaiseSeoChanged()
@@ -56,6 +62,7 @@ public sealed partial class MainViewModel
         {
             if (!Set(ref _selectedPublishItem, value) || value is null) return;
             PublishFile = value.VideoPath;
+            LoadSelectedCheckpoint();
             PublishTitle = value.Title;
             PublishDescription = value.Description;
             PublishHashtags = value.Hashtags;
@@ -96,8 +103,44 @@ public sealed partial class MainViewModel
     public ICommand OpenYouTubeStudioCommand { get; private set; } = null!;
     public ICommand OpenTikTokStudioCommand { get; private set; } = null!;
     public ICommand BrowserPublishCommand { get; private set; } = null!;
+    public ICommand SavePublishCheckpointCommand { get; private set; } = null!;
+    public ICommand ResumePublishCheckpointCommand { get; private set; } = null!;
+    public ObservableCollection<string> PublishCheckpointStages { get; } =
+        ["Not started", "Studio opened", "Video selected", "Upload accepted", "Metadata entered", "Schedule entered", "Platform confirmed"];
+    private string _publishCheckpointStage = "Not started";
+    private string _publishCheckpointNote = "";
+    public string PublishCheckpointStage { get => _publishCheckpointStage; set => Set(ref _publishCheckpointStage, value); }
+    public string PublishCheckpointNote { get => _publishCheckpointNote; set => Set(ref _publishCheckpointNote, value); }
+    private void LoadSelectedCheckpoint()
+    {
+        if (SelectedPublishItem is null) return;
+        var youtube = PublishDestination == "YouTube";
+        PublishCheckpointStage = youtube ? SelectedPublishItem.YouTubeCheckpoint : SelectedPublishItem.TikTokCheckpoint;
+        PublishCheckpointNote = youtube ? SelectedPublishItem.YouTubeCheckpointNote : SelectedPublishItem.TikTokCheckpointNote;
+    }
+    private void SaveSelectedCheckpoint()
+    {
+        var item = SelectedPublishItem;
+        if (item is null) { PublishStatus = "Select a video first."; return; }
+        if (!PublishCheckpointStages.Contains(PublishCheckpointStage))
+        { PublishStatus = "Choose a valid checkpoint."; return; }
+        if (PublishDestination == "YouTube")
+        {
+            item.YouTubeCheckpoint = PublishCheckpointStage;
+            item.YouTubeCheckpointNote = PublishCheckpointNote;
+            item.YouTubeCheckpointUpdated = DateTimeOffset.Now;
+        }
+        else
+        {
+            item.TikTokCheckpoint = PublishCheckpointStage;
+            item.TikTokCheckpointNote = PublishCheckpointNote;
+            item.TikTokCheckpointUpdated = DateTimeOffset.Now;
+        }
+        SavePublishingQueue();
+        PublishStatus = "Checkpoint saved locally. This is user-confirmed progress, not platform verification.";
+    }
     private string _publishDestination = "YouTube";
-    public string PublishDestination { get => _publishDestination; set => Set(ref _publishDestination, value); }
+    public string PublishDestination { get => _publishDestination; set { if (Set(ref _publishDestination, value)) LoadSelectedCheckpoint(); } }
     public ObservableCollection<string> PublishDestinations { get; } = ["YouTube", "TikTok"];
     public ICommand RemovePublishQueueCommand { get; private set; } = null!;
 
@@ -224,6 +267,28 @@ public sealed partial class MainViewModel
     private void InitializePublishingCommands()
     {
         LoadPublishingQueue();
+        SavePublishCheckpointCommand = new RelayCommand(SaveSelectedCheckpoint);
+        ResumePublishCheckpointCommand = new AsyncCommand(async () =>
+        {
+            if (SelectedPublishItem is null) { PublishStatus = "Select a video first."; return; }
+            var stage = PublishCheckpointStage;
+            if (stage == "Platform confirmed")
+            {
+                PublishStatus = "Marked confirmed. Check the post in Studio before attempting another upload.";
+                return;
+            }
+            if (!File.Exists(SelectedPublishItem.VideoPath))
+            { PublishStatus = "The video file is missing; cannot resume."; return; }
+            try
+            {
+                await _browser.OpenManualAsync(Settings, PublishDestination == "YouTube" ?
+                    "https://studio.youtube.com/" : "https://www.tiktok.com/tiktokstudio/upload");
+                PublishStatus = "Saved checkpoint: " + stage +
+                    ". Inspect existing drafts/uploads before retrying to prevent duplicate posts. A browser upload cannot be restored automatically.";
+            }
+            catch (Exception ex) { PublishStatus = "Resume browser: " + ex.Message; }
+        });
+
         BrowserPublishCommand = new AsyncCommand(async () =>
         {
             if (!File.Exists(PublishFile)) { PublishStatus = "Select a queued MP4 first."; return; }
@@ -240,6 +305,11 @@ public sealed partial class MainViewModel
             {
                 var url = youtube ? "https://studio.youtube.com/" : "https://www.tiktok.com/tiktokstudio/upload";
                 await _browser.OpenManualAsync(Settings, url);
+                if (SelectedPublishItem is not null && PublishCheckpointStage == "Not started")
+                {
+                    PublishCheckpointStage = "Studio opened";
+                    SaveSelectedCheckpoint();
+                }
                 PublishStatus = site + " opened. Select the MP4, use the prepared metadata and thumbnail where supported, then confirm publishing or scheduling in Studio. Submission is not automated yet.";
             }
             catch (Exception ex) { PublishStatus = "Browser publishing: " + ex.Message; }
