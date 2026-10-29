@@ -127,7 +127,29 @@ public sealed class StudioUploadService(BrowserSession browser)
             await Task.Delay(450, ct);
             if (await calendar.CountAsync() > 0)
             {
+                // Navigate to the target month before searching for its day. The
+                // old implementation searched only the initially displayed month.
                 var isoDate = target.ToString("yyyy-MM-dd");
+                var monthLabel = target.ToString("MMMM yyyy", culture);
+                var shortMonthLabel = target.ToString("MMM yyyy", culture);
+                for (var attempt = 0; attempt < 13; attempt++)
+                {
+                    var monthText = (await calendar.InnerTextAsync()).Trim();
+                    if (monthText.Contains(monthLabel, StringComparison.OrdinalIgnoreCase) ||
+                        monthText.Contains(shortMonthLabel, StringComparison.OrdinalIgnoreCase))
+                        break;
+                    var next = calendar.Locator(
+                        "[aria-label*='Next month' i], [aria-label*='next month' i], " +
+                        "[class*='next-month'], [class*='nextMonth'], [class*='calendar-next'], " +
+                        ".calendar-header button:last-child, .calendar-header span:last-child").Last;
+                    if (await next.CountAsync() == 0 || !await next.IsVisibleAsync())
+                    {
+                        log?.Invoke("TikTok: next-month control not found for " + monthLabel);
+                        break;
+                    }
+                    await next.ClickAsync(new() { Timeout = 3000 });
+                    await Task.Delay(200, ct);
+                }
                 var day = calendar.Locator("[data-date='" + isoDate + "'], [datetime='" + isoDate + "']").First;
                 if (await day.CountAsync() == 0)
                 {
@@ -172,10 +194,22 @@ public sealed class StudioUploadService(BrowserSession browser)
             {
                 var hourOptions = picker.Locator("span[class*=tiktok-timepicker-left]");
                 var minuteOptions = picker.Locator("span[class*=tiktok-timepicker-right]");
+                log?.Invoke("TikTok: picker option counts: hours=" + await hourOptions.CountAsync() +
+                    ", minutes=" + await minuteOptions.CountAsync());
                 if (await hourOptions.CountAsync() >= 24 && await minuteOptions.CountAsync() >= 12 && target.Minute % 5 == 0)
                 {
-                    var hour = hourOptions.Nth(target.Hour);
-                    var minute = minuteOptions.Nth(target.Minute / 5);
+                    // Match the displayed number, never assume DOM order is 0..23 / 0..55.
+                    var hour = hourOptions.Filter(new() { HasTextRegex =
+                        new System.Text.RegularExpressions.Regex(@"^\\s*0?" + target.Hour + @"\\s*$") }).First;
+                    var minute = minuteOptions.Filter(new() { HasTextRegex =
+                        new System.Text.RegularExpressions.Regex(@"^\\s*0?" + target.Minute + @"\\s*$") }).First;
+                    if (await hour.CountAsync() == 0 || await minute.CountAsync() == 0)
+                    {
+                        log?.Invoke("TikTok: exact numeric hour/minute options not present.");
+                        var diag = await SaveDiagnosticAsync(page, "TikTok-Time-Options", log);
+                        log?.Invoke("TikTok: time picker diagnostic: " + diag);
+                        return false;
+                    }
                     await hour.ScrollIntoViewIfNeededAsync();
                     await hour.ClickAsync();
                     await minute.ScrollIntoViewIfNeededAsync();
