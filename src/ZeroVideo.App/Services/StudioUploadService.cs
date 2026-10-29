@@ -523,7 +523,7 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
       const post=buttons.filter(b=>/^Post now$/i.test(clean(b)));
       if(cancel.length!==1 || post.length!==1)continue;
       const all=clean(p);
-      if(!/still checking your video|check is complete|potential issues/i.test(all))
+      if(!/still checking your video|check is complete|potential issues|copyright check is incomplete|posting your video now will stop the check/i.test(all))
         continue;
       // This is a modal in the central part of the viewport, never the
       // surrounding scheduling/privacy/copyright settings.
