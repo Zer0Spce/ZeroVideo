@@ -412,6 +412,94 @@ public sealed class StudioUploadService(BrowserSession browser)
         return false;
     }
 
+    // Fallback for the visually rendered two-column TikTok wheel when its
+    // DOM container classes are unavailable. Target only numeric leaf options
+    // above the time trigger and choose the appropriate left/right column.
+    private static async Task<bool> PickTikTokVisibleTimeColumnAsync(
+        IPage page, ILocator trigger, int wanted, bool hour, Action<string>? log,
+        CancellationToken ct)
+    {
+        var bounds = await trigger.BoundingBoxAsync();
+        if (bounds is null) return false;
+        const string script = @"
+(args) => {
+  const vis=e=>{let r=e.getBoundingClientRect(),s=getComputedStyle(e);
+    return r.width>4&&r.height>4&&s.visibility!=='hidden'&&s.display!=='none';};
+  const numeric=[];
+  for(const e of document.querySelectorAll('body *')){
+    if(!vis(e))continue;
+    const t=(e.textContent||'').trim();
+    if(!/^\d{1,2}$/.test(t))continue;
+    if([...e.children].some(c=>(c.textContent||'').trim()===t))continue;
+    const r=e.getBoundingClientRect();
+    if(r.width>120||r.height>80)continue;
+    const x=r.left+r.width/2,y=r.top+r.height/2;
+    if(x<args.ax-140||x>args.ax+500||y<args.ay-520||y>args.ay-8)continue;
+    numeric.push({n:Number(t),x,y});
+  }
+  const distinct=[];
+  for(const e of numeric){
+    if(!distinct.some(d=>Math.abs(d.x-e.x)<9&&Math.abs(d.y-e.y)<9))distinct.push(e);
+  }
+  const sortedX=distinct.map(e=>e.x).sort((a,b)=>a-b);
+  if(sortedX.length<6)return {error:'numeric wheel options missing',count:sortedX.length};
+  // Identify two center columns from the largest gap in x distribution.
+  const groups=[];
+  for(const x of sortedX){
+    let g=groups.find(g=>Math.abs(g.x-x)<26);
+    if(!g)groups.push({x,count:1});
+    else {g.x=(g.x*g.count+x)/(g.count+1);g.count++;}
+  }
+  groups.sort((a,b)=>b.count-a.count);
+  const best=groups.slice(0,2).sort((a,b)=>a.x-b.x);
+  if(best.length!==2||best[1].x-best[0].x<60)
+    return {error:'cannot identify two wheel columns',count:distinct.length};
+  const center=best[args.hour?0:1].x;
+  const options=distinct.filter(e=>Math.abs(e.x-center)<26 &&
+    (args.hour?e.n<=23:e.n<=59&&e.n%5===0));
+  const min=options.length?Math.min(...options.map(e=>e.n)):-1;
+  const max=options.length?Math.max(...options.map(e=>e.n)):-1;
+  const centerY=args.ay-190;
+  const found=options.filter(e=>e.n===args.value)
+    .sort((a,b)=>Math.abs(a.y-centerY)-Math.abs(b.y-centerY))[0];
+  return {error:null,found:!!found,count:options.length,min,max,
+    x:found?.x??center,y:found?.y??centerY};
+}";
+        for (var attempt = 0; attempt < 26; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var data = await page.EvaluateAsync<System.Text.Json.JsonElement>(script,
+                new { ax = bounds.X, ay = bounds.Y, value = wanted, hour });
+            if (data.TryGetProperty("error", out var failure) &&
+                failure.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                log?.Invoke("TikTok: visual time column: " + failure.GetString());
+                return false;
+            }
+            var x = (float)data.GetProperty("x").GetDouble();
+            var y = (float)data.GetProperty("y").GetDouble();
+            if (data.GetProperty("found").GetBoolean())
+            {
+                await page.Mouse.ClickAsync(x, y);
+                await Task.Delay(300, ct);
+                log?.Invoke("TikTok: visual wheel clicked " + (hour ? "hour " : "minute ") + wanted);
+                return true;
+            }
+            var min = data.GetProperty("min").GetInt32();
+            var max = data.GetProperty("max").GetInt32();
+            if (attempt == 0) log?.Invoke("TikTok: visual " + (hour ? "hour" : "minute") +
+                " wheel options " + min + "-" + max + ", requested " + wanted);
+            var direction = min >= 0 && wanted < min ? -1 : 1;
+            if (max >= 0 && wanted > max) direction = 1;
+            if (attempt >= 15) direction = -direction;
+            await page.Mouse.MoveAsync(x, y);
+            await page.Mouse.WheelAsync(0, 130 * direction);
+            await Task.Delay(200, ct);
+        }
+        log?.Invoke("TikTok: could not scroll to " + (hour ? "hour " : "minute ") + wanted);
+        return false;
+    }
+
     private static async Task<bool> SetTikTokScheduleAsync(IPage page,
         DateTimeOffset slot, Action<string>? log, CancellationToken ct)
     {
@@ -514,17 +602,27 @@ public sealed class StudioUploadService(BrowserSession browser)
         var picker = page.Locator(".tiktok-timepicker-time-picker-container:visible").First;
         if (await picker.CountAsync() == 0)
             picker = page.Locator("[role=listbox]:visible, [class*=time-picker]:visible").First;
-        if (await picker.CountAsync() == 0)
-        {
-            log?.Invoke("TikTok: hour/minute wheel container missing.");
-            await SaveDiagnosticAsync(page, "TikTok-Time-Wheel-Missing", log);
-            return false;
-        }
 
-        // Set the hour, then the minute, in the two separate scroll columns.
-        var hourSet = await PickTikTokWheelValueAsync(page, picker, target.Hour, true, log, ct);
-        var minuteSet = hourSet && await PickTikTokWheelValueAsync(
-            page, picker, target.Minute, false, log, ct);
+        var hourSet = false;
+        var minuteSet = false;
+        if (await picker.CountAsync() > 0)
+        {
+            hourSet = await PickTikTokWheelValueAsync(page, picker, target.Hour, true, log, ct);
+            minuteSet = hourSet && await PickTikTokWheelValueAsync(
+                page, picker, target.Minute, false, log, ct);
+        }
+        // A screenshot of the current TikTok Studio wheel shows two text-number
+        // columns, but the prior class-based selector may not match either.
+        if (!hourSet || !minuteSet)
+        {
+            log?.Invoke("TikTok: using visible hour/minute column fallback.");
+            if (!hourSet)
+                hourSet = await PickTikTokVisibleTimeColumnAsync(
+                    page, timeTrigger, target.Hour, true, log, ct);
+            if (hourSet && !minuteSet)
+                minuteSet = await PickTikTokVisibleTimeColumnAsync(
+                    page, timeTrigger, target.Minute, false, log, ct);
+        }
         if (!hourSet || !minuteSet)
         {
             await SaveDiagnosticAsync(page, "TikTok-Time-Option-Missing", log);
