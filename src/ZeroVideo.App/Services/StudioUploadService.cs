@@ -18,6 +18,24 @@ public sealed class StudioUploadService(BrowserSession browser)
         await page.GotoAsync(youtube ? "https://studio.youtube.com/" : "https://www.tiktok.com/tiktokstudio/upload",
             new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 90000 });
         ct.ThrowIfCancellationRequested();
+        log?.Invoke(destination + ": Studio opened at " + page.Url);
+        if (!youtube)
+        {
+            for (var nav = 0; nav < 6; nav++)
+            {
+                var uploadLink = page.GetByRole(AriaRole.Link, new() { Name = "Upload" }).First;
+                var uploadButton = page.GetByRole(AriaRole.Button, new() { Name = "Upload" }).First;
+                try
+                {
+                    if (await uploadLink.CountAsync() > 0 && await uploadLink.IsVisibleAsync())
+                    { await uploadLink.ClickAsync(new() { Timeout = 4000 }); break; }
+                    if (await uploadButton.CountAsync() > 0 && await uploadButton.IsVisibleAsync())
+                    { await uploadButton.ClickAsync(new() { Timeout = 4000 }); break; }
+                }
+                catch (PlaywrightException) { }
+                await Task.Delay(1000, ct);
+            }
+        }
         if (youtube)
         {
             var create = page.GetByRole(AriaRole.Button, new() { Name = "Create" }).First;
