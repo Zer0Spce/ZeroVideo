@@ -1112,10 +1112,21 @@ public sealed class StudioUploadService(BrowserSession browser)
                 page, dateTrigger, target, log, ct);
             if (!clicked)
                 await SaveDiagnosticAsync(page, "TikTok-Safe-Date-NotSelected", log);
-            // Escape closes the popup without clicking other page settings.
-            await page.Keyboard.PressAsync("Escape");
-            await Task.Delay(250, ct);
+            // A successful day click normally commits and closes the popup.
+            // Do not press Escape before reading the committed date: Escape
+            // may CANCEL the pending change on TikTok's React calendar.
+            await Task.Delay(350, ct);
             dateRead = (await dateTrigger.InnerTextAsync()).Trim();
+            if (!DateTime.TryParse(dateRead, culture,
+                System.Globalization.DateTimeStyles.None, out var interimDate) ||
+                interimDate.Date != target.Date)
+            {
+                // Only on failure, dismiss using Escape; NEVER click elsewhere
+                // in the upload form, especially privacy/copyright controls.
+                await page.Keyboard.PressAsync("Escape");
+                await Task.Delay(150, ct);
+                dateRead = (await dateTrigger.InnerTextAsync()).Trim();
+            }
             dateOk = DateTime.TryParse(dateRead, culture,
                 System.Globalization.DateTimeStyles.None, out dateParsed) &&
                 dateParsed.Date == target.Date;
@@ -1158,10 +1169,11 @@ public sealed class StudioUploadService(BrowserSession browser)
                     log?.Invoke("TikTok: picker clicks hour=" + hourOk +
                         " minute=" + minuteOk);
                 }
-                // Close via keyboard, never by clicking anywhere in privacy or
-                // music copyright regions. Re-read actual committed value.
-                await page.Keyboard.PressAsync("Escape");
-                await Task.Delay(300, ct);
+                // Commit by clicking the TIME control itself. On some TikTok
+                // versions Escape cancels the wheel selection instead.
+                // This is safe: timeTrigger is explicitly within scheduling.
+                await timeTrigger.ClickAsync(new() { Timeout = 5000 });
+                await Task.Delay(350, ct);
                 timeRead = (await timeTrigger.InnerTextAsync()).Trim();
                 timeOk = timeRead == timeWanted || timeRead == target.ToString("H:mm");
                 if (!timeOk)
