@@ -85,39 +85,125 @@ public sealed class StudioUploadService(BrowserSession browser)
         var local = slot.LocalDateTime;
         if (local <= DateTime.Now.AddMinutes(20))
             throw new InvalidOperationException("Scheduled time must be at least 20 minutes in the future.");
-        var radio = page.GetByText("Schedule", new() { Exact = true }).First;
-        await radio.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 30000 });
-        await radio.ClickAsync();
-        await Task.Delay(750, ct);
-        log?.Invoke("TikTok: Schedule selected for " + local.ToString("yyyy-MM-dd HH:mm") + " local time.");
+
+        // Blur the caption editor first: its hashtag autocomplete otherwise overlays
+        // TikTok Studio's scheduling controls and swallows the next click.
+        await page.Locator("body").ClickAsync(new() { Position = new() { X = 10, Y = 10 } });
+        await page.Keyboard.PressAsync("Escape");
+        var schedule = page.GetByText("Schedule", new() { Exact = true }).First;
+        await schedule.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 30000 });
+        await schedule.ClickAsync();
+        await Task.Delay(700, ct);
+        log?.Invoke("TikTok: Schedule selected. Requested local slot: " + local.ToString("yyyy-MM-dd HH:mm"));
+
+        // TikTok Studio currently renders gray dropdowns for the date and time.
+        // Native input FillAsync alone cannot change their selected values.
         var dateDone = false;
         var timeDone = false;
         foreach (var frame in page.Frames)
         {
-            var dates = frame.Locator("input[type='date'], input[placeholder*='date' i], input[placeholder*='yyyy' i]");
-            for (var i = 0; i < await dates.CountAsync(); i++)
+            var dateInput = frame.Locator("input[type='date']");
+            if (await dateInput.CountAsync() > 0 && await dateInput.First.IsVisibleAsync())
             {
-                var field = dates.Nth(i);
-                if (!await field.IsVisibleAsync()) continue;
-                try { await field.FillAsync(local.ToString("yyyy-MM-dd")); await field.PressAsync("Tab"); dateDone = true; break; }
+                try { await dateInput.First.FillAsync(local.ToString("yyyy-MM-dd")); await dateInput.First.PressAsync("Tab"); dateDone = true; }
                 catch (PlaywrightException) { }
             }
-            var times = frame.Locator("input[type='time'], input[placeholder*='time' i], input[placeholder*='hh' i]");
-            for (var i = 0; i < await times.CountAsync(); i++)
+            var timeInput = frame.Locator("input[type='time']");
+            if (await timeInput.CountAsync() > 0 && await timeInput.First.IsVisibleAsync())
             {
-                var field = times.Nth(i);
-                if (!await field.IsVisibleAsync()) continue;
-                try { await field.FillAsync(local.ToString("HH:mm")); await field.PressAsync("Tab"); timeDone = true; break; }
+                try { await timeInput.First.FillAsync(local.ToString("HH:mm")); await timeInput.First.PressAsync("Tab"); timeDone = true; }
                 catch (PlaywrightException) { }
             }
         }
-        if (!dateDone || !timeDone)
+
+        // The visual time selector contains a HH:mm value (e.g. 11:25).
+        // Open its dropdown and click the exact requested time option, not just the
+        // default value shown on the closed control.
+        if (!timeDone)
+        {
+            var timeControl = page.Locator("button, [role='combobox'], [role='button'], [class*='select'], [class*='Select']")
+                .Filter(new() { HasTextRegex = new System.Text.RegularExpressions.Regex(@"^\s*\d{1,2}:\d{2}\s*$") })
+                .First;
+            if (await timeControl.CountAsync() > 0 && await timeControl.IsVisibleAsync())
+            {
+                await timeControl.ClickAsync(new() { Timeout = 8000 });
+                await Task.Delay(350, ct);
+                var desired = local.ToString("HH:mm");
+                var choices = page.Locator("[role='option'], [role='listbox'] *, [class*='option'], [class*='Option'], [class*='item'], [class*='Item']")
+                    .GetByText(desired, new() { Exact = true });
+                if (await choices.CountAsync() > 0 && await choices.First.IsVisibleAsync())
+                {
+                    await choices.First.ClickAsync(new() { Timeout = 8000 });
+                    timeDone = true;
+                }
+                else
+                {
+                    // Some TikTok time pickers expose an editable field after opening.
+                    var editable = page.Locator("input:visible").Last;
+                    if (await editable.CountAsync() > 0)
+                    {
+                        try
+                        {
+                            await editable.FillAsync(desired, new() { Timeout = 3000 });
+                            await editable.PressAsync("Enter");
+                            timeDone = true;
+                        }
+                        catch (PlaywrightException) { }
+                    }
+                }
+            }
+        }
+
+        // Try the native calendar and then the visible TikTok calendar dropdown.
+        if (!dateDone)
+        {
+            var dateControl = page.Locator("button, [role='combobox'], [role='button'], [class*='select'], [class*='Select']")
+                .Filter(new() { HasTextRegex = new System.Text.RegularExpressions.Regex(@"[A-Za-z]{3}\s+\d{1,2},?\s+\d{4}") })
+                .First;
+            if (await dateControl.CountAsync() > 0 && await dateControl.IsVisibleAsync())
+            {
+                await dateControl.ClickAsync(new() { Timeout = 8000 });
+                await Task.Delay(350, ct);
+                var dateInputs = page.Locator("input[type='date']:visible, input[placeholder*='date' i]:visible");
+                if (await dateInputs.CountAsync() > 0)
+                {
+                    try { await dateInputs.First.FillAsync(local.ToString("yyyy-MM-dd")); await dateInputs.First.PressAsync("Tab"); dateDone = true; }
+                    catch (PlaywrightException) { }
+                }
+                if (!dateDone)
+                {
+                    var day = page.Locator("[role='gridcell'], [role='option'], button")
+                        .GetByText(local.Day.ToString(), new() { Exact = true });
+                    if (await day.CountAsync() == 1 && await day.First.IsVisibleAsync())
+                    {
+                        await day.First.ClickAsync(new() { Timeout = 8000 });
+                        dateDone = true;
+                    }
+                }
+            }
+        }
+
+        // Read the CLOSED dropdown values again; a successful click alone does not
+        // prove that TikTok accepted the requested schedule.
+        await page.Keyboard.PressAsync("Escape");
+        await Task.Delay(400, ct);
+        var visible = await page.Locator("body").InnerTextAsync();
+        var requestedTime = local.ToString("HH:mm");
+        var requestedDate = local.ToString("MMM d, yyyy", System.Globalization.CultureInfo.GetCultureInfo("en-US"));
+        var timeVerified = visible.Contains(requestedTime, StringComparison.Ordinal);
+        var dateVerified = visible.Contains(requestedDate, StringComparison.OrdinalIgnoreCase) ||
+            visible.Contains(local.ToString("MMM dd, yyyy", System.Globalization.CultureInfo.GetCultureInfo("en-US")), StringComparison.OrdinalIgnoreCase);
+        if (!dateDone || !timeDone || !dateVerified || !timeVerified)
         {
             var screenshot = await SaveDiagnosticAsync(page, "TikTok-Schedule", log);
-            log?.Invoke("TikTok: schedule switch selected but date/time fields require manual selection. Screenshot: " + screenshot);
+            log?.Invoke("TikTok: requested " + local.ToString("yyyy-MM-dd HH:mm") +
+                "; date selected=" + dateDone + ", time selected=" + timeDone +
+                ", date visible=" + dateVerified + ", time visible=" + timeVerified +
+                ". Check dropdowns manually. Screenshot: " + screenshot);
             return false;
         }
-        log?.Invoke("TikTok: schedule fields entered. Verify timezone and date/time before manually submitting.");
+        log?.Invoke("TikTok: displayed schedule matches " + local.ToString("yyyy-MM-dd HH:mm") +
+            ". Review timezone before manually submitting.");
         return true;
     }
 
