@@ -71,7 +71,7 @@
 
               <WrapPanel Margin="0,0,0,2">
                 <CheckBox Content=".SRT captions" IsChecked="{Binding Project.Options.GenerateCaptions}" Margin="0,4,15,4"/>
-                <CheckBox Content="Bold in-video captions (9:16)" IsChecked="{Binding Project.Options.BurnInBoldCaptions}" Margin="0,4,15,4" ToolTip="Large white uppercase captions with a cyan-highlighted word and dark outline, centered near the lower third. Burning subtitles takes an extra render pass."/>
+                <CheckBox Content="Bold in-video captions (9:16)" IsChecked="{Binding Project.Options.BurnInBoldCaptions}" Margin="0,4,15,4" ToolTip="Slightly smaller all-white uppercase subtitles with a black outline, centered near the lower third. Audio-pause-aware timing; adds a render pass."/>
                 <CheckBox Content="Visual motion" IsChecked="{Binding Project.Options.AddMotion}" Margin="0,4,15,4"/>
                 <CheckBox Content="Music" IsChecked="{Binding Project.Options.AddBackgroundMusic}" Margin="0,4,15,4"/>
                 <CheckBox Content="SFX hooks" IsChecked="{Binding Project.Options.AddSoundEffects}" Margin="0,4,0,4"/>
@@ -139,7 +139,7 @@
                 <Label Content="SAFETY TOTAL IMAGE CAP"/>
                 <TextBox Text="{Binding Project.Options.MaxGeneratedVisuals, UpdateSourceTrigger=LostFocus}"/>
                 <CheckBox Content=".SRT captions" IsChecked="{Binding Project.Options.GenerateCaptions}" Margin="0,8,0,0"/>
-                <CheckBox Content="Bold in-video captions (9:16)" IsChecked="{Binding Project.Options.BurnInBoldCaptions}" Margin="0,5,0,0" ToolTip="White uppercase outlined captions with a cyan-highlighted first word, near the lower third. Adds an FFmpeg render pass."/>
+                <CheckBox Content="Bold in-video captions (9:16)" IsChecked="{Binding Project.Options.BurnInBoldCaptions}" Margin="0,5,0,0" ToolTip="Slightly smaller all-white outlined text. Audio-pause-aware timing; word-level matching is approximate. Adds an FFmpeg render pass."/>
                 <CheckBox Content="Visual motion" IsChecked="{Binding Project.Options.AddMotion}"/>
                 <CheckBox Content="Music" IsChecked="{Binding Project.Options.AddBackgroundMusic}"/>
                 <CheckBox Content="SFX hooks" IsChecked="{Binding Project.Options.AddSoundEffects}"/>
