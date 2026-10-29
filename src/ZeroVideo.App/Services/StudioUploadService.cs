@@ -27,16 +27,33 @@ public sealed class StudioUploadService(BrowserSession browser)
             if (await upload.IsVisibleAsync(new() { Timeout = 6000 }))
                 await upload.ClickAsync();
         }
-        var fileInput = page.Locator("input[type='file']").First;
-        try
+        log?.Invoke(destination + ": waiting for video upload input...");
+        var uploaded = false;
+        for (var attempt = 0; attempt < 45 && !uploaded; attempt++)
         {
-            await fileInput.WaitForAsync(new() { State = WaitForSelectorState.Attached, Timeout = 20000 });
-            await fileInput.SetInputFilesAsync(videoPath, new() { Timeout = 30000 });
+            ct.ThrowIfCancellationRequested();
+            foreach (var frame in page.Frames)
+            {
+                try
+                {
+                    var inputs = frame.Locator("input[type=file]");
+                    for (var i = 0; i < await inputs.CountAsync(); i++)
+                    {
+                        var input = inputs.Nth(i);
+                        var accept = (await input.GetAttributeAsync("accept") ?? "").ToLowerInvariant();
+                        if (accept.Contains("image") && !accept.Contains("video")) continue;
+                        await input.SetInputFilesAsync(videoPath, new() { Timeout = 5000 });
+                        uploaded = true;
+                        break;
+                    }
+                }
+                catch (PlaywrightException) { }
+                if (uploaded) break;
+            }
+            if (!uploaded) await Task.Delay(1000, ct);
         }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException("Studio did not expose a usable video upload control. Sign in or open the upload screen, then retry. " + ex.Message, ex);
-        }
+        if (!uploaded)
+            throw new InvalidOperationException("Studio upload input not found after 45 seconds. Sign in and ensure the upload page is visible, then retry. Current URL: " + page.Url);
         log?.Invoke(destination + ": selected video file in Studio.");
 
         if (youtube)
