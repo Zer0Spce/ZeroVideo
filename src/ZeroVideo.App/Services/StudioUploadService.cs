@@ -64,9 +64,41 @@ public sealed class StudioUploadService(BrowserSession browser)
             if (await upload.IsVisibleAsync(new() { Timeout = 6000 }))
                 await upload.ClickAsync();
         }
-        log?.Invoke(destination + ": waiting for video upload input...");
         var uploaded = false;
-        for (var attempt = 0; attempt < 45 && !uploaded; attempt++)
+        if (!youtube)
+        {
+            // The actual TikTok Studio uploader shows a pink "Select video" button.
+            // Playwright's file chooser event handles inputs created only on click.
+            log?.Invoke("TikTok: looking for Select video button...");
+            for (var attempt = 0; attempt < 15 && !uploaded; attempt++)
+            {
+                ct.ThrowIfCancellationRequested();
+                foreach (var frame in page.Frames)
+                {
+                    try
+                    {
+                        var select = frame.GetByText("Select video", new() { Exact = true }).First;
+                        if (await select.CountAsync() == 0 || !await select.IsVisibleAsync()) continue;
+                        log?.Invoke("TikTok: clicking Select video and attaching MP4...");
+                        var chooser = await page.RunAndWaitForFileChooserAsync(
+                            async () => await select.ClickAsync(new() { Timeout = 5000 }),
+                            new() { Timeout = 12000 });
+                        await chooser.SetFilesAsync(videoPath);
+                        uploaded = true;
+                        log?.Invoke("TikTok: selected MP4 through Studio file chooser.");
+                        break;
+                    }
+                    catch (PlaywrightException ex)
+                    {
+                        log?.Invoke("TikTok file chooser attempt: " + ex.Message.Split((char)10)[0]);
+                    }
+                }
+                if (!uploaded) await Task.Delay(1000, ct);
+            }
+        }
+        if (!uploaded) log?.Invoke(destination + ": trying direct video file input...");
+
+        for (var attempt = 0; attempt < 25 && !uploaded; attempt++)
         {
             ct.ThrowIfCancellationRequested();
             foreach (var frame in page.Frames)
