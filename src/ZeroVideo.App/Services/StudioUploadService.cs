@@ -433,83 +433,6 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     }
 
 
-    // TikTok may show a second, distinct "Continue to post?" dialog
-    // after the verified footer Schedule/Post click while content checks run.
-    // Confirm ONLY the "Post now" button inside that exact two-button dialog.
-    // Never use coordinate clicks or retry a confirmation already attempted.
-    private static async Task<int> ConfirmTikTokContentCheckDialogAsync(
-        IPage page, Action<string>? log, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        var heading=page.GetByText("Continue to post?",new(){Exact=true}).First;
-        if(await heading.CountAsync()==0 || !await heading.IsVisibleAsync())
-            return 0;
-
-        // Mark the confirm button within the smallest matching modal.
-        // The specific wording and two buttons are grounded in the actual
-        // TikTok Studio screenshot supplied by the user.
-        var found=await page.EvaluateAsync<bool>(@"
-() => {
-  document.querySelectorAll('[data-zerovideo-confirm-post]')
-    .forEach(e=>e.removeAttribute('data-zerovideo-confirm-post'));
-  const label=e=>(e.innerText||e.textContent||'').trim().replace(/\s+/g,' ');
-  const visible=e=>{
-    const b=e.getBoundingClientRect(),s=getComputedStyle(e);
-    return b.width>5&&b.height>5&&s.display!=='none'&&s.visibility!=='hidden';
-  };
-  const headings=[...document.querySelectorAll('h1,h2,h3,h4,h5,div,span,p')]
-    .filter(e=>visible(e)&&label(e)==='Continue to post?' &&
-      ![...e.children].some(c=>label(c)==='Continue to post?'));
-  for(const h of headings){
-    for(let p=h.parentElement,d=0;p&&d<9;p=p.parentElement,d++){
-      const rect=p.getBoundingClientRect();
-      if(rect.width<300||rect.width>800||rect.height<145||rect.height>500)
-        continue;
-      const buttons=[...p.querySelectorAll('button')].filter(visible);
-      if(buttons.length!==2)continue;
-      const cancel=buttons.filter(b=>label(b)==='Cancel');
-      const post=buttons.filter(b=>label(b)==='Post now');
-      if(cancel.length!==1||post.length!==1)continue;
-      if(!/checking your video for potential issues/i.test(label(p)))
-        continue;
-      if(/Music copyright check|Who can see this post/i.test(label(p)))
-        continue;
-      post[0].setAttribute('data-zerovideo-confirm-post','yes');
-      return true;
-    }
-  }
-  return false;
-}");
-        if(!found)
-        {
-            log?.Invoke("TikTok: second confirmation detected but could not be isolated safely.");
-            await SaveDiagnosticAsync(page,"TikTok-Continue-Modal-Unrecognized",log);
-            return -1;
-        }
-        var confirm=page.Locator("button[data-zerovideo-confirm-post='yes']");
-        if(await confirm.CountAsync()!=1 || !await confirm.IsVisibleAsync() ||
-            !await confirm.IsEnabledAsync())
-        {
-            log?.Invoke("TikTok: second confirmation button is missing or disabled.");
-            return -1;
-        }
-        log?.Invoke("TikTok: confirming content-check warning by clicking dialog 'Post now' ONCE.");
-        try
-        {
-            // This is a second confirmation within the same user-authorized
-            // publishing attempt, not a duplicate submission/retry.
-            await confirm.ClickAsync(new(){Timeout=7000,NoWaitAfter=true});
-            return 1;
-        }
-        catch(Exception ex) when(ex is PlaywrightException or TimeoutException)
-        {
-            log?.Invoke("TikTok: content-check confirmation click outcome unknown: "+
-                ex.Message.Split((char)10)[0]);
-            await SaveDiagnosticAsync(page,"TikTok-Continue-Modal-Outcome-Uncertain",log);
-            return -1;
-        }
-    }
-
     // A single final action: NEVER retry a clicked Schedule/Post button.
     // If TikTok doesn't clearly confirm receipt, flag an ambiguous submission
     // and require the user to inspect TikTok Studio before attempting again.
@@ -608,21 +531,11 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                 ? @"(?:successfully\s+scheduled|scheduled\s+successfully|post\s+(?:has\s+been\s+)?scheduled|video\s+(?:has\s+been\s+)?scheduled|schedule\s+successful)"
                 : @"(?:your\s+video\s+has\s+been\s+uploaded|video\s+published|successfully\s+posted|post\s+published|video\s+uploaded\s+successfully)",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase));
-        var extraConfirmationClicked = false;
-        for (var i = 0; i < 36; i++)
+        for (var i = 0; i < 18; i++)
         {
             ct.ThrowIfCancellationRequested();
             try
             {
-                if (!extraConfirmationClicked)
-                {
-                    // Only reached after the #203 primary Schedule/Post CTA
-                    // has been clicked successfully once.
-                    var extra = await ConfirmTikTokContentCheckDialogAsync(page,log,ct);
-                    if(extra < 0)
-                        return "TikTok: SUBMISSION_ATTEMPTED; 'Continue to post?' was not safely confirmed. Review Studio.";
-                    extraConfirmationClicked = extra == 1;
-                }
                 if (await confirmation.CountAsync() > 0 && await confirmation.First.IsVisibleAsync())
                 {
                     log?.Invoke("TikTok: displayed an explicit confirmation after final submission.");
