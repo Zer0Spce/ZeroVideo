@@ -432,6 +432,140 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         return true;
     }
 
+
+    // A single final action: NEVER retry a clicked Schedule/Post button.
+    // If TikTok doesn't clearly confirm receipt, flag an ambiguous submission
+    // and require the user to inspect TikTok Studio before attempting again.
+    private static async Task<string> SubmitTikTokOnceAsync(
+        IPage page, bool scheduled, Action<string>? log, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (!Uri.TryCreate(page.Url, UriKind.Absolute, out var address) ||
+            !(address.Host.Equals("www.tiktok.com", StringComparison.OrdinalIgnoreCase) ||
+              address.Host.Equals("tiktok.com", StringComparison.OrdinalIgnoreCase)) ||
+            !address.AbsolutePath.Contains("tiktokstudio/upload", StringComparison.OrdinalIgnoreCase))
+        {
+            log?.Invoke("TikTok: refused submission outside TikTok Studio upload page.");
+            return "TikTok: submission NOT attempted; browser is not on TikTok Studio upload.";
+        }
+
+        // The upload footer's stable data-e2e selector is more specific than
+        // the Schedule radio label and avoids privacy/music controls.
+        var button = page.Locator("button[data-e2e='post_video_button']:visible");
+        var count = await button.CountAsync();
+        if (count != 1)
+        {
+            // Only a single real button (never a generic text node, label,
+            // radio or page coordinate) can serve as fallback.
+            button = page.GetByRole(AriaRole.Button, new()
+            {
+                NameRegex = new System.Text.RegularExpressions.Regex(
+                    scheduled ? @"^\s*Schedule\s*$" :
+                    @"^\s*(Post|Publish|Post now)\s*$",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+            });
+            count = await button.CountAsync();
+        }
+        if (count != 1)
+        {
+            log?.Invoke("TikTok: final " + (scheduled ? "Schedule" : "Post") +
+                " button missing/ambiguous (matches=" + count + "). No submission attempted.");
+            await SaveTikTokPickerEvidenceAsync(page, "Final-Button-Missing", log);
+            return "TikTok: submission NOT attempted; final button missing or ambiguous. Review in Studio.";
+        }
+
+        var submit = button.First;
+        var label = (await submit.InnerTextAsync()).Trim();
+        var validLabel = scheduled
+            ? System.Text.RegularExpressions.Regex.IsMatch(label,
+                @"^\s*(Schedule|Post|Publish)\s*$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+            : System.Text.RegularExpressions.Regex.IsMatch(label,
+                @"^\s*(Post|Publish|Post now)\s*$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!validLabel || !await submit.IsVisibleAsync() ||
+            !await submit.IsEnabledAsync() ||
+            (await submit.GetAttributeAsync("aria-disabled")) == "true" ||
+            (await submit.GetAttributeAsync("data-disabled")) == "true")
+        {
+            log?.Invoke("TikTok: final action disabled or unexpected label: '" + label +
+                "'. No submission attempted.");
+            return "TikTok: submission NOT attempted; final " +
+                (scheduled ? "Schedule" : "Post") + " button not enabled.";
+        }
+
+        // The button must be the genuine upload CTA, not the scheduling radio:
+        // require its data-e2e selector OR its exact accessible name.
+        var identity = await submit.GetAttributeAsync("data-e2e");
+        if (identity != "post_video_button" && scheduled &&
+            !label.Equals("Schedule", StringComparison.OrdinalIgnoreCase))
+        {
+            log?.Invoke("TikTok: refused ambiguous non-CTA button: " + label);
+            return "TikTok: submission NOT attempted; final Schedule button not verified.";
+        }
+
+        log?.Invoke("TikTok: verified date/time and upload readiness; clicking final '" +
+            label + "' button ONCE. Do not retry automatically.");
+        // Mark the attempt BEFORE dispatching the click. If browser navigation
+        // interrupts Playwright, the outcome is unknown, not safe to retry.
+        var attempted = false;
+        try
+        {
+            attempted = true;
+            await submit.ClickAsync(new() { Timeout = 8000, NoWaitAfter = true });
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
+        {
+            log?.Invoke("TikTok: final button click was attempted; outcome uncertain: " +
+                ex.Message.Split((char)10)[0]);
+            await SaveDiagnosticAsync(page, "TikTok-Submit-Outcome-Uncertain", log);
+            return "TikTok: SUBMISSION_ATTEMPTED; result uncertain. Check TikTok Studio Posts before retrying.";
+        }
+
+        if (!attempted) return "TikTok: submission NOT attempted.";
+        // Only trust a post/schedule success message or the upload page
+        // navigating away. An ambiguous outcome is NEVER a confirmed post.
+        var originalUrl = address.AbsolutePath.TrimEnd('/');
+        var confirmation = page.GetByText(new System.Text.RegularExpressions.Regex(
+            scheduled
+                ? @"(?:successfully\s+scheduled|scheduled\s+successfully|post\s+(?:has\s+been\s+)?scheduled|video\s+(?:has\s+been\s+)?scheduled|schedule\s+successful)"
+                : @"(?:your\s+video\s+has\s+been\s+uploaded|video\s+published|successfully\s+posted|post\s+published|video\s+uploaded\s+successfully)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase));
+        for (var i = 0; i < 18; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                if (await confirmation.CountAsync() > 0 && await confirmation.First.IsVisibleAsync())
+                {
+                    log?.Invoke("TikTok: displayed an explicit confirmation after final submission.");
+                    return "TikTok: SUBMISSION_CONFIRMED; " +
+                        (scheduled ? "video scheduled" : "video published") +
+                        " in TikTok Studio.";
+                }
+                if (Uri.TryCreate(page.Url, UriKind.Absolute, out var now) &&
+                    now.Host.EndsWith("tiktok.com", StringComparison.OrdinalIgnoreCase) &&
+                    now.AbsolutePath.TrimEnd('/') != originalUrl &&
+                    !now.AbsolutePath.Contains("/upload", StringComparison.OrdinalIgnoreCase))
+                {
+                    log?.Invoke("TikTok: navigated away from the upload form after submission, " +
+                        "but post status has not been independently confirmed.");
+                    return "TikTok: SUBMISSION_ATTEMPTED; TikTok left the upload page. Verify the post in Studio.";
+                }
+            }
+            catch (PlaywrightException)
+            {
+                // Navigation can temporarily invalidate the old page. Do not
+                // click again or interpret the exception as a failed post.
+            }
+            await Task.Delay(900, ct);
+        }
+        log?.Invoke("TikTok: final button was clicked once; no definitive receipt " +
+            "was detected. Check TikTok Studio Posts before retrying.");
+        await SaveDiagnosticAsync(page, "TikTok-Submit-Confirmation-Unknown", log);
+        return "TikTok: SUBMISSION_ATTEMPTED; confirmation unavailable. Check TikTok Studio Posts before retrying.";
+    }
+
     public async Task<string> PrepareAsync(ZeroVideoSettings settings, string destination,
         string videoPath, string title, string description, string caption, string thumbnailPath,
         DateTimeOffset? scheduledAt, Action<string>? log = null, CancellationToken ct = default)
@@ -571,27 +705,25 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                 }
                 if (!filled) await Task.Delay(1000, ct);
             }
-            log?.Invoke(filled ? "TikTok: caption entered; review before posting." :
-                "TikTok: video selected, but caption input did not appear. Enter the prepared caption manually.");
-            if (scheduledAt.HasValue)
+            if (!filled)
+                return "TikTok: caption entry FAILED. No post was submitted; review in TikTok Studio.";
+            log?.Invoke("TikTok: caption entered; automatic final submission authorized in ZeroVideo.");
+            try
             {
-                try
-                {
-                    if (!await WaitForTikTokUploadReadyAsync(page, log, ct))
-                        return "TikTok: video upload is still in progress. Schedule selection was not attempted. " +
-                            "Review the upload manually. No post has been submitted.";
-                    if (!await SetTikTokScheduleAsync(page, scheduledAt.Value, log, ct))
-                        return "TikTok: video attached, but requested schedule was NOT set. " +
-                            "Select the date and time manually before submitting. No post has been submitted.";
-                }
-                catch (Exception ex) when (ex is PlaywrightException or TimeoutException or InvalidOperationException)
-                {
-                    var screenshot = await SaveDiagnosticAsync(page, "TikTok-Schedule", log);
-                    log?.Invoke("TikTok: schedule setup failed: " + ex.Message +
-                        ". Set it manually before submission. Screenshot: " + screenshot);
-                    return "TikTok: video attached, but schedule selection FAILED: " + ex.Message +
-                        ". Set the schedule manually. No post has been submitted.";
-                }
+                if (!await WaitForTikTokUploadReadyAsync(page, log, ct))
+                    return "TikTok: upload still processing; final submission NOT attempted.";
+                if (scheduledAt.HasValue &&
+                    !await SetTikTokScheduleAsync(page, scheduledAt.Value, log, ct))
+                    return "TikTok: requested date/time NOT verified. Final submission NOT attempted.";
+                // Only reach the final button after all required checks passed.
+                return await SubmitTikTokOnceAsync(page, scheduledAt.HasValue, log, ct);
+            }
+            catch (Exception ex) when (ex is PlaywrightException or TimeoutException or InvalidOperationException)
+            {
+                var screenshot = await SaveDiagnosticAsync(page, "TikTok-Schedule", log);
+                log?.Invoke("TikTok: preparation failed before final submission: " +
+                    ex.Message + ". Screenshot: " + screenshot);
+                return "TikTok: preparation FAILED; final submission NOT attempted: " + ex.Message;
             }
         }
         return destination + ": video selected in Studio. Review upload completion, metadata, thumbnail and " +
