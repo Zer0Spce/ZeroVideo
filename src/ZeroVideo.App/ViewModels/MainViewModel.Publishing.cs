@@ -316,7 +316,11 @@ public sealed partial class MainViewModel
                   (SelectedPublishItem?.IsScheduled == true
                     ? "Scheduled local time: " + SelectedPublishItem.ScheduleDateText + "\n\n" :
                       "This video is currently set to post immediately.\n\n") +
-                  "Only continue if you authorize this video to be submitted now. Check the caption, privacy, and rights first.\n" +
+                  "TikTok may show an extra 'Continue to post?' dialog while its content checks are still running. " +
+                  "If it appears, ZeroVideo will automatically click that dialog's 'Post now' button ONCE, " +
+                  "continuing before the checks are complete.\n\n" +
+                  "Only continue if you authorize this submission without waiting for all TikTok checks. " +
+                  "Review the caption, privacy, music rights, and schedule first.\n" +
                   "If TikTok's receipt is unclear, ZeroVideo will not retry automatically.";
             if (MessageBox.Show(warning, youtube ? "Prepare YouTube publishing" : "Confirm automatic TikTok publishing",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
