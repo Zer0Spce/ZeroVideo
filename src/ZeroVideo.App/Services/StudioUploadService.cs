@@ -171,7 +171,11 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             return false;
         }
         var matched=false;
-        for(var i=0;i<18;i++)
+        // TikTok's calendar can re-render asynchronously. Never click the
+        // same month arrow again until its header confirms the last click
+        // advanced exactly one month. This also detects dates blocked by
+        // TikTok's native scheduling window.
+        for(var i=0;i<24;i++)
         {
             ct.ThrowIfCancellationRequested();
             var monthText=(await monthTitle.InnerTextAsync()).Trim();
@@ -183,16 +187,62 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                 log?.Invoke("TikTok: unrecognized month header "+monthText+" "+yearText);
                 break;
             }
+            var shownMonth=new DateTime(y,m.Month,1);
+            var targetMonth=new DateTime(target.Year,target.Month,1);
             var difference=(target.Year-y)*12+target.Month-m.Month;
+            log?.Invoke("TikTok: calendar shows "+shownMonth.ToString("yyyy-MM")+
+                "; requested "+targetMonth.ToString("yyyy-MM")+
+                "; remaining month transitions="+Math.Abs(difference));
             if(difference==0){matched=true;break;}
+
+            // Only use the actual button inside the opened DatePicker.
             var arrow=calendar.Locator(difference>0?
                 "button[aria-label='Next month']":"button[aria-label='Previous month']").First;
-            if(await arrow.CountAsync()!=1||!await arrow.IsEnabledAsync())
+            if(await arrow.CountAsync()!=1 || !await arrow.IsVisibleAsync() ||
+               !await arrow.IsEnabledAsync() ||
+               await arrow.GetAttributeAsync("aria-disabled")=="true")
             {
-                log?.Invoke("TikTok: calendar month arrow missing.");break;
+                log?.Invoke("TikTok: month navigation unavailable. The requested date "+
+                    target.ToString("yyyy-MM-dd")+" may exceed TikTok's scheduling window.");
+                await SaveTikTokPickerEvidenceAsync(page,"Date-Month-Navigation-Blocked",log);
+                break;
             }
-            await arrow.ClickAsync(new(){Timeout=5000});
-            await Task.Delay(180,ct);
+
+            var expectedNext=shownMonth.AddMonths(difference>0?1:-1);
+            await arrow.ClickAsync(new(){Timeout=6000});
+            var advanced=false;
+            // Poll the live header for up to ~4 seconds instead of assuming
+            // that TikTok has updated after a fixed 180ms.
+            for(var poll=0;poll<20;poll++)
+            {
+                ct.ThrowIfCancellationRequested();
+                await Task.Delay(200,ct);
+                var newMonthText=(await monthTitle.InnerTextAsync()).Trim();
+                var newYearText=(await yearTitle.InnerTextAsync()).Trim();
+                if(!int.TryParse(newYearText,out var newYear)||
+                    !DateTime.TryParseExact(newMonthText,new[]{"MMMM","MMM"},culture,
+                        System.Globalization.DateTimeStyles.None,out var newMonth))
+                    continue;
+                var actualMonth=new DateTime(newYear,newMonth.Month,1);
+                if(actualMonth==shownMonth)continue;
+                if(actualMonth!=expectedNext)
+                {
+                    log?.Invoke("TikTok: calendar advanced unexpectedly from "+
+                        shownMonth.ToString("yyyy-MM")+" to "+
+                        actualMonth.ToString("yyyy-MM")+"; stopping without selecting a day.");
+                    await SaveTikTokPickerEvidenceAsync(page,"Date-Unexpected-Month",log);
+                    return false;
+                }
+                advanced=true;
+                break;
+            }
+            if(!advanced)
+            {
+                log?.Invoke("TikTok: month arrow click did not advance the calendar "+
+                    "within four seconds. TikTok may have disabled later dates.");
+                await SaveTikTokPickerEvidenceAsync(page,"Date-Month-Not-Advanced",log);
+                break;
+            }
         }
         if(!matched)
         {
