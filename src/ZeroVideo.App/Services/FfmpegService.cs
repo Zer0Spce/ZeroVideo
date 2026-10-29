@@ -578,7 +578,7 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
           .AppendLine()
           .AppendLine("[V4+ Styles]")
           .AppendLine("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
-          .AppendLine("Style: Punchy,Arial Black,76,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,7,0,2,64,64,350,1")
+          .AppendLine("Style: Punchy,Arial Black,104,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,9,0,2,64,64,350,1")
           .AppendLine()
           .AppendLine("[Events]")
           .AppendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
@@ -600,7 +600,7 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
                 foreach (var word in words)
                 {
                     var proposedLength = current.Sum(w => w.Length) + current.Count + word.Length;
-                    if (current.Count > 0 && (current.Count >= 5 || proposedLength > 24))
+                    if (current.Count > 0 && (current.Count >= 4 || proposedLength > 20))
                     {
                         groups.Add(current);
                         current = new List<string>();
