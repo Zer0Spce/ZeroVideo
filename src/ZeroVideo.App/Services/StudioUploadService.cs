@@ -200,9 +200,9 @@ public sealed class StudioUploadService(BrowserSession browser)
                 {
                     // Match the displayed number, never assume DOM order is 0..23 / 0..55.
                     var hour = hourOptions.Filter(new() { HasTextRegex =
-                        new System.Text.RegularExpressions.Regex(@"^\\s*0?" + target.Hour + @"\\s*$") }).First;
+                        new System.Text.RegularExpressions.Regex(@"^\s*0?" + target.Hour + @"\s*$") }).First;
                     var minute = minuteOptions.Filter(new() { HasTextRegex =
-                        new System.Text.RegularExpressions.Regex(@"^\\s*0?" + target.Minute + @"\\s*$") }).First;
+                        new System.Text.RegularExpressions.Regex(@"^\s*0?" + target.Minute + @"\s*$") }).First;
                     if (await hour.CountAsync() == 0 || await minute.CountAsync() == 0)
                     {
                         log?.Invoke("TikTok: exact numeric hour/minute options not present.");
