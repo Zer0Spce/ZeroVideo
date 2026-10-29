@@ -145,6 +145,30 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         if (project.Options.GenerateCaptions)
             await WriteSrtAsync(project, Path.ChangeExtension(finalPath, ".srt"), ct);
 
+        if (project.Options.BurnInBoldCaptions && project.AspectRatio == "9:16")
+        {
+            var captionAss = Path.Combine(renderDir, "styled-video-captions.ass");
+            if (await WriteBoldCaptionAssAsync(project, captionAss, ct))
+            {
+                var captionedMp4 = Path.Combine(renderDir, "video-with-styled-captions.mp4");
+                log?.Invoke("Rendering bold vertical captions: large white uppercase, " +
+                    "black outline, cyan emphasis; narration scene timing is estimated.");
+                // 'ass' supports color override spans; use a short relative
+                // filename to avoid Windows drive-letter filter escaping.
+                var renderArgs = $"-y -i \"{finalPath}\" -vf \"ass=styled-video-captions.ass\" " +
+                    $"-map 0:v:0 -map 0:a:0 -c:v libx264 -preset medium -crf 20 " +
+                    $"-pix_fmt yuv420p -c:a copy -movflags +faststart \"{captionedMp4}\"";
+                var burn = await runner.RunAsync(settings.FfmpegPath, renderArgs, renderDir, ct);
+                if (burn.ExitCode != 0 || !File.Exists(captionedMp4))
+                    throw new InvalidOperationException("Bold caption burn-in failed. " +
+                        "Check that FFmpeg has the libass subtitle filter. " +
+                        (burn.StdErr.Length > 1000 ? burn.StdErr[^1000..] : burn.StdErr));
+                File.Copy(captionedMp4, finalPath, true);
+                File.Delete(captionedMp4);
+                log?.Invoke("Bold captions embedded in final vertical MP4.");
+            }
+        }
+
         await ValidateAudibleAudioAsync(finalPath, settings, "Final video", log, ct);
         return finalPath;
     }
@@ -535,6 +559,103 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         foreach (var scene in chapter.Scenes)
             scene.TargetSeconds = Math.Max(1, scene.TargetSeconds * factor);
         chapter.TargetSeconds = (int)Math.Round(actualAudioSeconds);
+    }
+
+    // Creates ASS events from the project narration for punchy, legible
+    // vertical in-video captions. Scene-level audio timings are available;
+    // exact spoken-word timestamps are not, so distribute groups in proportion
+    // to their word counts. Original .SRT export remains independent.
+    private static async Task<bool> WriteBoldCaptionAssAsync(
+        VideoProject project, string path, CancellationToken ct)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("[Script Info]")
+          .AppendLine("ScriptType: v4.00+")
+          .AppendLine("PlayResX: 1080")
+          .AppendLine("PlayResY: 1920")
+          .AppendLine("ScaledBorderAndShadow: yes")
+          .AppendLine("WrapStyle: 2")
+          .AppendLine()
+          .AppendLine("[V4+ Styles]")
+          .AppendLine("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
+          .AppendLine("Style: Punchy,Arial Black,76,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,7,0,2,64,64,350,1")
+          .AppendLine()
+          .AppendLine("[Events]")
+          .AppendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
+        var elapsed = 0.0;
+        var count = 0;
+        foreach (var chapter in project.Chapters)
+        {
+            foreach (var scene in chapter.Scenes)
+            {
+                ct.ThrowIfCancellationRequested();
+                var seconds = Math.Max(0.1, scene.TargetSeconds);
+                // Preserve apostrophes and punctuation while avoiding
+                // multiline/ASS control sequence injection in subtitles.
+                var words = Regex.Matches(scene.Narration ?? "",
+                    @"[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*[.!?,;:]?")
+                    .Select(m => m.Value).ToList();
+                var groups = new List<List<string>>();
+                var current = new List<string>();
+                foreach (var word in words)
+                {
+                    var proposedLength = current.Sum(w => w.Length) + current.Count + word.Length;
+                    if (current.Count > 0 && (current.Count >= 5 || proposedLength > 24))
+                    {
+                        groups.Add(current);
+                        current = new List<string>();
+                    }
+                    current.Add(word);
+                }
+                if (current.Count > 0) groups.Add(current);
+                if (groups.Count > 0)
+                {
+                    var wordTotal = groups.Sum(g => g.Count);
+                    var passed = 0;
+                    foreach (var group in groups)
+                    {
+                        var from = elapsed + seconds * passed / wordTotal;
+                        passed += group.Count;
+                        var to = elapsed + seconds * passed / wordTotal;
+                        if (to <= from) continue;
+                        var first = EscapeAssCaptionWord(group[0]);
+                        var rest = string.Join(" ", group.Skip(1).Select(EscapeAssCaptionWord));
+                        // ASS uses BGR ordering. Cyan #00D9FF => &HFFD900&.
+                        var styled = "{\\1c&HFFD900&}" + first +
+                            "{\\1c&HFFFFFF&}" +
+                            (rest.Length > 0 ? " " + rest : "");
+                        sb.Append("Dialogue: 0,")
+                          .Append(AssCaptionTime(from)).Append(',')
+                          .Append(AssCaptionTime(to))
+                          .Append(",Punchy,,0,0,0,,")
+                          .AppendLine(styled);
+                        count++;
+                    }
+                }
+                elapsed += seconds;
+            }
+        }
+        if (count == 0) return false;
+        await File.WriteAllTextAsync(path, sb.ToString(), new UTF8Encoding(false), ct);
+        return true;
+    }
+
+    private static string EscapeAssCaptionWord(string value)
+    {
+        // Remove control tokens. Generated words use Unicode letters and
+        // numbers plus selected punctuation; these escapes are defensive.
+        var upper = value.ToUpperInvariant();
+        return upper.Replace("\\", "").Replace("{", "").Replace("}", "");
+    }
+
+    private static string AssCaptionTime(double seconds)
+    {
+        var ticks = Math.Max(0, (long)Math.Round(seconds * 100.0));
+        var hh = ticks / 360000;
+        var mm = ticks / 6000 % 60;
+        var ss = ticks / 100 % 60;
+        var cc = ticks % 100;
+        return string.Format(CultureInfo.InvariantCulture, "{0}:{1:00}:{2:00}.{3:00}", hh, mm, ss, cc);
     }
 
     private static async Task WriteSrtAsync(VideoProject project, string path, CancellationToken ct)
