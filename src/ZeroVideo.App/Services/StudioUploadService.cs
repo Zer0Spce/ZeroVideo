@@ -842,227 +842,340 @@ public sealed class StudioUploadService(BrowserSession browser)
     // TikTok Studio calendar in the provided screenshots has its own React
     // markup; a span containing 30 may be nested in other elements and cannot
     // safely be selected via class selectors or numeric DOM order.
-    private static async Task<bool> ClickTikTokCalendarTextDayAsync(
+
+    // The only allowed target is an actual calendar day element INSIDE a
+    // verified open popup. Mark that element and let Playwright click it.
+    // No page-coordinate clicks: those previously toggled privacy/copyright.
+    private static async Task<bool> ClickVerifiedTikTokDayAsync(
         IPage page, ILocator dateTrigger, DateTime target,
         Action<string>? log, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        var anchor = await dateTrigger.BoundingBoxAsync();
-        if (anchor is null) return false;
-        const string inspect = @"
+        var triggerBox = await dateTrigger.BoundingBoxAsync();
+        if (triggerBox is null) return false;
+        const string script = @"
 (args) => {
- const months=['january','february','march','april','may','june','july','august','september','october','november','december'];
- const week=['sun','mon','tue','wed','thu','fri','sat'];
- const nodes=[];
- const tw=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
- let node;
- while((node=tw.nextNode())){
-   const t=(node.textContent||'').replace(/\s+/g,' ').trim();
-   if(!t||t.length>35)continue;
-   const e=node.parentElement;if(!e)continue;
-   const cs=getComputedStyle(e);if(cs.visibility==='hidden'||cs.display==='none')continue;
-   const range=document.createRange();range.selectNodeContents(node);
-   const r=range.getBoundingClientRect();
-   if(r.width<3||r.height<3)continue;
-   const x=r.left+r.width/2,y=r.top+r.height/2;
-   if(x<args.x-90||x>args.x+510||y<args.y-560||y>args.y-8)continue;
-   nodes.push({t,x,y,w:r.width,h:r.height});
- }
- const headers=nodes.filter(n=>months.includes(n.t.toLowerCase().split(' ')[0]))
-   .sort((a,b)=>Math.abs(a.x-(args.x+140))-Math.abs(b.x-(args.x+140)));
- if(!headers.length)return {error:'visible month header not found',textNodes:nodes.length};
- const header=headers[0];
- const month=months.indexOf(header.t.toLowerCase().split(' ')[0])+1;
- const yearPieces=nodes.filter(n=>/^20\d{2}$/.test(n.t)&&Math.abs(n.y-header.y)<30);
- const yr=yearPieces.length?Number(yearPieces[0].t):
-    (header.t.match(/\b20\d{2}\b/)||[])[0];
- if(month!==args.month || (yr && Number(yr)!==args.year))
-    return {error:'wrong calendar header '+header.t+' '+yr,month,year:yr||null};
- const weekdays=nodes.filter(n=>['sun','mon','tue','wed','thu','thurs','fri','sat'].includes(n.t.toLowerCase())
-   && n.y>header.y+12 && n.y<header.y+120).sort((a,b)=>a.x-b.x);
- const used=[];
- for(const n of weekdays){if(!used.some(v=>Math.abs(v.x-n.x)<13)) used.push(n)}
- if(used.length!==7)return {error:'expected 7 weekday columns, found '+used.length,
-   headers:weekdays.map(x=>x.t).join(','),monthHeader:header.t};
- const names=used.map(n=>n.t.toLowerCase().startsWith('thu')?'thu':n.t.toLowerCase());
- if(names.join(',')!==week.join(','))return {error:'weekday order incorrect',headers:names.join(',')};
- const dayNodes=nodes.filter(n=>/^(?:[1-9]|[12][0-9]|3[01])$/.test(n.t) &&
-    n.y>used[0].y+12 && n.y<args.y-7 &&
-    n.x>used[0].x-27 && n.x<used[6].x+27);
- const unique=[];
- for(const n of dayNodes)if(!unique.some(v=>Math.abs(v.x-n.x)<12&&Math.abs(v.y-n.y)<12)) unique.push(n);
- const rowYs=[];
- for(const n of [...unique].sort((a,b)=>a.y-b.y))
-   if(!rowYs.some(y=>Math.abs(y-n.y)<13))rowYs.push(n.y);
- const weekIndex=new Date(args.year,args.month-1,args.day).getDay();
- const firstWeekday=new Date(args.year,args.month-1,1).getDay();
- const rowIndex=Math.floor((firstWeekday+args.day-1)/7);
- const x=used[weekIndex].x,y=rowYs[rowIndex];
- const correct=unique.filter(n=>Number(n.t)===args.day &&
-   Math.abs(n.x-x)<25 && y!==undefined && Math.abs(n.y-y)<15)
-   .sort((a,b)=>Math.abs(a.x-x)+Math.abs(a.y-y)-Math.abs(b.x-x)-Math.abs(b.y-y));
- const chosen=correct[0];
- return {found:!!chosen,x:chosen?.x||0,y:chosen?.y||0,
-   month,year:Number(yr)||args.year,weekday:weekIndex,row:rowIndex,
-   cells:unique.length,rows:rowYs.length,candidates:correct.length,
-   rowY:y??-1, columnX:x,
-   header:header.t,weekdays:names.join(','),
-   matches:unique.filter(n=>Number(n.t)===args.day).length};
+  document.querySelectorAll('[data-zerovideo-day-target]').forEach(
+    e=>e.removeAttribute('data-zerovideo-day-target'));
+  const txt=e=>(e.textContent||'').trim();
+  const vis=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+    return r.width>3&&r.height>3&&s.display!=='none'&&s.visibility!=='hidden'};
+  const names=['january','february','march','april','may','june',
+    'july','august','september','october','november','december'];
+  // Find exact visible month text in the date popup above the date trigger.
+  const headings=[...document.querySelectorAll('body *')].filter(e=>{
+    if(!vis(e))return false;
+    const t=txt(e).toLowerCase();
+    if(!names.includes(t))return false;
+    if([...e.children].some(c=>txt(c).toLowerCase()===t))return false;
+    const r=e.getBoundingClientRect();
+    return r.left<args.right+250&&r.right>args.left-250 &&
+      r.top<args.top && r.bottom>args.top-650;
+  }).sort((a,b)=>Math.abs(a.getBoundingClientRect().top-args.top)-
+    Math.abs(b.getBoundingClientRect().top-args.top));
+  if(!headings.length)return {error:'visible month title not found'};
+  const heading=headings[0], month=names.indexOf(txt(heading).toLowerCase())+1;
+  if(month!==args.month)return {error:'calendar month '+month+' does not match requested '+args.month};
+  // Find the smallest calendar ancestor that contains weekday labels and
+  // multiple day numbers, not the whole upload/settings page.
+  let popup=null;
+  for(let p=heading.parentElement,depth=0;p&&depth<9;p=p.parentElement,depth++){
+    const r=p.getBoundingClientRect();
+    if(r.width<220||r.width>580||r.height<180||r.height>540)continue;
+    if(r.bottom>args.bottom+15||r.top>args.top)continue;
+    const text=(p.innerText||'');
+    const week=['Sun','Mon','Tue','Wed','Fri','Sat'];
+    if(week.every(w=>text.includes(w)) &&
+       (text.match(/\b(?:[1-9]|[12]\d|3[01])\b/g)||[]).length>=25) {
+      popup=p;break;
+    }
+  }
+  if(!popup)return {error:'calendar popup cannot be safely isolated'};
+  const yearText=(popup.innerText||'').match(/\b20\d{2}\b/);
+  if(yearText&&Number(yearText[0])!==args.year)
+    return {error:'calendar year mismatch '+yearText[0]};
+  const pr=popup.getBoundingClientRect();
+  // Search only descendants of the isolated popup, never elsewhere on page.
+  const candidates=[];
+  for(const e of popup.querySelectorAll('*')){
+    if(!vis(e)||txt(e)!==String(args.day))continue;
+    if([...e.children].some(c=>txt(c)===String(args.day)))continue;
+    const r=e.getBoundingClientRect(), x=r.left+r.width/2, y=r.top+r.height/2;
+    if(r.width>90||r.height>90||y<pr.top+60||y>pr.bottom-5)continue;
+    let disabled=false;
+    for(let p=e,depth=0;p&&p!==popup&&depth<4;p=p.parentElement,depth++){
+      const cls=String(p.className||'').toLowerCase();
+      if(p.getAttribute('aria-disabled')==='true'||p.hasAttribute('disabled')||
+        /invalid|disabled|outside|other-month/.test(cls)){disabled=true;break}
+    }
+    if(!disabled)candidates.push({e,x,y});
+  }
+  // Layout-aware filter: the day must sit under its correct weekday column.
+  const weekdays=['sun','mon','tue','wed','thu','fri','sat'];
+  const ws=[...popup.querySelectorAll('*')].filter(e=>{
+    if(!vis(e))return false;let t=txt(e).toLowerCase();
+    if(t==='thurs')t='thu';
+    return weekdays.includes(t)&&![...e.children].some(c=>txt(c).toLowerCase()===t);
+  }).map(e=>{const r=e.getBoundingClientRect();return {
+    t:txt(e).toLowerCase().replace('thurs','thu'),x:r.left+r.width/2,y:r.top+r.height/2};
+  }).sort((a,b)=>a.x-b.x);
+  const cols=[];
+  for(const w of ws)if(!cols.some(c=>Math.abs(c.x-w.x)<12))cols.push(w);
+  if(cols.length!==7||cols.map(w=>w.t).join(',')!==weekdays.join(','))
+    return {error:'weekday columns could not be verified',weekdays:cols.map(w=>w.t).join(',')};
+  const weekday=new Date(args.year,args.month-1,args.day).getDay();
+  const first=new Date(args.year,args.month-1,1).getDay();
+  const wantedRow=Math.floor((first+args.day-1)/7);
+  const colsX=cols[weekday].x;
+  const allDays=[...popup.querySelectorAll('*')].filter(e=>{
+    if(!vis(e)||!/^(?:[1-9]|[12]\d|3[01])$/.test(txt(e)))return false;
+    return ![...e.children].some(c=>txt(c)===txt(e));
+  }).map(e=>{const r=e.getBoundingClientRect();return {
+    x:r.left+r.width/2,y:r.top+r.height/2,n:Number(txt(e))};
+  }).filter(d=>d.y>cols[0].y+8&&d.y<pr.bottom-5);
+  const rows=[];
+  for(const d of allDays.sort((a,b)=>a.y-b.y))
+    if(!rows.some(y=>Math.abs(y-d.y)<13))rows.push(d.y);
+  if(rows.length<4||rows.length>6)
+    return {error:'ambiguous calendar rows '+rows.length};
+  const rowY=rows[wantedRow];
+  const possible=candidates.filter(c=>rowY!==undefined&&
+    Math.abs(c.y-rowY)<16&&Math.abs(c.x-colsX)<24);
+  if(possible.length!==1)
+    return {error:'date cell ambiguous',dayMatches:candidates.length,
+      row:wantedRow,possible:possible.length,rows:rows.length,weekday};
+  const c=possible[0];
+  // Mark a real clickable day node (or small containing cell) inside popup.
+  let clickTarget=c.e;
+  for(let p=c.e.parentElement;p&&p!==popup;p=p.parentElement){
+    const r=p.getBoundingClientRect();
+    if(r.width>85||r.height>85)break;
+    if(p.matches('button,[role=gridcell],[role=button],[class*=day],[class*=Day]')){
+      clickTarget=p;break;
+    }
+  }
+  clickTarget.setAttribute('data-zerovideo-day-target','yes');
+  return {found:true,row:wantedRow,weekday,day:args.day,year:args.year};
 }";
-        var data = await page.EvaluateAsync<System.Text.Json.JsonElement>(inspect,
-            new { x = anchor.X, y = anchor.Y, month = target.Month,
-                year = target.Year, day = target.Day });
-        if (data.TryGetProperty("error", out var err))
+        var info = await page.EvaluateAsync<System.Text.Json.JsonElement>(script,
+            new { left = triggerBox.X, right = triggerBox.X + triggerBox.Width,
+                top = triggerBox.Y, bottom = triggerBox.Y + triggerBox.Height,
+                year = target.Year, month = target.Month, day = target.Day });
+        if (!info.TryGetProperty("found", out var found) || !found.GetBoolean())
         {
-            log?.Invoke("TikTok date text-grid failed: " + err.GetString());
+            var why = info.TryGetProperty("error", out var reason)
+                ? reason.GetString() : "date cell not found";
+            log?.Invoke("TikTok: safe calendar selection blocked: " + why);
+            await SaveTikTokCalendarDomAsync(page, log);
             return false;
         }
-        log?.Invoke("TikTok date text-grid: month " + data.GetProperty("month").GetInt32() +
-            ", grid cells " + data.GetProperty("cells").GetInt32() +
-            ", rows " + data.GetProperty("rows").GetInt32() +
-            ", requested weekday " + data.GetProperty("weekday").GetInt32() +
-            ", week " + data.GetProperty("row").GetInt32() +
-            ", candidate matches " + data.GetProperty("candidates").GetInt32());
-        if (!data.GetProperty("found").GetBoolean()) return false;
-        var x = (float)data.GetProperty("x").GetDouble();
-        var y = (float)data.GetProperty("y").GetDouble();
-        log?.Invoke("TikTok: clicking exact date text at x=" + x + ", y=" + y);
-        await page.Mouse.ClickAsync(x, y);
-        await Task.Delay(500, ct);
+        var candidate = page.Locator("[data-zerovideo-day-target='yes']");
+        if (await candidate.CountAsync() != 1) return false;
+        log?.Invoke("TikTok: clicking verified date cell inside calendar: " +
+            target.ToString("yyyy-MM-dd"));
+        await candidate.ClickAsync(new() { Timeout = 5000 });
+        await Task.Delay(250, ct);
         return true;
     }
 
-    private static async Task<bool> SetTikTokScheduleAsync(IPage page,
-        DateTimeOffset slot, Action<string>? log, CancellationToken ct)
+    // Both hour and minute options must belong to the visible TIME popup.
+    // No click is allowed outside that popup, including to dismiss the picker.
+    private static async Task<bool> PickTikTokTimeValueSafelyAsync(
+        IPage page, ILocator picker, int wanted, bool isHour,
+        Action<string>? log, CancellationToken ct)
+    {
+        var all = picker.Locator(isHour
+            ? "span[class*='tiktok-timepicker-left']"
+            : "span[class*='tiktok-timepicker-right']");
+        var precise = all.Filter(new() { HasTextRegex =
+            new System.Text.RegularExpressions.Regex(
+                @"^\s*0?" + wanted.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                @"\s*$") }).First;
+        if (await precise.CountAsync() > 0)
+        {
+            await precise.ScrollIntoViewIfNeededAsync(new() { Timeout = 5000 });
+            await precise.ClickAsync(new() { Timeout = 5000 });
+            log?.Invoke("TikTok: selected " + (isHour ? "hour " : "minute ") + wanted +
+                " using exact picker option.");
+            return true;
+        }
+
+        // Virtualized or unclassed numeric cells: annotate a true number
+        // inside the popup, in the appropriate left or right column.
+        const string find = @"
+(root,args)=>{
+  root.querySelectorAll('[data-zerovideo-time-target]').forEach(
+    e=>e.removeAttribute('data-zerovideo-time-target'));
+  const box=root.getBoundingClientRect(),mid=box.left+box.width/2;
+  if(box.width<140||box.height<100)return {error:'popup bounds invalid'};
+  const values=[];
+  for(const e of root.querySelectorAll('*')){
+    const t=(e.textContent||'').trim();
+    if(!/^\d{1,2}$/.test(t))continue;
+    if([...e.children].some(c=>(c.textContent||'').trim()===t))continue;
+    const r=e.getBoundingClientRect();
+    const x=r.left+r.width/2,y=r.top+r.height/2;
+    if(r.width<3||r.height<3||r.width>110||r.height>80)continue;
+    if(y<box.top+4||y>box.bottom-4)continue;
+    if(args.hour?x>=mid:x<=mid)continue;
+    values.push({e,n:Number(t),x,y});
+  }
+  const matched=values.filter(v=>v.n===args.value)
+     .sort((a,b)=>Math.abs(a.y-(box.top+box.height/2))-
+          Math.abs(b.y-(box.top+box.height/2)));
+  const found=matched[0];
+  if(found)found.e.setAttribute('data-zerovideo-time-target','yes');
+  return {found:!!found,
+    min:values.length?Math.min(...values.map(v=>v.n)):-1,
+    max:values.length?Math.max(...values.map(v=>v.n)):-1,
+    count:values.length};
+}";
+        for (var attempt = 0; attempt < 25; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var probe = await picker.EvaluateAsync<System.Text.Json.JsonElement>(
+                find, new { hour = isHour, value = wanted });
+            if (probe.TryGetProperty("error", out var err))
+            {
+                log?.Invoke("TikTok: time popup refused unsafe selection: " + err.GetString());
+                return false;
+            }
+            if (probe.GetProperty("found").GetBoolean())
+            {
+                var marked = picker.Locator("[data-zerovideo-time-target='yes']");
+                if (await marked.CountAsync() == 1)
+                {
+                    await marked.ClickAsync(new() { Timeout = 5000 });
+                    log?.Invoke("TikTok: selected " + (isHour ? "hour " : "minute ") +
+                        wanted + " inside time popup.");
+                    return true;
+                }
+            }
+            var min = probe.GetProperty("min").GetInt32();
+            var max = probe.GetProperty("max").GetInt32();
+            var direction = min >= 0 && wanted < min ? -1 : 1;
+            if (max >= 0 && wanted > max) direction = 1;
+            // Scroll wheel only; mouse NEVER clicks at guessed screen coords.
+            var box = await picker.BoundingBoxAsync();
+            if (box is null) return false;
+            var x = box.X + box.Width * (isHour ? .25f : .75f);
+            var y = box.Y + box.Height * .5f;
+            await page.Mouse.MoveAsync(x, y);
+            await page.Mouse.WheelAsync(0, direction * 130);
+            await Task.Delay(180, ct);
+        }
+        log?.Invoke("TikTok: requested " + (isHour ? "hour" : "minute") +
+            " value not found in scoped time popup: " + wanted);
+        return false;
+    }
+
+    private static async Task<bool> SetTikTokScheduleAsync(
+        IPage page, DateTimeOffset slot, Action<string>? log, CancellationToken ct)
     {
         var target = slot.LocalDateTime;
         var culture = System.Globalization.CultureInfo.GetCultureInfo("en-US");
-        var wantedDate = target.ToString("MMM d, yyyy", culture);
-        var wantedTime = target.ToString("HH:mm");
         if (target <= DateTime.Now.AddMinutes(20) || target.Minute % 5 != 0)
         {
-            log?.Invoke("TikTok: schedule must be in the future and on a 5-minute interval: " +
-                target.ToString("yyyy-MM-dd HH:mm"));
+            log?.Invoke("TikTok: invalid schedule or non-5-minute interval.");
             return false;
         }
+        var dateWanted = target.ToString("MMM d, yyyy", culture);
+        var timeWanted = target.ToString("HH:mm");
         var caption = page.Locator("[contenteditable=true]").First;
         if (await caption.CountAsync() > 0 && await caption.IsVisibleAsync())
             await caption.PressAsync("Tab");
         await page.Keyboard.PressAsync("Escape");
         await page.GetByText("Schedule", new() { Exact = true }).First.ClickAsync();
-        await Task.Delay(550, ct);
-        log?.Invoke("TikTok: setting requested date/time " + target.ToString("yyyy-MM-dd HH:mm"));
+        await Task.Delay(500, ct);
+        log?.Invoke("TikTok: requested " + target.ToString("yyyy-MM-dd HH:mm") +
+            ". Only calendar/time popup clicks permitted.");
 
         var dateTrigger = page.Locator(".date-picker-input").First;
         if (await dateTrigger.CountAsync() == 0)
             dateTrigger = page.GetByText(new System.Text.RegularExpressions.Regex(
                 @"[A-Za-z]{3}\s+\d{1,2},?\s+\d{4}")).First;
-        var dateOk = false;
-        string dateShown = "(missing)";
-        if (await dateTrigger.CountAsync() > 0 && await dateTrigger.IsVisibleAsync())
+        if (await dateTrigger.CountAsync() == 0 || !await dateTrigger.IsVisibleAsync())
         {
-            dateShown = (await dateTrigger.InnerTextAsync()).Trim();
-            dateOk = DateTime.TryParse(dateShown, culture,
-                System.Globalization.DateTimeStyles.None, out var readDate) &&
-                readDate.Date == target.Date;
-            if (!dateOk)
-            {
-                await dateTrigger.ClickAsync(new() { Timeout = 6000 });
-                await Task.Delay(450, ct);
-                await SaveTikTokCalendarDomAsync(page, log);
-                var clicked = await ClickTikTokCalendarTextDayAsync(
-                    page, dateTrigger, target, log, ct);
-                if (!clicked)
-                {
-                    log?.Invoke("TikTok: text-grid method unavailable; trying native date controls.");
-                    try
-                    {
-                        // Alternative based on native day cells without class assumptions.
-                        var exact = page.Locator("[data-date='" + target.ToString("yyyy-MM-dd") +
-                            "'], [datetime='" + target.ToString("yyyy-MM-dd") + "']").First;
-                        if (await exact.CountAsync() > 0 && await exact.IsVisibleAsync())
-                        {
-                            await exact.ClickAsync(new() { Timeout = 6000 });
-                            clicked = true;
-                        }
-                    }
-                    catch (PlaywrightException ex) { log?.Invoke("TikTok: native day click: " + ex.Message); }
-                }
-                // Always close calendar; never leave the screen stuck.
-                var box = await dateTrigger.BoundingBoxAsync();
-                if (box is not null) await page.Mouse.ClickAsync(
-                    Math.Max(10, box.X - 35), Math.Max(10, box.Y + box.Height + 80));
-                await Task.Delay(500, ct);
-                dateShown = (await dateTrigger.InnerTextAsync()).Trim();
-                dateOk = DateTime.TryParse(dateShown, culture,
-                    System.Globalization.DateTimeStyles.None, out readDate) &&
-                    readDate.Date == target.Date;
-                if (!dateOk) await SaveDiagnosticAsync(page, "TikTok-Date-Uncommitted", log);
-            }
+            log?.Invoke("TikTok: date trigger unavailable.");
+            return false;
         }
-        log?.Invoke("TikTok DATE verified=" + dateOk + "; requested=" + wantedDate +
-            "; actual=" + dateShown);
+        string dateRead = (await dateTrigger.InnerTextAsync()).Trim();
+        var dateOk = DateTime.TryParse(dateRead, culture,
+            System.Globalization.DateTimeStyles.None, out var dateParsed) &&
+            dateParsed.Date == target.Date;
+        if (!dateOk)
+        {
+            await dateTrigger.ClickAsync(new() { Timeout = 7000 });
+            await Task.Delay(300, ct);
+            await SaveTikTokCalendarDomAsync(page, log);
+            var clicked = await ClickVerifiedTikTokDayAsync(
+                page, dateTrigger, target, log, ct);
+            if (!clicked)
+                await SaveDiagnosticAsync(page, "TikTok-Safe-Date-NotSelected", log);
+            // Escape closes the popup without clicking other page settings.
+            await page.Keyboard.PressAsync("Escape");
+            await Task.Delay(250, ct);
+            dateRead = (await dateTrigger.InnerTextAsync()).Trim();
+            dateOk = DateTime.TryParse(dateRead, culture,
+                System.Globalization.DateTimeStyles.None, out dateParsed) &&
+                dateParsed.Date == target.Date;
+            log?.Invoke("TikTok: date " + (dateOk ? "verified" : "FAILED") +
+                ": requested=" + dateWanted + " displayed=" + dateRead);
+        }
 
-        // Deliberately attempt the time picker EVEN IF DATE FAILED. The old code
-        // returned early on date failure, hiding the time-picker failure entirely.
+        // Check time independently, even when date failed, without interacting
+        // with non-scheduling settings.
         var timeTrigger = page.Locator(".time-picker-input").First;
         if (await timeTrigger.CountAsync() == 0)
             timeTrigger = page.GetByText(new System.Text.RegularExpressions.Regex(
                 @"^\s*\d{1,2}:\d{2}\s*$")).First;
         var timeOk = false;
-        string timeShown = "(missing)";
+        string timeRead = "(missing)";
         if (await timeTrigger.CountAsync() > 0 && await timeTrigger.IsVisibleAsync())
         {
-            timeShown = (await timeTrigger.InnerTextAsync()).Trim();
-            timeOk = timeShown == wantedTime || timeShown == target.ToString("H:mm");
+            timeRead = (await timeTrigger.InnerTextAsync()).Trim();
+            timeOk = timeRead == timeWanted || timeRead == target.ToString("H:mm");
             if (!timeOk)
             {
-                try
+                await timeTrigger.ClickAsync(new() { Timeout = 7000 });
+                await Task.Delay(300, ct);
+                var picker = page.Locator(".tiktok-timepicker-time-picker-container:visible").First;
+                if (await picker.CountAsync() == 0)
+                    picker = page.Locator("[role=listbox]:visible:has-text('00')").First;
+                if (await picker.CountAsync() == 0)
                 {
-                    await timeTrigger.ClickAsync(new() { Timeout = 7000 });
-                    await Task.Delay(400, ct);
-                    var picker = page.Locator(".tiktok-timepicker-time-picker-container:visible").First;
-                    var hour = false;
-                    var minute = false;
-                    if (await picker.CountAsync() > 0)
-                    {
-                        hour = await PickTikTokWheelValueAsync(page, picker,
-                            target.Hour, true, log, ct);
-                        minute = hour && await PickTikTokWheelValueAsync(page, picker,
-                            target.Minute, false, log, ct);
-                    }
-                    if (!hour)
-                        hour = await PickTikTokVisibleTimeColumnAsync(page, timeTrigger,
-                            target.Hour, true, log, ct);
-                    if (hour && !minute)
-                        minute = await PickTikTokVisibleTimeColumnAsync(page, timeTrigger,
-                            target.Minute, false, log, ct);
-                    // Close by clicking outside, not by Escape (which may revert changes).
-                    var box = await timeTrigger.BoundingBoxAsync();
-                    if (box is not null) await page.Mouse.ClickAsync(
-                        Math.Max(10, box.X - 35), Math.Max(10, box.Y + box.Height + 80));
-                    await Task.Delay(500, ct);
-                    timeShown = (await timeTrigger.InnerTextAsync()).Trim();
-                    timeOk = (timeShown == wantedTime || timeShown == target.ToString("H:mm"));
-                    if (!timeOk) await SaveDiagnosticAsync(page, "TikTok-Time-Uncommitted", log);
+                    log?.Invoke("TikTok: time picker missing; no clicks outside popup.");
+                    await SaveTikTokPickerMarkupAsync(page, "Safe-Time-NotFound", log);
                 }
-                catch (PlaywrightException ex)
+                else
                 {
-                    log?.Invoke("TikTok: time picker operation failed: " + ex.Message);
-                    await SaveDiagnosticAsync(page, "TikTok-Time-Failed", log);
+                    // Preserve hour behavior while selecting minutes from the
+                    // right-hand column of the same popup.
+                    var hourOk = await PickTikTokTimeValueSafelyAsync(
+                        page, picker, target.Hour, true, log, ct);
+                    var minuteOk = await PickTikTokTimeValueSafelyAsync(
+                        page, picker, target.Minute, false, log, ct);
+                    log?.Invoke("TikTok: picker clicks hour=" + hourOk +
+                        " minute=" + minuteOk);
                 }
+                // Close via keyboard, never by clicking anywhere in privacy or
+                // music copyright regions. Re-read actual committed value.
+                await page.Keyboard.PressAsync("Escape");
+                await Task.Delay(300, ct);
+                timeRead = (await timeTrigger.InnerTextAsync()).Trim();
+                timeOk = timeRead == timeWanted || timeRead == target.ToString("H:mm");
+                if (!timeOk)
+                    await SaveDiagnosticAsync(page, "TikTok-Safe-Time-Uncommitted", log);
             }
         }
-        log?.Invoke("TikTok TIME verified=" + timeOk + "; requested=" + wantedTime +
-            "; actual=" + timeShown);
+        log?.Invoke("TikTok: TIME " + (timeOk ? "verified" : "FAILED") +
+            " requested=" + timeWanted + " actual=" + timeRead);
         if (!dateOk || !timeOk)
         {
-            log?.Invoke("TikTok schedule NOT set. Both fields must match. " +
-                "Date=" + dateOk + " Time=" + timeOk);
+            log?.Invoke("TikTok schedule NOT set. Date=" + dateOk + " Time=" + timeOk);
             return false;
         }
-        log?.Invoke("TikTok schedule VERIFIED: " + dateShown + " at " + timeShown +
-            ". Manually review before final submission.");
+        log?.Invoke("TikTok: date/time verified. Final submission remains manual.");
         return true;
     }
 
