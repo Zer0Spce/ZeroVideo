@@ -306,7 +306,11 @@ public sealed partial class MainViewModel
                 var uploader = new StudioUploadService(_browser);
                 PublishStatus = "Preparing " + site + " upload with Playwright...";
                 var result = await uploader.PrepareAsync(Settings, PublishDestination, PublishFile,
-                    YouTubeTitleText, YouTubeDescriptionText, TikTokCaptionText, PublishThumbnail, Log, _cts.Token);
+                    YouTubeTitleText, YouTubeDescriptionText, TikTokCaptionText, PublishThumbnail, message =>
+                    {
+                        Log(message);
+                        Application.Current.Dispatcher.Invoke(() => PublishStatus = message);
+                    }, _cts.Token);
                 PublishCheckpointStage = "Video selected";
                 SaveSelectedCheckpoint();
                 PublishStatus = result;
