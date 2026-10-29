@@ -337,6 +337,115 @@ public sealed class StudioUploadService(BrowserSession browser)
         return true;
     }
 
+    // Match the real weekday positions from the live popup, then locate the
+    // target NUMBER directly under its correct weekday. This avoids depending
+    // on TikTok's undocumented calendar class names and avoids requiring 35
+    // or 42 readable DOM cells (some are virtualized or nested).
+    private static async Task<bool> ClickTikTokDateUnderWeekdayAsync(
+        IPage page, ILocator dateTrigger, DateTime target,
+        Action<string>? log, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var bounds = await dateTrigger.BoundingBoxAsync();
+        if (bounds is null) return false;
+        const string inspect = @"
+(args) => {
+  const labels=['sun','mon','tue','wed','thu','fri','sat'];
+  const monthNames=['january','february','march','april','may','june',
+    'july','august','september','october','november','december'];
+  const visible=e=>{
+    const r=e.getBoundingClientRect(), style=getComputedStyle(e);
+    return r.width>3 && r.height>3 && style.display!=='none' &&
+      style.visibility!=='hidden' && r.bottom>0 && r.top<innerHeight;
+  };
+  const text=e=>(e.textContent||'').trim();
+  const leaf=e=>![...e.children].some(c=>text(c)===text(e));
+  const all=[...document.querySelectorAll('body *')].filter(e=>visible(e)&&leaf(e))
+    .map(e=>{const r=e.getBoundingClientRect();return {
+      e,t:text(e),x:r.left+r.width/2,y:r.top+r.height/2,
+      w:r.width,h:r.height};});
+  const around=all.filter(e=>e.x>args.left-35 && e.x<args.left+520 &&
+    e.y>args.top-620 && e.y<args.top-5);
+  const months=around.filter(e=>monthNames.includes(e.t.toLowerCase()))
+    .sort((a,b)=>b.y-a.y);
+  // The calendar month must match the user-requested month, never select
+  // day 30 in a stale calendar belonging to a different month.
+  if(!months.length)return {error:'calendar month header is not readable'};
+  const month=months[0];
+  const shownMonth=monthNames.indexOf(month.t.toLowerCase())+1;
+  if(shownMonth!==args.month)return {error:'wrong visible month: '+shownMonth};
+  const yearLabels=around.filter(e=>/^20\d{2}$/.test(e.t) &&
+    Math.abs(e.y-month.y)<36).sort((a,b)=>
+      Math.abs(a.x-month.x)-Math.abs(b.x-month.x));
+  if(yearLabels.length && Number(yearLabels[0].t)!==args.year)
+    return {error:'wrong visible year '+yearLabels[0].t};
+  const possible=around.filter(e=>['sun','mon','tue','wed','thu','thurs','fri','sat']
+    .includes(e.t.toLowerCase()) && e.y>month.y+10 && e.y<month.y+110);
+  const weekdayRows=[];
+  for(const e of possible){
+    const normalized=e.t.toLowerCase()==='thurs'?'thu':e.t.toLowerCase();
+    let r=weekdayRows.find(r=>Math.abs(r.y-e.y)<13);
+    if(!r) weekdayRows.push(r={y:e.y,values:[]});
+    r.values.push({...e,t:normalized});
+  }
+  const week=weekdayRows.sort((a,b)=>b.values.length-a.values.length)[0];
+  if(!week)return {error:'weekday header row absent'};
+  const headers=[];
+  for(const n of labels){
+    const opts=week.values.filter(e=>e.t===n);
+    if(opts.length!==1)return {error:'weekday '+n+' count='+opts.length};
+    headers.push(opts[0]);
+  }
+  const weekday=(new Date(args.year,args.month-1,args.day)).getDay();
+  const x=headers[weekday].x;
+  // Require a literal target-day label in this weekday column, inside the
+  // calendar between the weekday header and the date trigger.
+  const choices=around.filter(e=>e.t===String(args.day) &&
+    e.y>week.y+12 && e.y<args.top-9 &&
+    Math.abs(e.x-x)<25 && e.w<100 && e.h<75)
+    .sort((a,b)=>b.y-a.y);
+  if(!choices.length) return {error:'day '+args.day+' not found under '+
+    labels[weekday]+'; column x='+x.toFixed(1), weekday, x,
+    labels:week.values.map(v=>v.t).join(',')};
+  // Do not match a ghost duplicate from the prior or next month: the active
+  // date will be in its mathematically expected week-row.
+  const firstWeekday=new Date(args.year,args.month-1,1).getDay();
+  const targetRow=Math.floor((firstWeekday+args.day-1)/7);
+  const firstRowNumbers=around.filter(e=>/^\d{1,2}$/.test(e.t) &&
+    e.y>week.y+12 && e.y<args.top-9 && e.x>=headers[0].x-22 &&
+    e.x<=headers[6].x+22 && e.w<100 && e.h<75);
+  const rowYs=[];
+  for(const e of firstRowNumbers.sort((a,b)=>a.y-b.y))
+    if(!rowYs.some(y=>Math.abs(y-e.y)<14)) rowYs.push(e.y);
+  const expectedY=rowYs[targetRow];
+  const candidate=choices.find(e=>expectedY!==undefined && Math.abs(e.y-expectedY)<15);
+  if(!candidate)return {error:'target day not in expected calendar week',
+    weekRow:targetRow, rowY:rowYs.join(','), dayYs:choices.map(x=>x.y).join(',')};
+  return {found:true,x:candidate.x,y:candidate.y,
+    targetRow,weekday,read:candidate.t,month:shownMonth,dayCount:choices.length};
+}";
+        var result = await page.EvaluateAsync<System.Text.Json.JsonElement>(inspect,
+            new { left = bounds.X, top = bounds.Y, month = target.Month,
+                year = target.Year, day = target.Day });
+        if (result.TryGetProperty("error", out var err) &&
+            err.ValueKind == System.Text.Json.JsonValueKind.String)
+        {
+            log?.Invoke("TikTok: weekday-aligned date detection: " + err.GetString());
+            return false;
+        }
+        if (!result.TryGetProperty("found", out var found) || !found.GetBoolean())
+            return false;
+        var x = (float)result.GetProperty("x").GetDouble();
+        var y = (float)result.GetProperty("y").GetDouble();
+        log?.Invoke("TikTok: exact calendar day " + target.Day +
+            " verified at weekday " + result.GetProperty("weekday").GetInt32() +
+            ", row " + result.GetProperty("targetRow").GetInt32() +
+            "; clicking x=" + x + " y=" + y);
+        await page.Mouse.ClickAsync(x, y);
+        await Task.Delay(350, ct);
+        return true;
+    }
+
     // TikTok Studio shows a calendar grid and a scrolling two-column hour/minute
     // wheel. The option elements do NOT necessarily have the picker container's
     // CSS class and only a subset of the wheel may be visible at a time.
@@ -560,6 +669,12 @@ public sealed class StudioUploadService(BrowserSession browser)
         }
         if (!selected)
         {
+            log?.Invoke("TikTok: trying exact day under visible weekday header.");
+            selected = await ClickTikTokDateUnderWeekdayAsync(
+                page, dateTrigger, target, log, ct);
+        }
+        if (!selected)
+        {
             await SaveDiagnosticAsync(page, "TikTok-Visual-Calendar-Selection-Failed", log);
             await page.Keyboard.PressAsync("Escape");
             // Explicitly click OUTSIDE the date popup if Escape did not work.
@@ -584,8 +699,30 @@ public sealed class StudioUploadService(BrowserSession browser)
         log?.Invoke("TikTok: date after click: " + selectedDate + ", expected " + wantedDate);
         if (!dateOk)
         {
-            await SaveDiagnosticAsync(page, "TikTok-Date-Uncommitted", log);
-            return false;
+            // One explicit retry using DOM weekday/day geometry. The first
+            // popup click may land on a noninteractive wrapper or be cancelled
+            // by TikTok while the video upload is still initializing.
+            log?.Invoke("TikTok: date uncommitted; attempting single verified retry.");
+            await dateTrigger.ClickAsync(new() { Timeout = 7000 });
+            await Task.Delay(300, ct);
+            await SaveTikTokCalendarDomAsync(page, log);
+            var retry = await ClickTikTokDateUnderWeekdayAsync(
+                page, dateTrigger, target, log, ct);
+            if (retry)
+            {
+                await page.Keyboard.PressAsync("Escape");
+                await Task.Delay(250, ct);
+                selectedDate = (await dateTrigger.InnerTextAsync()).Trim();
+                dateOk = DateTime.TryParse(selectedDate, culture,
+                    System.Globalization.DateTimeStyles.None, out parsedDate) &&
+                    parsedDate.Date == target.Date;
+                log?.Invoke("TikTok: date after retry: " + selectedDate);
+            }
+            if (!dateOk)
+            {
+                await SaveDiagnosticAsync(page, "TikTok-Date-Uncommitted", log);
+                return false;
+            }
         }
 
         var timeTrigger = page.Locator(".time-picker-input").First;
