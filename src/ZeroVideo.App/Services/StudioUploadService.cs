@@ -122,7 +122,7 @@ public sealed class StudioUploadService(BrowserSession browser)
         if (!timeDone)
         {
             var timeControl = page.Locator("button, [role='combobox'], [role='button'], [class*='select'], [class*='Select']")
-                .Filter(new() { HasTextRegex = new System.Text.RegularExpressions.Regex(@"^\\s*\\d{1,2}:\\d{2}\\s*$") })
+                .Filter(new() { HasTextRegex = new System.Text.RegularExpressions.Regex(@"^\s*\d{1,2}:\d{2}\s*$") })
                 .First;
             if (await timeControl.CountAsync() > 0 && await timeControl.IsVisibleAsync())
             {
@@ -158,7 +158,7 @@ public sealed class StudioUploadService(BrowserSession browser)
         if (!dateDone)
         {
             var dateControl = page.Locator("button, [role='combobox'], [role='button'], [class*='select'], [class*='Select']")
-                .Filter(new() { HasTextRegex = new System.Text.RegularExpressions.Regex(@"[A-Za-z]{3}\\s+\\d{1,2},?\\s+\\d{4}") })
+                .Filter(new() { HasTextRegex = new System.Text.RegularExpressions.Regex(@"[A-Za-z]{3}\s+\d{1,2},?\s+\d{4}") })
                 .First;
             if (await dateControl.CountAsync() > 0 && await dateControl.IsVisibleAsync())
             {
