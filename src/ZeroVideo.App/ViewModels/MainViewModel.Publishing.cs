@@ -299,14 +299,6 @@ public sealed partial class MainViewModel
             if (!youtube && string.IsNullOrWhiteSpace(TikTokCaptionText))
             { PublishStatus = "Generate or enter the TikTok caption first."; return; }
             var site = youtube ? "YouTube Studio" : "TikTok Studio";
-            if (!youtube && SelectedPublishItem is { } existingItem &&
-                (existingItem.TikTokStatus.Equals("Scheduled", StringComparison.OrdinalIgnoreCase) ||
-                 existingItem.TikTokStatus.Equals("Published", StringComparison.OrdinalIgnoreCase) ||
-                 existingItem.TikTokStatus.StartsWith("Submission attempted", StringComparison.OrdinalIgnoreCase)))
-            {
-                PublishStatus = "TikTok submission was already attempted for this video. Check TikTok Studio Posts before starting another upload; a retry could create a duplicate.";
-                return;
-            }
             var warning = youtube
                 ? "Open YouTube Studio for this video? Final YouTube submission still requires manual review."
                 : "AUTOMATIC TIKTOK SUBMISSION\n\n" +
