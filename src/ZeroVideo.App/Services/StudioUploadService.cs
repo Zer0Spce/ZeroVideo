@@ -81,6 +81,87 @@ public sealed class StudioUploadService(BrowserSession browser)
 
 
 
+
+    // The October 2026 TikTok picker shows a 7-column grid with adjacent-month
+    // dates. Select the intended grid position, NOT an ambiguous "30" text
+    // locator. Mouse coordinates are derived from real DOM bounding boxes.
+    private static async Task<bool> ClickTikTokCalendarGridDayAsync(IPage page,
+        DateTime target, Action<string>? log, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var grid = page.Locator(".days-wrapper:visible").First;
+        if (await grid.CountAsync() == 0)
+            grid = page.Locator("[role=grid]:visible").First;
+        if (await grid.CountAsync() == 0)
+        {
+            log?.Invoke("TikTok: numeric day grid not found.");
+            return false;
+        }
+        const string findCell = @"
+(root, args) => {
+  const gr = root.getBoundingClientRect();
+  const candidates = [];
+  for (const el of root.querySelectorAll('span,button,div,li,[role=gridcell]')) {
+    const t = (el.textContent || '').trim();
+    if (!/^(?:[1-9]|[12][0-9]|3[01])$/.test(t)) continue;
+    // Only leaf day-number nodes; ignore enclosing rows and grids.
+    if ([...el.children].some(c => /^(?:[1-9]|[12][0-9]|3[01])$/.test((c.textContent || '').trim()))) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 5 || rect.height < 5 || rect.width > 100 || rect.height > 80) continue;
+    const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+    if (x < gr.left - 4 || x > gr.right + 4 || y < gr.top - 4 || y > gr.bottom + 4) continue;
+    if (getComputedStyle(el).visibility === 'hidden') continue;
+    candidates.push({n:Number(t),x,y,cl:String(el.className||'')});
+  }
+  // Multiple nested nodes can share a center; remove duplicates geometrically.
+  const unique=[];
+  for (const e of candidates) {
+    if (!unique.some(q=>Math.abs(e.x-q.x)<7 && Math.abs(e.y-q.y)<7)) unique.push(e);
+  }
+  unique.sort((a,b)=>Math.abs(a.y-b.y)>10 ? a.y-b.y : a.x-b.x);
+  const firstWeekday = new Date(args.year,args.month-1,1).getDay();
+  const expectedIndex = firstWeekday + args.day - 1;
+  const picked = unique.length >= 28 && unique.length % 7 === 0
+      ? unique[expectedIndex] : null;
+  return { count:unique.length, expectedIndex, displayed:picked?.n ?? -1,
+           x:picked?.x ?? 0,y:picked?.y ?? 0,
+           sample:unique.slice(0,8).map(v=>v.n).join(',') };
+}";
+        var probe = await grid.EvaluateAsync<System.Text.Json.JsonElement>(
+            findCell, new { year = target.Year, month = target.Month, day = target.Day });
+        var count = probe.GetProperty("count").GetInt32();
+        var displayed = probe.GetProperty("displayed").GetInt32();
+        log?.Invoke("TikTok: calendar grid has " + count +
+            " date cells; index " + probe.GetProperty("expectedIndex").GetInt32() +
+            " contains " + displayed + " (wanted " + target.Day + ")" +
+            "; first cells: " + probe.GetProperty("sample").GetString());
+        if (displayed != target.Day) return false;
+        var x = (float)probe.GetProperty("x").GetDouble();
+        var y = (float)probe.GetProperty("y").GetDouble();
+        await page.Mouse.ClickAsync(x, y);
+        await Task.Delay(350, ct);
+        return true;
+    }
+
+    private static async Task SaveTikTokCalendarDomAsync(IPage page, Action<string>? log)
+    {
+        try
+        {
+            var html = await page.EvaluateAsync<string>(@"
+() => [...document.querySelectorAll('.calendar-wrapper, .days-wrapper, .month-title, .date-picker-input')]
+  .filter(el => el.getBoundingClientRect().width > 0)
+  .map(el=>el.outerHTML.slice(0,20000)).join('\n\n---\n\n').slice(0,65000)");
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "ZeroVideo", "PublishingDiagnostics");
+            Directory.CreateDirectory(dir);
+            var dest = Path.Combine(dir,"TikTok-Calendar-DOM-" +
+                DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".txt");
+            await File.WriteAllTextAsync(dest, html);
+            log?.Invoke("TikTok: calendar DOM diagnostic saved: " + dest);
+        }
+        catch (Exception e) { log?.Invoke("TikTok: calendar DOM diagnostic failed: " + e.Message); }
+    }
+
     // TikTok Studio shows a calendar grid and a scrolling two-column hour/minute
     // wheel. The option elements do NOT necessarily have the picker container's
     // CSS class and only a subset of the wheel may be visible at a time.
@@ -209,112 +290,118 @@ public sealed class StudioUploadService(BrowserSession browser)
 
         var calendar = page.Locator(".calendar-wrapper:visible").First;
         if (await calendar.CountAsync() == 0)
-            calendar = page.Locator("[role=dialog]:visible:has(.days-wrapper), [class*=calendar]:visible:has(.days-wrapper)").First;
+            calendar = page.Locator("[class*=calendar]:visible:has(.days-wrapper)").First;
         if (await calendar.CountAsync() == 0)
         {
-            log?.Invoke("TikTok: visible calendar grid missing.");
+            log?.Invoke("TikTok: visible calendar popup not found.");
             await SaveDiagnosticAsync(page, "TikTok-Calendar-NotFound", log);
             return false;
         }
-        var correctMonth = false;
-        for (var attempt = 0; attempt < 18; attempt++)
-        {
-            ct.ThrowIfCancellationRequested();
-            // In the current TikTok UI October and 2026 are separate labels.
-            // Read the combined header / entire calendar to find the month YEAR.
-            var raw = (await calendar.InnerTextAsync()).Trim();
-            var match = System.Text.RegularExpressions.Regex.Match(raw,
-                @"\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(20\d{2})\b",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            if (!match.Success)
-            {
-                log?.Invoke("TikTok: cannot read calendar month/year; first text: " +
-                    raw.Replace("\n", " ").Substring(0, Math.Min(100, raw.Length)));
-                break;
-            }
-            if (!DateTime.TryParseExact(match.Value, "MMMM yyyy", culture,
-                System.Globalization.DateTimeStyles.None, out var shown)) break;
-            var difference = (target.Year - shown.Year) * 12 + target.Month - shown.Month;
-            if (difference == 0)
-            {
-                correctMonth = true;
-                break;
-            }
-            log?.Invoke("TikTok: calendar shows " + match.Value + "; navigating " +
-                (difference > 0 ? "forward" : "backward") + " to " + target.ToString("MMMM yyyy", culture));
-            var arrows = calendar.Locator("span[class*='arrow'], button[class*='arrow']");
-            ILocator arrow;
-            if (await arrows.CountAsync() >= 2)
-                arrow = difference > 0 ? arrows.Last : arrows.First;
-            else
-                arrow = calendar.Locator(difference > 0
-                    ? "[aria-label*='next' i], [class*='next-month'], [class*='nextMonth']"
-                    : "[aria-label*='prev' i], [class*='prev-month'], [class*='prevMonth']").First;
-            if (await arrow.CountAsync() == 0 || !await arrow.IsVisibleAsync())
-            {
-                log?.Invoke("TikTok: month navigation button missing.");
-                break;
-            }
-            await arrow.ClickAsync(new() { Timeout = 7000 });
-            await Task.Delay(250, ct);
-        }
 
-        if (!correctMonth)
+        // Capture the relevant picker DOM so that any future failure can be
+        // diagnosed from real markup, rather than guessing TikTok selectors.
+        await SaveTikTokCalendarDomAsync(page, log);
+        var calendarOpened = true;
+        try
         {
-            await SaveDiagnosticAsync(page, "TikTok-Calendar-Month-Mismatch", log);
-            return false;  // Never click day N in the wrong month.
-        }
-        var isoDate = target.ToString("yyyy-MM-dd");
-        var day = calendar.Locator("[data-date='" + isoDate +
-            "'], [datetime='" + isoDate + "']").First;
-        if (await day.CountAsync() == 0)
-        {
-            // TikTok's day numbers can appear twice (e.g. Sept 29 and Oct 29).
-            // Search all exact text matches inside the verified month popup,
-            // inspect ancestor disabled classes, and disambiguate by grid order.
-            var matches = calendar.GetByText(target.Day.ToString(), new() { Exact = true });
-            var count = await matches.CountAsync();
-            var candidates = new List<ILocator>();
-            for (var i = 0; i < Math.Min(count, 14); i++)
+            var monthMatched = false;
+            for (var attempt = 0; attempt < 18; attempt++)
             {
-                var cell = matches.Nth(i);
-                if (!await cell.IsVisibleAsync()) continue;
-                var disabled = await cell.EvaluateAsync<bool>(@"el => {
-                    let node = el;
-                    for (let level = 0; level < 4 && node; level++, node = node.parentElement) {
-                        const cls = String(node.className || '').toLowerCase();
-                        if (node.getAttribute('aria-disabled') === 'true' ||
-                            node.hasAttribute('disabled') ||
-                            /invalid|disabled|outside|other-month|prev-month|next-month/.test(cls)) return true;
-                    }
-                    return false;
-                }");
-                if (!disabled) candidates.Add(cell);
+                ct.ThrowIfCancellationRequested();
+                var raw = (await calendar.InnerTextAsync()).Trim();
+                var flattened = System.Text.RegularExpressions.Regex.Replace(raw, @"\s+", " ");
+                var monthText = System.Text.RegularExpressions.Regex.Match(flattened,
+                    @"\b(January|February|March|April|May|June|July|August|September|October|November|December)\b",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                var yearText = System.Text.RegularExpressions.Regex.Match(flattened, @"\b20\d{2}\b");
+
+                // If the component renders header labels outside .calendar-wrapper,
+                // read their visible text from the surrounding popup as a fallback.
+                if (!monthText.Success || !yearText.Success)
+                {
+                    var header = await page.Locator(".month-title:visible, [class*=month-title]:visible")
+                        .First.AllInnerTextsAsync();
+                    var combined = flattened + " " + string.Join(" ", header);
+                    monthText = System.Text.RegularExpressions.Regex.Match(combined,
+                        @"\b(January|February|March|April|May|June|July|August|September|October|November|December)\b",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    yearText = System.Text.RegularExpressions.Regex.Match(combined, @"\b20\d{2}\b");
+                }
+
+                // The trigger displays Oct 29, 2026 while the calendar is
+                // visibly on October 2026. If its year label is not inside the
+                // queried subtree, infer the displayed year from that trigger.
+                if (!yearText.Success && DateTime.TryParse(initialDate, culture,
+                    System.Globalization.DateTimeStyles.None, out var initialMonth))
+                    yearText = System.Text.RegularExpressions.Regex.Match(
+                        initialMonth.Year.ToString(), @"20\d{2}");
+
+                if (!monthText.Success || !yearText.Success ||
+                    !DateTime.TryParseExact(monthText.Value + " " + yearText.Value,
+                        "MMMM yyyy", culture, System.Globalization.DateTimeStyles.None,
+                        out var shown))
+                {
+                    log?.Invoke("TikTok: cannot read month/year: " +
+                        flattened.Substring(0, Math.Min(150, flattened.Length)));
+                    break;
+                }
+                var difference = (target.Year - shown.Year) * 12 + target.Month - shown.Month;
+                log?.Invoke("TikTok: calendar shows " + shown.ToString("MMMM yyyy", culture) +
+                    "; target " + target.ToString("MMMM yyyy", culture));
+                if (difference == 0)
+                {
+                    monthMatched = true;
+                    break;
+                }
+                var arrows = calendar.Locator("span[class*='arrow'], button[class*='arrow']");
+                ILocator arrow;
+                if (await arrows.CountAsync() >= 2)
+                    arrow = difference > 0 ? arrows.Last : arrows.First;
+                else
+                    arrow = calendar.Locator(difference > 0
+                        ? "[aria-label*='next' i], [class*='next-month'], [class*='nextMonth']"
+                        : "[aria-label*='prev' i], [class*='prev-month'], [class*='prevMonth']").First;
+                if (await arrow.CountAsync() == 0 || !await arrow.IsVisibleAsync())
+                {
+                    log?.Invoke("TikTok: month arrow missing.");
+                    break;
+                }
+                await arrow.ClickAsync(new() { Timeout = 5000 });
+                await Task.Delay(300, ct);
             }
-            if (candidates.Count > 0)
+
+            if (!monthMatched)
             {
-                // High day numbers from the preceding month appear BEFORE the
-                // actual current-month day; low numbers from next month follow it.
-                day = target.Day >= 20 ? candidates[^1] : candidates[0];
-                log?.Invoke("TikTok: day " + target.Day + " matched " +
-                    candidates.Count + " enabled calendar candidates.");
+                log?.Invoke("TikTok: calendar month did not match; will not select arbitrary day.");
+                await SaveDiagnosticAsync(page, "TikTok-Calendar-Month-Mismatch", log);
+                return false;
             }
+
+            if (!await ClickTikTokCalendarGridDayAsync(page, target, log, ct))
+            {
+                log?.Invoke("TikTok: grid position for requested day could not be verified.");
+                await SaveDiagnosticAsync(page, "TikTok-Calendar-Grid-Mismatch", log);
+                return false;
+            }
+            log?.Invoke("TikTok: attempted calendar day " + target.Day + ".");
         }
-        if (await day.CountAsync() == 0 || !await day.IsVisibleAsync())
+        finally
         {
-            log?.Invoke("TikTok: day " + isoDate + " not available in target month.");
-            await SaveDiagnosticAsync(page, "TikTok-Calendar-Day-Missing", log);
-            return false;
-        }
-        await day.ClickAsync(new() { Timeout = 7000 });
-        await Task.Delay(300, ct);
-        // A click on today's already-highlighted date can leave the popup open.
-        // Close it using the trigger; Escape may not dismiss this React picker.
-        if (await calendar.IsVisibleAsync())
-        {
-            log?.Invoke("TikTok: date popup still open after day click; closing it.");
-            await dateTrigger.ClickAsync(new() { Timeout = 7000 });
-            await Task.Delay(200, ct);
+            // Always dismiss the popup, even if calendar parsing or clicking
+            // failed. Do not leave TikTok stuck behind an open calendar.
+            if (calendarOpened && await calendar.IsVisibleAsync())
+            {
+                await page.Keyboard.PressAsync("Escape");
+                await Task.Delay(150, ct);
+                if (await calendar.IsVisibleAsync())
+                {
+                    // Click outside the popup without reopening the date trigger.
+                    var fieldBox = await dateTrigger.BoundingBoxAsync();
+                    if (fieldBox is not null)
+                        await page.Mouse.ClickAsync(fieldBox.X + fieldBox.Width + 12,
+                            fieldBox.Y + fieldBox.Height + 45);
+                }
+            }
         }
         } // end date-change branch
 
