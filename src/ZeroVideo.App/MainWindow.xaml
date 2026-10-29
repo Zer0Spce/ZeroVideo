@@ -71,6 +71,7 @@
 
               <WrapPanel Margin="0,0,0,2">
                 <CheckBox Content=".SRT captions" IsChecked="{Binding Project.Options.GenerateCaptions}" Margin="0,4,15,4"/>
+                <CheckBox Content="Bold in-video captions (9:16)" IsChecked="{Binding Project.Options.BurnInBoldCaptions}" Margin="0,4,15,4" ToolTip="Slightly smaller all-white uppercase subtitles with a black outline, centered near the lower third. Audio-pause-aware timing; adds a render pass."/>
                 <CheckBox Content="Visual motion" IsChecked="{Binding Project.Options.AddMotion}" Margin="0,4,15,4"/>
                 <CheckBox Content="Music" IsChecked="{Binding Project.Options.AddBackgroundMusic}" Margin="0,4,15,4"/>
                 <CheckBox Content="SFX hooks" IsChecked="{Binding Project.Options.AddSoundEffects}" Margin="0,4,0,4"/>
@@ -138,6 +139,7 @@
                 <Label Content="SAFETY TOTAL IMAGE CAP"/>
                 <TextBox Text="{Binding Project.Options.MaxGeneratedVisuals, UpdateSourceTrigger=LostFocus}"/>
                 <CheckBox Content=".SRT captions" IsChecked="{Binding Project.Options.GenerateCaptions}" Margin="0,8,0,0"/>
+                <CheckBox Content="Bold in-video captions (9:16)" IsChecked="{Binding Project.Options.BurnInBoldCaptions}" Margin="0,5,0,0" ToolTip="Slightly smaller all-white outlined text. Audio-pause-aware timing; word-level matching is approximate. Adds an FFmpeg render pass."/>
                 <CheckBox Content="Visual motion" IsChecked="{Binding Project.Options.AddMotion}"/>
                 <CheckBox Content="Music" IsChecked="{Binding Project.Options.AddBackgroundMusic}"/>
                 <CheckBox Content="SFX hooks" IsChecked="{Binding Project.Options.AddSoundEffects}"/>
@@ -251,39 +253,86 @@
               <TextBlock Text="Finished Video Queue" FontSize="23" FontWeight="SemiBold" Margin="0,0,0,12"/>
               <TextBlock Text="Finished Create and Automation Shorts videos appear here with their thumbnails and SEO metadata." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,10"/>
             </StackPanel>
-            <ListBox Grid.Row="1" MinHeight="100" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" ScrollViewer.VerticalScrollBarVisibility="Auto" ItemsSource="{Binding PublishingQueue}" SelectedItem="{Binding SelectedPublishItem}" Margin="0,0,0,8">
-                <ListBox.ItemTemplate>
-                  <DataTemplate>
-                    <Border BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="9" Padding="12" Margin="0,5" HorizontalAlignment="Stretch">
-                      <Grid>
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="140"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                        <Border Width="126" Height="175" CornerRadius="6" ClipToBounds="True" VerticalAlignment="Top">
-                          <Image Source="{Binding ThumbnailPath}" Stretch="UniformToFill"/>
-                        </Border>
-                        <StackPanel Grid.Column="1" Margin="12,0,0,0">
-                          <TextBlock Text="{Binding SeoTitle}" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap"/>
-                          <TextBlock Text="{Binding SeoDescription}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" MaxHeight="52" Margin="0,5,0,0"/>
-                          <TextBlock Text="{Binding SeoHashtags}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
-                          <StackPanel Orientation="Horizontal">
-                            <CheckBox Content="Instant Publish" IsChecked="{Binding IsInstant, Mode=TwoWay}" Margin="0,0,22,0"/>
-                            <CheckBox Content="Schedule" IsChecked="{Binding IsScheduled, Mode=TwoWay}"/>
-                          </StackPanel>
-                          <StackPanel Margin="0,8,0,0">
+            <ListBox Grid.Row="1" MinHeight="100" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto" ItemsSource="{Binding PublishingQueue}"
+                     SelectedItem="{Binding SelectedPublishItem}" Margin="0,0,0,8">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <Border BorderBrush="{StaticResource Border}" BorderThickness="1"
+                          CornerRadius="10" Background="#201F29" Padding="12" Margin="0,4">
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="82"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="218"/>
+                      </Grid.ColumnDefinitions>
+                      <Border Width="78" Height="106" CornerRadius="7" ClipToBounds="True"
+                              Background="#111117" VerticalAlignment="Center">
+                        <Image Source="{Binding ThumbnailPath}" Stretch="UniformToFill"/>
+                      </Border>
+                      <StackPanel Grid.Column="1" Margin="14,2,16,0" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding SeoTitle}" FontSize="15" FontWeight="SemiBold"
+                                   TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                                   Foreground="{StaticResource Text}" ToolTip="{Binding SeoTitle}"/>
+                        <TextBlock Text="{Binding SeoDescription}" Foreground="{StaticResource Muted}"
+                                   FontSize="11.5" TextWrapping="Wrap" MaxHeight="34"
+                                   Margin="0,6,0,7" ToolTip="{Binding SeoDescription}"/>
+                        <WrapPanel>
+                          <Border Background="#30283D" CornerRadius="5" Padding="7,3" Margin="0,0,7,0">
+                            <StackPanel Orientation="Horizontal">
+                              <TextBlock Text="YT " Foreground="#C4B5FD" FontWeight="Bold" FontSize="10"/>
+                              <TextBlock Text="{Binding YouTubeStatus}" Foreground="{StaticResource Text}" FontSize="10"/>
+                            </StackPanel>
+                          </Border>
+                          <Border Background="#233038" CornerRadius="5" Padding="7,3">
+                            <StackPanel Orientation="Horizontal">
+                              <TextBlock Text="TIKTOK " Foreground="#54DDE9" FontWeight="Bold" FontSize="10"/>
+                              <TextBlock Text="{Binding TikTokStatus}" Foreground="{StaticResource Text}" FontSize="10"/>
+                            </StackPanel>
+                          </Border>
+                        </WrapPanel>
+                      </StackPanel>
+                      <Border Grid.Column="2" BorderBrush="{StaticResource Border}"
+                              BorderThickness="1,0,0,0" Padding="14,0,0,0" Margin="0,2,0,2">
+                        <StackPanel VerticalAlignment="Center">
+                          <CheckBox Content="Schedule post" IsChecked="{Binding IsScheduled, Mode=TwoWay}"
+                                    FontSize="12" Margin="0,0,0,4"/>
+                          <StackPanel>
                             <StackPanel.Style>
                               <Style TargetType="StackPanel">
                                 <Setter Property="Visibility" Value="Collapsed"/>
-                                <Style.Triggers><DataTrigger Binding="{Binding IsScheduled}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
+                                <Style.Triggers>
+                                  <DataTrigger Binding="{Binding IsScheduled}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                  </DataTrigger>
+                                </Style.Triggers>
                               </Style>
                             </StackPanel.Style>
-                            <TextBlock Text="Schedule date &amp; time (local: YYYY-MM-DD HH:MM)" Foreground="{StaticResource Muted}"/>
-                            <TextBox Width="250" HorizontalAlignment="Left" Text="{Binding ScheduleDateText, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0"/>
+                            <TextBlock Text="LOCAL DATE · TIME" FontSize="10" Foreground="{StaticResource Muted}"/>
+                            <TextBox Width="182" HorizontalAlignment="Left"
+                                     Text="{Binding ScheduleDateText, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="YYYY-MM-DD HH:MM" Margin="0,4,0,0"/>
                           </StackPanel>
+                          <TextBlock Text="Instant publish" FontSize="11" Foreground="{StaticResource Muted}"
+                                     Margin="0,5,0,0">
+                            <TextBlock.Style>
+                              <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Visible"/>
+                                <Style.Triggers>
+                                  <DataTrigger Binding="{Binding IsScheduled}" Value="True">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                  </DataTrigger>
+                                </Style.Triggers>
+                              </Style>
+                            </TextBlock.Style>
+                          </TextBlock>
                         </StackPanel>
-                      </Grid>
-                    </Border>
-                  </DataTemplate>
-                </ListBox.ItemTemplate>
-              </ListBox>
+                      </Border>
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
             <StackPanel Grid.Row="2" Margin="0,6,0,0">
               <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                 <Button Style="{StaticResource SecondaryButton}" Content="Generate SEO Metadata" Command="{Binding GeneratePublishMetadataCommand}"/>
@@ -318,9 +367,9 @@
                 </StackPanel>
               </Border>
               </Expander>
-              <CheckBox Content="I have rights to this video and authorize opening the platform uploader." IsChecked="{Binding PublishConsent}" Margin="0,12,0,0"/>
+              <CheckBox Content="I have rights to this video and authorize the selected action (including automatic TikTok Schedule/Post after confirmation)." IsChecked="{Binding PublishConsent}" Margin="0,12,0,0"/>
               <TextBlock Text="{Binding PublishStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
-              <TextBlock Text="Playwright selects the video and prepares supported metadata. Review everything and confirm publication or scheduling manually in Studio." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+              <TextBlock Text="TikTok: Publish Selected confirms once in ZeroVideo, then automatically clicks final Schedule/Post after upload and schedule checks. It will not retry an uncertain submission. YouTube: final submission remains manual." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
             </StackPanel>
           </Grid>
         </Border>
