@@ -305,12 +305,36 @@ public sealed partial class MainViewModel
             {
                 var uploader = new StudioUploadService(_browser);
                 PublishStatus = "Preparing " + site + " upload with Playwright...";
+                // The scheduled date shown in the queue editor is authoritative.
+                // Never silently fall back to a stale ScheduledAt value if editing
+                // failed to update the stored model or the typed value is invalid.
+                DateTimeOffset? requestedSlot = null;
+                if (SelectedPublishItem?.IsScheduled == true)
+                {
+                    var typed = SelectedPublishItem.ScheduleDateText.Trim();
+                    if (!DateTime.TryParseExact(typed, "yyyy-MM-dd HH:mm",
+                        CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var chosen)
+                        || chosen <= DateTime.Now)
+                    {
+                        PublishStatus = "Invalid schedule: use a future YYYY-MM-DD HH:MM in the visible video row.";
+                        return;
+                    }
+                    requestedSlot = new DateTimeOffset(chosen);
+                    SelectedPublishItem.ScheduledAt = requestedSlot;
+                    SavePublishingQueue();
+                }
+                else if (DateTime.TryParseExact(PublishSchedule, "yyyy-MM-dd HH:mm",
+                    CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var fallback)
+                    && fallback > DateTime.Now)
+                {
+                    requestedSlot = new DateTimeOffset(fallback);
+                }
+                Log("Browser publishing: exact schedule passed to " + site + ": " +
+                    (requestedSlot?.ToString("yyyy-MM-dd HH:mm zzz") ?? "no scheduled slot") +
+                    "; visible queue input=" + (SelectedPublishItem?.ScheduleDateText ?? "(none)"));
                 var result = await uploader.PrepareAsync(Settings, PublishDestination, PublishFile,
                     YouTubeTitleText, YouTubeDescriptionText, TikTokCaptionText, PublishThumbnail,
-                    SelectedPublishItem?.IsScheduled == true ? SelectedPublishItem.ScheduledAt :
-                    (DateTime.TryParseExact(PublishSchedule, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture,
-                        DateTimeStyles.AssumeLocal, out var chosen) && chosen > DateTime.Now
-                        ? new DateTimeOffset(chosen) : null), message =>
+                    requestedSlot, message =>
                     {
                         Log(message);
                         Application.Current.Dispatcher.Invoke(() => PublishStatus = message);
