@@ -84,11 +84,28 @@ public sealed class StudioUploadService(BrowserSession browser)
         {
             // TikTok Studio is frequently updated; use semantic text inputs and fail visibly
             // rather than silently filling an unrelated control.
-            var editor = page.Locator("[contenteditable='true']").First;
-            if (await editor.CountAsync() > 0 && await editor.IsVisibleAsync())
-                await editor.FillAsync(caption);
-            else
-                log?.Invoke("TikTok: caption editor was not recognized; paste the prepared caption manually.");
+            var filled = false;
+            for (var attempt = 0; attempt < 30 && !filled; attempt++)
+            {
+                ct.ThrowIfCancellationRequested();
+                foreach (var frame in page.Frames)
+                {
+                    try
+                    {
+                        var editor = frame.Locator("[contenteditable=true]").First;
+                        if (await editor.CountAsync() > 0 && await editor.IsVisibleAsync())
+                        {
+                            await editor.FillAsync(caption);
+                            filled = true;
+                            break;
+                        }
+                    }
+                    catch (PlaywrightException) { }
+                }
+                if (!filled) await Task.Delay(1000, ct);
+            }
+            log?.Invoke(filled ? "TikTok: caption entered; review before posting." :
+                "TikTok: video selected, but caption input did not appear. Enter the prepared caption manually.");
         }
         return destination + ": video selected in Studio. Review upload completion, metadata, thumbnail and " +
             "schedule/privacy before manually confirming. No post has been submitted.";
