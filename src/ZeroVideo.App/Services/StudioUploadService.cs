@@ -38,23 +38,6 @@ public sealed class StudioUploadService(BrowserSession browser)
             new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 90000 });
         ct.ThrowIfCancellationRequested();
         log?.Invoke(destination + ": Studio opened at " + page.Url);
-        if (!youtube)
-        {
-            for (var nav = 0; nav < 6; nav++)
-            {
-                var uploadLink = page.GetByRole(AriaRole.Link, new() { Name = "Upload" }).First;
-                var uploadButton = page.GetByRole(AriaRole.Button, new() { Name = "Upload" }).First;
-                try
-                {
-                    if (await uploadLink.CountAsync() > 0 && await uploadLink.IsVisibleAsync())
-                    { await uploadLink.ClickAsync(new() { Timeout = 4000 }); break; }
-                    if (await uploadButton.CountAsync() > 0 && await uploadButton.IsVisibleAsync())
-                    { await uploadButton.ClickAsync(new() { Timeout = 4000 }); break; }
-                }
-                catch (PlaywrightException) { }
-                await Task.Delay(1000, ct);
-            }
-        }
         if (youtube)
         {
             var create = page.GetByRole(AriaRole.Button, new() { Name = "Create" }).First;
@@ -64,41 +47,12 @@ public sealed class StudioUploadService(BrowserSession browser)
             if (await upload.IsVisibleAsync(new() { Timeout = 6000 }))
                 await upload.ClickAsync();
         }
+        // TikTok Studio's upload screen already exposes a file input behind
+        // the Select video button. Use that input directly FIRST. Clicking the
+        // left sidebar Upload dropdown can obscure the upload panel.
         var uploaded = false;
-        if (!youtube)
-        {
-            // The actual TikTok Studio uploader shows a pink "Select video" button.
-            // Playwright's file chooser event handles inputs created only on click.
-            log?.Invoke("TikTok: looking for Select video button...");
-            for (var attempt = 0; attempt < 15 && !uploaded; attempt++)
-            {
-                ct.ThrowIfCancellationRequested();
-                foreach (var frame in page.Frames)
-                {
-                    try
-                    {
-                        var select = frame.GetByText("Select video", new() { Exact = true }).First;
-                        if (await select.CountAsync() == 0 || !await select.IsVisibleAsync()) continue;
-                        log?.Invoke("TikTok: clicking Select video and attaching MP4...");
-                        var chooser = await page.RunAndWaitForFileChooserAsync(
-                            async () => await select.ClickAsync(new() { Timeout = 5000 }),
-                            new() { Timeout = 12000 });
-                        await chooser.SetFilesAsync(videoPath);
-                        uploaded = true;
-                        log?.Invoke("TikTok: selected MP4 through Studio file chooser.");
-                        break;
-                    }
-                    catch (PlaywrightException ex)
-                    {
-                        log?.Invoke("TikTok file chooser attempt: " + ex.Message.Split((char)10)[0]);
-                    }
-                }
-                if (!uploaded) await Task.Delay(1000, ct);
-            }
-        }
-        if (!uploaded) log?.Invoke(destination + ": trying direct video file input...");
-
-        for (var attempt = 0; attempt < 25 && !uploaded; attempt++)
+        log?.Invoke(destination + ": locating MP4 upload control...");
+        for (var attempt = 0; attempt < 20 && !uploaded; attempt++)
         {
             ct.ThrowIfCancellationRequested();
             foreach (var frame in page.Frames)
@@ -106,26 +60,53 @@ public sealed class StudioUploadService(BrowserSession browser)
                 try
                 {
                     var inputs = frame.Locator("input[type=file]");
-                    for (var i = 0; i < await inputs.CountAsync(); i++)
+                    var count = await inputs.CountAsync();
+                    for (var i = 0; i < count; i++)
                     {
                         var input = inputs.Nth(i);
                         var accept = (await input.GetAttributeAsync("accept") ?? "").ToLowerInvariant();
                         if (accept.Contains("image") && !accept.Contains("video")) continue;
-                        await input.SetInputFilesAsync(videoPath, new() { Timeout = 5000 });
+                        log?.Invoke(destination + ": attaching MP4 to video file input...");
+                        await input.SetInputFilesAsync(videoPath, new() { Timeout = 12000 });
                         uploaded = true;
                         break;
                     }
                 }
-                catch (PlaywrightException) { }
+                catch (PlaywrightException ex)
+                {
+                    log?.Invoke("Video input attempt: " + ex.Message.Split((char)10)[0]);
+                }
                 if (uploaded) break;
             }
             if (!uploaded) await Task.Delay(1000, ct);
         }
+        if (!uploaded && !youtube)
+        {
+            log?.Invoke("TikTok: trying visible Select video button...");
+            foreach (var frame in page.Frames)
+            {
+                try
+                {
+                    var select = frame.GetByText("Select video", new() { Exact = true }).First;
+                    if (await select.CountAsync() == 0 || !await select.IsVisibleAsync()) continue;
+                    var chooser = await page.RunAndWaitForFileChooserAsync(
+                        async () => await select.ClickAsync(new() { Timeout = 8000 }),
+                        new() { Timeout = 15000 });
+                    await chooser.SetFilesAsync(videoPath);
+                    uploaded = true;
+                    break;
+                }
+                catch (PlaywrightException ex)
+                {
+                    log?.Invoke("Select video button attempt: " + ex.Message.Split((char)10)[0]);
+                }
+            }
+        }
         if (!uploaded)
         {
             var diagnostic = await SaveDiagnosticAsync(page, destination, log);
-            throw new InvalidOperationException("Studio video upload control not found. URL: " + page.Url +
-                ". Diagnostic screenshot: " + diagnostic);
+            throw new InvalidOperationException("Could not attach MP4 to Studio. Current URL: " +
+                page.Url + ". Screenshot: " + diagnostic);
         }
         log?.Invoke(destination + ": selected video file in Studio.");
 
