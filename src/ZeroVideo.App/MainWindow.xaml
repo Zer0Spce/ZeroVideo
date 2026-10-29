@@ -318,9 +318,9 @@
                 </StackPanel>
               </Border>
               </Expander>
-              <CheckBox Content="I have rights to this video and authorize opening the platform uploader." IsChecked="{Binding PublishConsent}" Margin="0,12,0,0"/>
+              <CheckBox Content="I have rights to this video and authorize the selected action (including automatic TikTok Schedule/Post after confirmation)." IsChecked="{Binding PublishConsent}" Margin="0,12,0,0"/>
               <TextBlock Text="{Binding PublishStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
-              <TextBlock Text="Playwright selects the video and prepares supported metadata. Review everything and confirm publication or scheduling manually in Studio." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+              <TextBlock Text="TikTok: Publish Selected confirms once in ZeroVideo, then automatically clicks final Schedule/Post after upload and schedule checks. It will not retry an uncertain submission. YouTube: final submission remains manual." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
             </StackPanel>
           </Grid>
         </Border>
