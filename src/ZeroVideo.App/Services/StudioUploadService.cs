@@ -609,6 +609,44 @@ public sealed class StudioUploadService(BrowserSession browser)
         return false;
     }
 
+
+    // Uploading a large TikTok MP4 happens asynchronously after attaching the
+    // local file. Editing custom Schedule controls while its upload card still
+    // reads "Uploading..." can be reset when the Studio UI rerenders.
+    private static async Task<bool> WaitForTikTokUploadReadyAsync(
+        IPage page, Action<string>? log, CancellationToken ct)
+    {
+        var uploading = page.GetByText(new System.Text.RegularExpressions.Regex(
+            @"^\s*Uploading(?:\.{0,3})?\s*$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase)).First;
+        // Give TikTok a chance to mount the upload progress card.
+        await Task.Delay(1200, ct);
+        var seenUploading = false;
+        for (var i = 0; i < 150; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var isUploading = await uploading.CountAsync() > 0 &&
+                await uploading.IsVisibleAsync();
+            if (isUploading)
+            {
+                seenUploading = true;
+                if (i == 0 || i % 10 == 0)
+                    log?.Invoke("TikTok: video still uploading; delaying schedule selection.");
+            }
+            else if (!seenUploading || i > 0)
+            {
+                log?.Invoke("TikTok: upload indicator cleared; scheduling controls may be edited.");
+                // Let React finish replacing the upload card.
+                await Task.Delay(1000, ct);
+                return true;
+            }
+            await Task.Delay(2000, ct);
+        }
+        log?.Invoke("TikTok: upload still in progress after five minutes. Schedule not attempted.");
+        await SaveDiagnosticAsync(page, "TikTok-Upload-NotReady", log);
+        return false;
+    }
+
     private static async Task<bool> SetTikTokScheduleAsync(IPage page,
         DateTimeOffset slot, Action<string>? log, CancellationToken ct)
     {
@@ -930,6 +968,9 @@ public sealed class StudioUploadService(BrowserSession browser)
             {
                 try
                 {
+                    if (!await WaitForTikTokUploadReadyAsync(page, log, ct))
+                        return "TikTok: video upload is still in progress. Schedule selection was not attempted. " +
+                            "Review the upload manually. No post has been submitted.";
                     if (!await SetTikTokScheduleAsync(page, scheduledAt.Value, log, ct))
                         return "TikTok: video attached, but requested schedule was NOT set. " +
                             "Select the date and time manually before submitting. No post has been submitted.";
