@@ -437,7 +437,7 @@ QUALITY REQUIREMENTS:
             // minutes. Detect a newly completed assistant message and hand it
             // to the existing outline/chapter validation + one-time repair path.
             // Never use the USER's JSON schema prompt as the assistant output.
-            if (!isGenerating && DateTime.UtcNow - started > TimeSpan.FromSeconds(15))
+            if (!isGenerating && DateTime.UtcNow - started > TimeSpan.FromSeconds(30))
             {
                 var assistant = await TryReadLatestAssistantTextAsync(page);
                 if (!string.IsNullOrWhiteSpace(assistant) &&
@@ -451,7 +451,7 @@ QUALITY REQUIREMENTS:
                         rawStableSamples = 0;
                     }
 
-                    if (rawStableSamples >= 4)
+                    if (rawStableSamples >= 6)
                     {
                         var recovered = TryExtractLastValidJsonObject(assistant);
                         if (recovered is not null && !string.Equals(recovered, baseline, StringComparison.Ordinal))
