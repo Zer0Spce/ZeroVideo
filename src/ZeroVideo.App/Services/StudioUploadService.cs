@@ -647,6 +647,197 @@ public sealed class StudioUploadService(BrowserSession browser)
         return false;
     }
 
+
+    // Prefer the actual TikTok scheduled-picker widgets when exposed.
+    // The two TUX input boxes are TIME first and DATE second, unlike the
+    // left-to-right visual order. This is verified against maintained
+    // TikTok browser uploader selector definitions.
+    private static async Task<bool> TryTikTokNativeScheduleAsync(
+        IPage page, DateTime target, Action<string>? log, CancellationToken ct)
+    {
+        var panel = page.Locator("div.scheduled-picker").First;
+        if (await panel.CountAsync() == 0 || !await panel.IsVisibleAsync())
+        {
+            log?.Invoke("TikTok native: scheduled-picker panel absent; using visual fallback.");
+            return false;
+        }
+        var boxes = panel.Locator("div.TUXInputBox");
+        var count = await boxes.CountAsync();
+        log?.Invoke("TikTok native: scheduled-picker present; TUXInputBox count=" + count);
+        if (count < 2) return false;
+        var timeBox = boxes.Nth(0);
+        var dateBox = boxes.Nth(1);
+        var culture = System.Globalization.CultureInfo.GetCultureInfo("en-US");
+        var expectedTime = target.ToString("HH:mm");
+        var originalDate = (await dateBox.InnerTextAsync()).Trim();
+        log?.Invoke("TikTok native: date box before=" + originalDate +
+            "; expected=" + target.ToString("yyyy-MM-dd"));
+
+        if (!DateTime.TryParse(originalDate, culture,
+            System.Globalization.DateTimeStyles.None, out var parsedDate) ||
+            parsedDate.Date != target.Date)
+        {
+            await dateBox.ClickAsync(new() { Timeout = 8000 });
+            await Task.Delay(350, ct);
+            var calendar = page.Locator("div.calendar-wrapper:visible").First;
+            if (await calendar.CountAsync() == 0)
+            {
+                log?.Invoke("TikTok native: TUX box opened but calendar-wrapper is absent.");
+                await SaveTikTokPickerMarkupAsync(page, "Native-Date-Popup", log);
+                await page.Keyboard.PressAsync("Escape");
+                return false;
+            }
+            await SaveTikTokPickerMarkupAsync(page, "Native-Date-Open", log);
+            var shownYear = DateTime.TryParse(originalDate, culture,
+                System.Globalization.DateTimeStyles.None, out var oldDate)
+                    ? oldDate.Year : DateTime.Today.Year;
+            var atMonth = calendar.Locator("span.month-title").First;
+            if (await atMonth.CountAsync() == 0)
+            {
+                log?.Invoke("TikTok native: month-title absent.");
+                await page.Keyboard.PressAsync("Escape");
+                return false;
+            }
+            var matchedMonth = false;
+            for (var i = 0; i < 18; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var label = (await atMonth.InnerTextAsync()).Trim();
+                if (!DateTime.TryParseExact(label, new[] { "MMMM", "MMM", "MMMM yyyy", "MMM yyyy" },
+                    culture, System.Globalization.DateTimeStyles.None, out var shown))
+                {
+                    log?.Invoke("TikTok native: unrecognized calendar month label=" + label);
+                    break;
+                }
+                var y = label.Contains("20") ? shown.Year : shownYear;
+                var offset = (target.Year - y) * 12 + target.Month - shown.Month;
+                log?.Invoke("TikTok native: calendar month=" + label + " year=" + y +
+                    " offset=" + offset);
+                if (offset == 0) { matchedMonth = true; break; }
+                var arrows = calendar.Locator("span.arrow");
+                if (await arrows.CountAsync() < 2)
+                {
+                    log?.Invoke("TikTok native: calendar arrows absent.");
+                    break;
+                }
+                await (offset > 0 ? arrows.Last : arrows.First).ClickAsync(
+                    new() { Timeout = 5000 });
+                if (shown.Month == 12 && offset > 0) shownYear++;
+                if (shown.Month == 1 && offset < 0) shownYear--;
+                await Task.Delay(200, ct);
+            }
+            if (!matchedMonth)
+            {
+                await page.Keyboard.PressAsync("Escape");
+                return false;
+            }
+            var valid = calendar.Locator("span.day.valid");
+            var clicked = false;
+            var n = await valid.CountAsync();
+            log?.Invoke("TikTok native: valid calendar days=" + n);
+            for (var i = 0; i < n; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var cell = valid.Nth(i);
+                if ((await cell.InnerTextAsync()).Trim() != target.Day.ToString()) continue;
+                await cell.ClickAsync(new() { Timeout = 6000 });
+                clicked = true;
+                break;
+            }
+            if (!clicked)
+            {
+                log?.Invoke("TikTok native: requested day not among enabled days.");
+                await page.Keyboard.PressAsync("Escape");
+                return false;
+            }
+            await Task.Delay(400, ct);
+        }
+        var selectedDate = (await dateBox.InnerTextAsync()).Trim();
+        var dateOk = DateTime.TryParse(selectedDate, culture,
+            System.Globalization.DateTimeStyles.None, out var readDate) &&
+            readDate.Date == target.Date;
+        log?.Invoke("TikTok native: date committed=" + selectedDate +
+            " ; matches=" + dateOk);
+        if (!dateOk) return false;
+
+        await timeBox.ClickAsync(new() { Timeout = 8000 });
+        await Task.Delay(400, ct);
+        var wheel = page.Locator("div.tiktok-timepicker-time-picker-container:visible").First;
+        if (await wheel.CountAsync() == 0)
+        {
+            log?.Invoke("TikTok native: time picker class absent after opening.");
+            await SaveTikTokPickerMarkupAsync(page, "Native-Time-Popup", log);
+            await page.Keyboard.PressAsync("Escape");
+            return false;
+        }
+        var hours = wheel.Locator("span.tiktok-timepicker-left");
+        var mins = wheel.Locator("span.tiktok-timepicker-right");
+        var hourN = await hours.CountAsync();
+        var minN = await mins.CountAsync();
+        log?.Invoke("TikTok native: hour options=" + hourN + ", minute options=" + minN);
+        if (hourN < 24 || minN < 12)
+        {
+            // This layout virtualizes the options. Keep the fallback path.
+            await SaveTikTokPickerMarkupAsync(page, "Native-Virtual-Time", log);
+            await page.Keyboard.PressAsync("Escape");
+            return false;
+        }
+
+        // Use numeric option ordering only when all 24 hours and 12 five-minute
+        // choices exist; otherwise the separate scrolling fallback takes over.
+        var hour = hours.Nth(target.Hour);
+        var minute = mins.Nth(target.Minute / 5);
+        await hour.ScrollIntoViewIfNeededAsync();
+        var hourRect = await hour.BoundingBoxAsync();
+        if (hourRect is null) return false;
+        await page.Mouse.ClickAsync(hourRect.X + hourRect.Width / 2,
+            hourRect.Y + hourRect.Height / 2);
+        await Task.Delay(250, ct);
+        await minute.ScrollIntoViewIfNeededAsync();
+        var minuteRect = await minute.BoundingBoxAsync();
+        if (minuteRect is null) return false;
+        await page.Mouse.ClickAsync(minuteRect.X + minuteRect.Width / 2,
+            minuteRect.Y + minuteRect.Height / 2);
+        await timeBox.ClickAsync(new() { Timeout = 8000 });
+        await Task.Delay(450, ct);
+        var selectedTime = (await timeBox.InnerTextAsync()).Trim();
+        var timeOk = selectedTime.Contains(expectedTime, StringComparison.Ordinal) ||
+            selectedTime == target.ToString("H:mm");
+        log?.Invoke("TikTok native: selected time=" + selectedTime +
+            " expected=" + expectedTime + "; matches=" + timeOk);
+        if (!timeOk) await SaveTikTokPickerMarkupAsync(page, "Native-Time-Mismatch", log);
+        return timeOk;
+    }
+
+    private static async Task SaveTikTokPickerMarkupAsync(
+        IPage page, string stage, Action<string>? log)
+    {
+        try
+        {
+            // Only the schedule panel and picker popups. This avoids capturing
+            // full-page captions, account details, video data or credentials.
+            var markup = await page.EvaluateAsync<string>(@"
+() => ['.scheduled-picker','.calendar-wrapper',
+      '.tiktok-timepicker-time-picker-container']
+    .map(sel => {
+      const el=document.querySelector(sel);
+      return sel + '\n' + (el ? el.outerHTML.slice(0,50000) : '(not found)');
+    }).join('\n==========\n').slice(0,110000)");
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "ZeroVideo", "PublishingDiagnostics");
+            Directory.CreateDirectory(dir);
+            var p = Path.Combine(dir, "TikTok-" + stage + "-" +
+                DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".txt");
+            await File.WriteAllTextAsync(p, markup);
+            log?.Invoke("TikTok: native picker markup saved: " + p);
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke("TikTok: native picker diagnostic failed: " + ex.Message);
+        }
+    }
+
     private static async Task<bool> SetTikTokScheduleAsync(IPage page,
         DateTimeOffset slot, Action<string>? log, CancellationToken ct)
     {
@@ -672,6 +863,21 @@ public sealed class StudioUploadService(BrowserSession browser)
         await page.GetByText("Schedule", new() { Exact = true }).First.ClickAsync();
         await Task.Delay(500, ct);
         log?.Invoke("TikTok: requested " + target.ToString("yyyy-MM-dd HH:mm") + " local.");
+        // First try schedule-specific input widgets, then fall back to the
+        // existing visible calendar and wheel routines.
+        try
+        {
+            if (await TryTikTokNativeScheduleAsync(page, target, log, ct))
+            {
+                log?.Invoke("TikTok: schedule verified using native scheduled-picker controls.");
+                return true;
+            }
+        }
+        catch (PlaywrightException ex)
+        {
+            log?.Invoke("TikTok native picker path failed: " + ex.Message.Split((char)10)[0]);
+        }
+        await page.Keyboard.PressAsync("Escape");
 
         // Prefer the real closed control. Generic GetByText can accidentally
         // find a day in the open calendar or a time in the open wheel.
