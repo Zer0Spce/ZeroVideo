@@ -193,6 +193,17 @@ public sealed class StudioUploadService(BrowserSession browser)
             log?.Invoke("TikTok: date dropdown trigger missing.");
             return false;
         }
+        // The current TikTok date is often already correct for 6-hour presets.
+        // Clicking an already-selected day leaves the calendar open, preventing
+        // the time wheel from being reached. Skip the popup in that case.
+        var initialDate = (await dateTrigger.InnerTextAsync()).Trim();
+        var alreadyCorrectDate = DateTime.TryParse(initialDate, culture,
+            System.Globalization.DateTimeStyles.None, out var initialParsed) &&
+            initialParsed.Date == target.Date;
+        log?.Invoke("TikTok: current date " + initialDate + ", desired " + wantedDate +
+            ", change needed=" + !alreadyCorrectDate);
+        if (!alreadyCorrectDate)
+        {
         await dateTrigger.ClickAsync(new() { Timeout = 7000 });
         await Task.Delay(350, ct);
 
@@ -258,20 +269,35 @@ public sealed class StudioUploadService(BrowserSession browser)
             "'], [datetime='" + isoDate + "']").First;
         if (await day.CountAsync() == 0)
         {
-            // Current TikTok UI renders a grid of day-number spans. Only use
-            // active current-month cells, not grey past/outside/disabled cells.
-            var days = calendar.Locator(".days-wrapper span, [role=gridcell]");
-            for (var i = 0; i < Math.Min(80, await days.CountAsync()); i++)
+            // TikTok's day numbers can appear twice (e.g. Sept 29 and Oct 29).
+            // Search all exact text matches inside the verified month popup,
+            // inspect ancestor disabled classes, and disambiguate by grid order.
+            var matches = calendar.GetByText(target.Day.ToString(), new() { Exact = true });
+            var count = await matches.CountAsync();
+            var candidates = new List<ILocator>();
+            for (var i = 0; i < Math.Min(count, 14); i++)
             {
-                var cell = days.Nth(i);
-                if ((await cell.InnerTextAsync()).Trim() != target.Day.ToString()) continue;
-                var classes = (await cell.GetAttributeAsync("class") ?? "").ToLowerInvariant();
-                var aria = await cell.GetAttributeAsync("aria-disabled");
-                if (classes.Contains("invalid") || classes.Contains("disabled") ||
-                    classes.Contains("outside") || classes.Contains("prev") ||
-                    classes.Contains("next") || aria == "true") continue;
-                day = cell;
-                break;
+                var cell = matches.Nth(i);
+                if (!await cell.IsVisibleAsync()) continue;
+                var disabled = await cell.EvaluateAsync<bool>(@"el => {
+                    let node = el;
+                    for (let level = 0; level < 4 && node; level++, node = node.parentElement) {
+                        const cls = String(node.className || '').toLowerCase();
+                        if (node.getAttribute('aria-disabled') === 'true' ||
+                            node.hasAttribute('disabled') ||
+                            /invalid|disabled|outside|other-month|prev-month|next-month/.test(cls)) return true;
+                    }
+                    return false;
+                }");
+                if (!disabled) candidates.Add(cell);
+            }
+            if (candidates.Count > 0)
+            {
+                // High day numbers from the preceding month appear BEFORE the
+                // actual current-month day; low numbers from next month follow it.
+                day = target.Day >= 20 ? candidates[^1] : candidates[0];
+                log?.Invoke("TikTok: day " + target.Day + " matched " +
+                    candidates.Count + " enabled calendar candidates.");
             }
         }
         if (await day.CountAsync() == 0 || !await day.IsVisibleAsync())
@@ -281,8 +307,16 @@ public sealed class StudioUploadService(BrowserSession browser)
             return false;
         }
         await day.ClickAsync(new() { Timeout = 7000 });
-        await Task.Delay(250, ct);
-        await page.Keyboard.PressAsync("Escape");
+        await Task.Delay(300, ct);
+        // A click on today's already-highlighted date can leave the popup open.
+        // Close it using the trigger; Escape may not dismiss this React picker.
+        if (await calendar.IsVisibleAsync())
+        {
+            log?.Invoke("TikTok: date popup still open after day click; closing it.");
+            await dateTrigger.ClickAsync(new() { Timeout = 7000 });
+            await Task.Delay(200, ct);
+        }
+        } // end date-change branch
 
         var selectedDate = (await dateTrigger.InnerTextAsync()).Trim();
         var dateOk = DateTime.TryParse(selectedDate, culture,
