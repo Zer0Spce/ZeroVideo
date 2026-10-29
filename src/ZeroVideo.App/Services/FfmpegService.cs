@@ -655,11 +655,11 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
           .AppendLine("PlayResX: 1080")
           .AppendLine("PlayResY: 1920")
           .AppendLine("ScaledBorderAndShadow: yes")
-          .AppendLine("WrapStyle: 2")
+          .AppendLine("WrapStyle: 0")
           .AppendLine()
           .AppendLine("[V4+ Styles]")
           .AppendLine("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
-          .AppendLine("Style: Punchy,Arial Black,88,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,7,0,2,64,64,350,1")
+          .AppendLine("Style: Punchy,Arial Black,88,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,7,0,2,105,105,350,1")
           .AppendLine()
           .AppendLine("[Events]")
           .AppendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
@@ -692,12 +692,19 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
             foreach (var word in words)
             {
                 var proposedLength = current.Sum(x => x.Length) + current.Count + word.Length;
-                if (current.Count > 0 && (current.Count >= 4 || proposedLength > 20))
+                if (current.Count > 0 && (current.Count >= 3 || proposedLength > 19))
                 {
                     groups.Add(current);
                     current = new List<string>();
                 }
                 current.Add(word);
+                // A caption must never straddle a sentence ending. This
+                // prevents fragments like "COMPANY APART. WHEN".
+                if (Regex.IsMatch(word, @"[.!?;:]$"))
+                {
+                    groups.Add(current);
+                    current = new List<string>();
+                }
             }
             if (current.Count > 0) groups.Add(current);
 
@@ -710,7 +717,7 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
                 used += groupWeight;
                 var to = elapsed + SpeechPosition(active, used / Math.Max(0.001, chapterWeight));
                 if (to - from < 0.08) continue;
-                var caption = string.Join(" ", group.Select(EscapeAssCaptionWord));
+                var caption = FitCaptionToSafeArea(group);
                 sb.Append("Dialogue: 0,")
                   .Append(AssCaptionTime(from)).Append(',')
                   .Append(AssCaptionTime(to))
@@ -724,8 +731,68 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         if (captions == 0) return false;
         await File.WriteAllTextAsync(path, sb.ToString(), new UTF8Encoding(false), ct);
         log?.Invoke($"Audio-aware captions written: {captions} short phrases, " +
-            "white only, 88pt; timing follows detected narration speech/pause regions.");
+            "white only, auto-fit 70-88pt within safe margins; speech/pause timing preserved.");
         return true;
+    }
+
+    // Estimate actual broad-face uppercase glyph widths in units of font size.
+    // ASS styles are rendered using 1080x1920 reference coordinates. We reserve
+    // >100px on each side and outline padding instead of letting libass crop
+    // lengthy phrases at the edges of the vertical frame.
+    private static double CaptionVisualUnits(string phrase)
+    {
+        double units = 0;
+        foreach (var c in phrase.ToUpperInvariant())
+        {
+            if (c == ' ') units += 0.32;
+            else if ("MW@%".Contains(c)) units += 0.95;
+            else if ("OQGHN".Contains(c)) units += 0.78;
+            else if ("IJL".Contains(c)) units += 0.46;
+            else if (".,!:;'’".Contains(c)) units += 0.23;
+            else if ("()-".Contains(c)) units += 0.42;
+            else units += 0.69;
+        }
+        return Math.Max(1, units);
+    }
+
+    private static string FitCaptionToSafeArea(IReadOnlyList<string> group)
+    {
+        var words = group.Select(EscapeAssCaptionWord).ToList();
+        var oneLine = string.Join(" ", words);
+        const int targetWidth = 795; // 1080px minus 2x105px margin + outline/safety.
+        var units = CaptionVisualUnits(oneLine);
+        var singleLineFont = (int)Math.Floor(targetWidth / units);
+        if (singleLineFont >= 73 || words.Count == 1)
+        {
+            var font = Math.Clamp(singleLineFont, 66, 88);
+            // Additional horizontal scaling protects unusually long words.
+            var scaling = Math.Min(100,
+                (int)Math.Floor(targetWidth * 100.0 / (units * font)));
+            return "{\\fs" + font + "\\fscx" + Math.Max(40, scaling) + "}" + oneLine;
+        }
+
+        // For longer phrases choose the most balanced word-boundary wrap;
+        // never break a word or leave its remainder clipped off-frame.
+        var bestIndex = 1;
+        var bestWidth = double.MaxValue;
+        for (var split = 1; split < words.Count; split++)
+        {
+            var left = CaptionVisualUnits(string.Join(" ", words.Take(split)));
+            var right = CaptionVisualUnits(string.Join(" ", words.Skip(split)));
+            var largest = Math.Max(left, right);
+            if (largest < bestWidth)
+            {
+                bestWidth = largest;
+                bestIndex = split;
+            }
+        }
+        var fittedSize = Math.Clamp((int)Math.Floor(targetWidth / bestWidth), 70, 88);
+        var lineScale = Math.Min(100,
+            (int)Math.Floor(targetWidth * 100.0 / (bestWidth * fittedSize)));
+        var first = string.Join(" ", words.Take(bestIndex));
+        var second = string.Join(" ", words.Skip(bestIndex));
+        return "{\\fs" + fittedSize + "\\fscx" + Math.Max(40, lineScale) +
+            "}" + first + "\\N" + second;
     }
 
     private static string EscapeAssCaptionWord(string value)
