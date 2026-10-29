@@ -433,92 +433,6 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     }
 
 
-    // TikTok can present an additional modal after the primary Schedule/Post
-    // click when its content check is still running. This is an explicit
-    // confirmation of continuing before checks finish, NOT the footer CTA.
-    // Locate the small modal by its exact heading and its two buttons, then
-    // click the modal's "Post now" button at most once. No coordinates, no
-    // global Post now text search, and never interact with privacy or music.
-    private static async Task<int> HandleTikTokContinueModalAsync(
-        IPage page, Action<string>? log, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        var heading = page.GetByText("Continue to post?", new() { Exact = true }).First;
-        if (await heading.CountAsync() == 0 || !await heading.IsVisibleAsync())
-            return 0; // No secondary confirmation yet.
-
-        var modalFound = await page.EvaluateAsync<bool>(@"
-() => {
-  document.querySelectorAll('[data-zerovideo-continue-modal]').forEach(
-    e => e.removeAttribute('data-zerovideo-continue-modal'));
-  const visible = e => {
-    const r = e.getBoundingClientRect(), cs = getComputedStyle(e);
-    return r.width > 5 && r.height > 5 &&
-      cs.visibility !== 'hidden' && cs.display !== 'none';
-  };
-  const text = e => (e.innerText || e.textContent || '').trim();
-  const headings = [...document.querySelectorAll('h1,h2,h3,h4,div,span,p,strong')]
-    .filter(e => visible(e) && text(e) === 'Continue to post?' &&
-      ![...e.children].some(c => text(c) === 'Continue to post?'));
-  for (const h of headings) {
-    for (let parent=h.parentElement,depth=0; parent && depth<8;
-         parent=parent.parentElement,depth++) {
-      const r = parent.getBoundingClientRect();
-      if (r.width < 320 || r.width > 760 ||
-          r.height < 150 || r.height > 490) continue;
-      const buttons = [...parent.querySelectorAll('button')].filter(visible);
-      if (buttons.length !== 2) continue;
-      const labels = buttons.map(text);
-      if (labels.filter(t => t === 'Post now').length !== 1 ||
-          labels.filter(t => t === 'Cancel').length !== 1) continue;
-      if (!text(parent).includes('checking your video')) continue;
-      parent.setAttribute('data-zerovideo-continue-modal','yes');
-      return true;
-    }
-  }
-  return false;
-}");
-        if (!modalFound)
-        {
-            log?.Invoke("TikTok: 'Continue to post?' prompt present, but its " +
-                "two-button dialog could not be isolated safely. No further click.");
-            await SaveDiagnosticAsync(page, "TikTok-Continue-Dialog-Unrecognized", log);
-            return -1;
-        }
-
-        var dialog = page.Locator("[data-zerovideo-continue-modal='yes']");
-        var confirm = dialog.Locator("button").Filter(new()
-        {
-            HasTextRegex = new System.Text.RegularExpressions.Regex(
-                @"^\s*Post now\s*$",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase)
-        });
-        if (await dialog.CountAsync() != 1 || await confirm.CountAsync() != 1 ||
-            !await confirm.IsVisibleAsync() || !await confirm.IsEnabledAsync())
-        {
-            log?.Invoke("TikTok: 'Post now' dialog confirmation is missing " +
-                "or disabled. No further click.");
-            return -1;
-        }
-
-        log?.Invoke("TikTok: content check is incomplete. User authorized auto-" +
-            "submission; confirming 'Continue to post?' using its 'Post now' button ONCE.");
-        try
-        {
-            await confirm.ClickAsync(new() { Timeout = 7000, NoWaitAfter = true });
-            return 1;
-        }
-        catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
-        {
-            // Click may have dispatched before a navigation interrupted the
-            // Playwright call. Do not repeat it.
-            log?.Invoke("TikTok: secondary confirmation click outcome uncertain: " +
-                ex.Message.Split((char)10)[0]);
-            await SaveDiagnosticAsync(page, "TikTok-Continue-Click-Uncertain", log);
-            return -1;
-        }
-    }
-
     // A single final action: NEVER retry a clicked Schedule/Post button.
     // If TikTok doesn't clearly confirm receipt, flag an ambiguous submission
     // and require the user to inspect TikTok Studio before attempting again.
@@ -617,23 +531,11 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                 ? @"(?:successfully\s+scheduled|scheduled\s+successfully|post\s+(?:has\s+been\s+)?scheduled|video\s+(?:has\s+been\s+)?scheduled|schedule\s+successful)"
                 : @"(?:your\s+video\s+has\s+been\s+uploaded|video\s+published|successfully\s+posted|post\s+published|video\s+uploaded\s+successfully)",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase));
-        var secondaryClicked = false;
-        for (var i = 0; i < 32; i++)
+        for (var i = 0; i < 18; i++)
         {
             ct.ThrowIfCancellationRequested();
             try
             {
-                // Secondary modal is specific to TikTok finishing its content
-                // checks. Do this only after the verified footer action was
-                // already clicked, never as an alternative initial submit.
-                if (!secondaryClicked)
-                {
-                    var modalResult = await HandleTikTokContinueModalAsync(page, log, ct);
-                    if (modalResult < 0)
-                        return "TikTok: SUBMISSION_ATTEMPTED; secondary confirmation not safely completed. " +
-                            "Inspect TikTok Studio before retrying.";
-                    secondaryClicked = modalResult == 1;
-                }
                 if (await confirmation.CountAsync() > 0 && await confirmation.First.IsVisibleAsync())
                 {
                     log?.Invoke("TikTok: displayed an explicit confirmation after final submission.");
@@ -658,9 +560,8 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             }
             await Task.Delay(900, ct);
         }
-        log?.Invoke("TikTok: primary action clicked once" +
-            (secondaryClicked ? " and 'Continue to post?' confirmed once" : "") +
-            "; no definitive platform receipt detected. Check TikTok Studio Posts before retrying.");
+        log?.Invoke("TikTok: final button was clicked once; no definitive receipt " +
+            "was detected. Check TikTok Studio Posts before retrying.");
         await SaveDiagnosticAsync(page, "TikTok-Submit-Confirmation-Unknown", log);
         return "TikTok: SUBMISSION_ATTEMPTED; confirmation unavailable. Check TikTok Studio Posts before retrying.";
     }
