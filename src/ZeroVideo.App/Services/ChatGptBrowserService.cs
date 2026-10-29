@@ -158,6 +158,7 @@ QUALITY REQUIREMENTS:
         await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, prompt, ct);
 
         var baseline = await TryReadLatestResponseAsync(page, profile.ChatGpt.AssistantMessages) ?? "";
+        var baselineAssistant = await TryReadLatestAssistantTextAsync(page) ?? "";
         await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
         log?.Invoke("ChatGPT: prompt sent; waiting for the finished response...");
 
@@ -166,6 +167,7 @@ QUALITY REQUIREMENTS:
             profile.ChatGpt.AssistantMessages,
             profile.ChatGpt.StopButtons,
             baseline,
+            baselineAssistant,
             log,
             ct);
 
@@ -389,10 +391,13 @@ QUALITY REQUIREMENTS:
         IEnumerable<string> configuredResponseSelectors,
         IEnumerable<string> stopSelectors,
         string baseline,
+        string baselineAssistant,
         Action<string>? log,
         CancellationToken ct)
     {
         string last = "";
+        string lastAssistant = "";
+        var rawStableSamples = 0;
         var stableSamples = 0;
         var sawGeneration = false;
         var started = DateTime.UtcNow;
@@ -427,6 +432,41 @@ QUALITY REQUIREMENTS:
                     return finalRead;
             }
 
+            // If ChatGPT returned normal prose, a structured content block, or
+            // code the old selectors cannot parse as JSON, do not spin for 12
+            // minutes. Detect a newly completed assistant message and hand it
+            // to the existing outline/chapter validation + one-time repair path.
+            // Never use the USER's JSON schema prompt as the assistant output.
+            if (!isGenerating && DateTime.UtcNow - started > TimeSpan.FromSeconds(15))
+            {
+                var assistant = await TryReadLatestAssistantTextAsync(page);
+                if (!string.IsNullOrWhiteSpace(assistant) &&
+                    !string.Equals(assistant, baselineAssistant, StringComparison.Ordinal))
+                {
+                    if (string.Equals(assistant, lastAssistant, StringComparison.Ordinal))
+                        rawStableSamples++;
+                    else
+                    {
+                        lastAssistant = assistant;
+                        rawStableSamples = 0;
+                    }
+
+                    if (rawStableSamples >= 4)
+                    {
+                        var recovered = TryExtractLastValidJsonObject(assistant);
+                        if (recovered is not null && !string.Equals(recovered, baseline, StringComparison.Ordinal))
+                        {
+                            log?.Invoke("ChatGPT: recovered JSON from the latest assistant turn.");
+                            return recovered;
+                        }
+                        await SaveChatGptResponseDiagnosticAsync(page,
+                            "Completed-NonJson", assistant, log);
+                        log?.Invoke("ChatGPT: new assistant reply completed but is not valid JSON. " +
+                            "Returning it to the existing validation/retry flow.");
+                        return assistant;
+                    }
+                }
+            }
             await Task.Delay(1200, ct);
         }
 
@@ -437,7 +477,11 @@ QUALITY REQUIREMENTS:
             return last;
         }
 
-        throw new TimeoutException("ChatGPT finished in the browser, but ZeroVideo could not find a new valid JSON response in the visible conversation.");
+        var lastVisible = await TryReadLatestAssistantTextAsync(page) ?? "";
+        await SaveChatGptResponseDiagnosticAsync(page, "Json-NotFound", lastVisible, log);
+        throw new TimeoutException("ChatGPT finished, but ZeroVideo could not capture a new valid JSON response. " +
+            "A local diagnostic was saved in %LOCALAPPDATA%\\ZeroVideo\\diagnostics. " +
+            "Open the ChatGPT conversation to check whether the reply is JSON or plain text.");
     }
 
     private static async Task<string?> TryReadLatestResponseAsync(IPage page, IEnumerable<string> configuredSelectors)
@@ -494,6 +538,66 @@ QUALITY REQUIREMENTS:
         catch { }
 
         return null;
+    }
+
+    // Capture ONLY assistant-authored visible text. The user's own prompt may
+    // contain a full JSON schema/example; reading main.innerText would incorrectly
+    // treat that prompt as a new model response.
+    private static async Task<string?> TryReadLatestAssistantTextAsync(IPage page)
+    {
+        try
+        {
+            return await page.EvaluateAsync<string?>(@"
+() => {
+  const visible = e => {
+    const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+    return r.width>0 && r.height>0 && s.display!=='none' &&
+      s.visibility!=='hidden';
+  };
+  const selectors = [
+    '[data-message-author-role=""assistant""]',
+    '[data-testid=""conversation-turn-assistant""]',
+    'article[data-message-author-role=""assistant""]',
+    'main [data-testid=""assistant-response""]'
+  ];
+  for (const selector of selectors) {
+    const nodes=[...document.querySelectorAll(selector)].filter(visible);
+    for(let i=nodes.length-1;i>=0;i--) {
+      const node=nodes[i];
+      const text=(node.innerText||node.textContent||'').trim();
+      const code=[...node.querySelectorAll('pre,code,textarea')]
+        .map(el=>el instanceof HTMLTextAreaElement?el.value:(el.innerText||el.textContent||''))
+        .filter(Boolean).join('\n');
+      const found=(code.length>text.length?code:text).trim();
+      if(found.length>0) return found.slice(0,200000);
+    }
+  }
+  return null;
+}");
+        }
+        catch (PlaywrightException) { return null; }
+    }
+
+    private static async Task SaveChatGptResponseDiagnosticAsync(
+        IPage page, string reason, string assistantText, Action<string>? log)
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.DiagnosticsDirectory);
+            var file = Path.Combine(AppPaths.DiagnosticsDirectory,
+                "ChatGPT-JSON-" + reason + "-" +
+                DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".txt");
+            // Keep diagnostics on the local machine only. Never transmit chat
+            // content or upload it automatically. Include enough context to
+            // distinguish a plain-text answer from a changed ChatGPT DOM.
+            var detail = "URL: " + page.Url + Environment.NewLine +
+                "Assistant response length: " + assistantText.Length + Environment.NewLine +
+                "Captured assistant text (first 20000 chars):" + Environment.NewLine +
+                assistantText[..Math.Min(assistantText.Length, 20000)];
+            await File.WriteAllTextAsync(file, detail);
+            log?.Invoke("ChatGPT: response diagnostic saved locally: " + file);
+        }
+        catch (Exception ex) { log?.Invoke("ChatGPT: could not save response diagnostic: " + ex.Message); }
     }
 
     private static async Task<bool> AnyVisibleAsync(IPage page, IEnumerable<string> selectors)
