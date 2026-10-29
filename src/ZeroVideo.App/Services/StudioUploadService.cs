@@ -39,17 +39,17 @@ public sealed class StudioUploadService(BrowserSession browser)
                 ct.ThrowIfCancellationRequested();
                 try
                 {
-                    var doc = await cdp.SendAsync("DOM.getDocument", new { depth = -1, pierce = true });
+                    var doc = await cdp.SendAsync("DOM.getDocument", new Dictionary<string, object> { ["depth"] = -1, ["pierce"] = true });
                     if (doc is null) throw new InvalidOperationException("CDP returned no document.");
                     var rootId = doc.Value.GetProperty("root").GetProperty("nodeId").GetInt32();
                     var found = await cdp.SendAsync("DOM.querySelectorAll",
-                        new { nodeId = rootId, selector = "input[type=file]" });
+                        new Dictionary<string, object> { ["nodeId"] = rootId, ["selector"] = "input[type=file]" });
                     if (found is not null)
                     {
                         foreach (var id in found.Value.GetProperty("nodeIds").EnumerateArray())
                         {
                             var nodeId = id.GetInt32();
-                            var info = await cdp.SendAsync("DOM.describeNode", new { nodeId });
+                            var info = await cdp.SendAsync("DOM.describeNode", new Dictionary<string, object> { ["nodeId"] = nodeId });
                             if (info is null) continue;
                             var attrs = info.Value.GetProperty("node").GetProperty("attributes");
                             var accept = "";
@@ -59,7 +59,7 @@ public sealed class StudioUploadService(BrowserSession browser)
                             if (accept.Contains("image", StringComparison.OrdinalIgnoreCase) &&
                                 !accept.Contains("video", StringComparison.OrdinalIgnoreCase)) continue;
                             await cdp.SendAsync("DOM.setFileInputFiles",
-                                new { files = new[] { videoPath }, nodeId });
+                                new Dictionary<string, object> { ["files"] = new[] { videoPath }, ["nodeId"] = nodeId });
                             log?.Invoke("TikTok: attached local MP4 through Edge DevTools without 50 MB transfer limit.");
                             return true;
                         }
