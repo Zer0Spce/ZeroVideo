@@ -256,6 +256,87 @@ public sealed class StudioUploadService(BrowserSession browser)
         }
     }
 
+    // Fallback for TikTok's October-2026 layout when DOM wrappers prevent a
+    // clean 35/42-cell grid. Locate the exact date number in the expected
+    // weekday column and week row using the visible header and weekdays.
+    private static async Task<bool> SelectTikTokCalendarDayByWeekdayAsync(
+        IPage page, ILocator trigger, DateTime target, Action<string>? log, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var bounds = await trigger.BoundingBoxAsync();
+        if (bounds is null) return false;
+        const string inspect = @"
+(args) => {
+  const vis=e=>{let r=e.getBoundingClientRect(),s=getComputedStyle(e);
+    return r.width>4&&r.height>4&&s.display!=='none'&&s.visibility!=='hidden';};
+  const text=e=>(e.textContent||'').trim();
+  const leaf=e=>![...e.children].some(c=>text(c)===text(e));
+  const nodes=[...document.querySelectorAll('body *')].filter(e=>vis(e)&&leaf(e));
+  const months=['January','February','March','April','May','June','July',
+    'August','September','October','November','December'];
+  const headers=nodes.filter(e=>months.some(m=>m.toLowerCase()===text(e).toLowerCase()))
+    .map(e=>{const r=e.getBoundingClientRect();return {x:r.left+r.width/2,
+      y:r.top+r.height/2, bottom:r.bottom,
+      month:months.findIndex(m=>m.toLowerCase()===text(e).toLowerCase())+1};})
+    .filter(h=>Math.abs(h.x-args.ax)<500 && h.y<args.ay && h.y>args.ay-650)
+    .sort((a,b)=>Math.abs(a.x-args.ax)-Math.abs(b.x-args.ax));
+  if(!headers.length)return {error:'month header not found'};
+  const h=headers[0];
+  if(h.month!==args.month)return {error:'calendar displays month '+h.month+' not '+args.month};
+  const weekdays=['sun','mon','tue','wed','thu','fri','sat'];
+  const labels=nodes.filter(e=>{
+    const t=text(e).toLowerCase();
+    return weekdays.some(d=>t===d||t===(d==='thu'?'thurs':''));
+  }).map(e=>{const r=e.getBoundingClientRect();return {x:r.left+r.width/2,
+    y:r.top+r.height/2,key:text(e).toLowerCase()};})
+    .filter(e=>e.y>h.y && e.y<h.y+95 && e.x>h.x-270 && e.x<h.x+330)
+    .sort((a,b)=>a.x-b.x);
+  const distinct=[];
+  for(const l of labels) if(!distinct.some(d=>Math.abs(d.x-l.x)<12))distinct.push(l);
+  if(distinct.length!==7)return {error:'weekday columns '+distinct.length};
+  const weekday=(new Date(args.year,args.month-1,1).getDay()+args.day-1)%7;
+  const row=Math.floor((new Date(args.year,args.month-1,1).getDay()+args.day-1)/7);
+  const days=nodes.filter(e=>/^(?:[1-9]|[12][0-9]|3[01])$/.test(text(e)))
+    .map(e=>{const r=e.getBoundingClientRect();return {n:Number(text(e)),
+      x:r.left+r.width/2,y:r.top+r.height/2};})
+    .filter(v=>v.y>distinct[0].y+12 && v.y<args.ay-9 &&
+      v.x>=distinct[0].x-18 && v.x<=distinct[6].x+18);
+  const unique=[];
+  for(const d of days)if(!unique.some(v=>Math.abs(v.x-d.x)<12&&Math.abs(v.y-d.y)<12))unique.push(d);
+  const rows=[];
+  for(const d of unique.sort((a,b)=>a.y-b.y)){
+    let existing=rows.find(r=>Math.abs(r.y-d.y)<14);
+    if(existing)existing.items.push(d);
+    else rows.push({y:d.y,items:[d]});
+  }
+  const x=distinct[weekday].x;
+  const candidates=unique.filter(d=>d.n===args.day && Math.abs(d.x-x)<23)
+    .sort((a,b)=>Math.abs(a.y-(rows[row]?.y??0))-Math.abs(b.y-(rows[row]?.y??0)));
+  const selected=candidates.find(c=>rows[row] && Math.abs(c.y-rows[row].y)<14);
+  return {error:selected?null:'target date cell missing or wrong row',
+    rows:rows.length,weekday,row,dayCandidates:candidates.length,
+    x:selected?.x??0,y:selected?.y??0,
+    labels:distinct.map(v=>v.key).join(','),rowCounts:rows.map(v=>v.items.length).join(',')};
+}";
+        var data = await page.EvaluateAsync<System.Text.Json.JsonElement>(inspect,
+            new { ax = bounds.X + bounds.Width / 2, ay = bounds.Y,
+                month = target.Month, year = target.Year, day = target.Day });
+        if (data.TryGetProperty("error", out var error) &&
+            error.ValueKind == System.Text.Json.JsonValueKind.String)
+        {
+            log?.Invoke("TikTok: weekday-grid selection unavailable: " + error.GetString());
+            return false;
+        }
+        log?.Invoke("TikTok: weekday-grid labels " + data.GetProperty("labels").GetString() +
+            "; rows " + data.GetProperty("rowCounts").GetString() +
+            "; target week " + data.GetProperty("row").GetInt32() +
+            " weekday " + data.GetProperty("weekday").GetInt32());
+        await page.Mouse.ClickAsync((float)data.GetProperty("x").GetDouble(),
+            (float)data.GetProperty("y").GetDouble());
+        await Task.Delay(350, ct);
+        return true;
+    }
+
     // TikTok Studio shows a calendar grid and a scrolling two-column hour/minute
     // wheel. The option elements do NOT necessarily have the picker container's
     // CSS class and only a subset of the wheel may be visible at a time.
@@ -384,6 +465,11 @@ public sealed class StudioUploadService(BrowserSession browser)
 
         await SaveTikTokCalendarDomAsync(page, log);
         var selected = await SelectTikTokVisualCalendarAsync(page, dateTrigger, target, log, ct);
+        if (!selected)
+        {
+            log?.Invoke("TikTok: grid geometry did not locate target; trying visible weekday columns.");
+            selected = await SelectTikTokCalendarDayByWeekdayAsync(page, dateTrigger, target, log, ct);
+        }
         if (!selected)
         {
             await SaveDiagnosticAsync(page, "TikTok-Visual-Calendar-Selection-Failed", log);
