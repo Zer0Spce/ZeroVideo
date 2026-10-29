@@ -148,11 +148,11 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         if (project.Options.BurnInBoldCaptions && project.AspectRatio == "9:16")
         {
             var captionAss = Path.Combine(renderDir, "styled-video-captions.ass");
-            if (await WriteBoldCaptionAssAsync(project, captionAss, ct))
+            if (await WriteBoldCaptionAssAsync(project, settings, captionAss, log, ct))
             {
                 var captionedMp4 = Path.Combine(renderDir, "video-with-styled-captions.mp4");
-                log?.Invoke("Rendering bold vertical captions: large white uppercase, " +
-                    "black outline, cyan emphasis; narration scene timing is estimated.");
+                log?.Invoke("Rendering bold vertical captions: smaller all-white uppercase text, " +
+                    "black outline, timed to detected narration speech and pauses.");
                 // 'ass' supports color override spans; use a short relative
                 // filename to avoid Windows drive-letter filter escaping.
                 var renderArgs = $"-y -i \"{finalPath}\" -vf \"ass=styled-video-captions.ass\" " +
@@ -561,12 +561,93 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         chapter.TargetSeconds = (int)Math.Round(actualAudioSeconds);
     }
 
-    // Creates ASS events from the project narration for punchy, legible
-    // vertical in-video captions. Scene-level audio timings are available;
-    // exact spoken-word timestamps are not, so distribute groups in proportion
-    // to their word counts. Original .SRT export remains independent.
-    private static async Task<bool> WriteBoldCaptionAssAsync(
-        VideoProject project, string path, CancellationToken ct)
+    // FFmpeg's silencedetect runs on the ORIGINAL chapter TTS track (before
+    // background music is mixed), so quiet music cannot skew subtitle timing.
+    // This is pause-aware speech timing, not phoneme/word forced alignment.
+    private async Task<List<(double Start, double End)>> DetectNarrationSpeechAsync(
+        ProjectChapter chapter, ZeroVideoSettings settings, double seconds,
+        Action<string>? log, CancellationToken ct)
+    {
+        var fallback = new List<(double Start, double End)> { (0, seconds) };
+        if (string.IsNullOrWhiteSpace(chapter.AudioPath) ||
+            !File.Exists(chapter.AudioPath) || seconds <= 0) return fallback;
+        try
+        {
+            // Silence events are emitted to stderr. The null output is local
+            // Windows FFmpeg, so it does not affect existing uploaded media.
+            var args = $"-hide_banner -nostats -i \"{chapter.AudioPath}\" " +
+                "-af silencedetect=noise=-37dB:d=0.14 -f null NUL";
+            var result = await runner.RunAsync(settings.FfmpegPath, args, ct: ct);
+            if (result.ExitCode != 0) return fallback;
+            var events = Regex.Matches(result.StdErr ?? "",
+                @"silence_(start|end):\s*(-?\d+(?:\.\d+)?)", RegexOptions.IgnoreCase);
+            if (events.Count == 0) return fallback;
+
+            var active = new List<(double Start, double End)>();
+            double? talkingFrom = 0;
+            foreach (Match match in events)
+            {
+                ct.ThrowIfCancellationRequested();
+                var type = match.Groups[1].Value;
+                if (!double.TryParse(match.Groups[2].Value, NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out var time)) continue;
+                time = Math.Clamp(time, 0, seconds);
+                if (type.Equals("start", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (talkingFrom.HasValue && time > talkingFrom.Value + 0.055)
+                        active.Add((talkingFrom.Value, time));
+                    talkingFrom = null;
+                }
+                else
+                {
+                    talkingFrom = time;
+                }
+            }
+            if (talkingFrom.HasValue && seconds > talkingFrom.Value + 0.055)
+                active.Add((talkingFrom.Value, seconds));
+            // Keep only substantial speech activity. A short quiet first/last
+            // part is fine, but detection errors must not zero the captions.
+            var total = active.Sum(x => x.End - x.Start);
+            if (active.Count == 0 || total < seconds * 0.20) return fallback;
+            log?.Invoke($"Captions chapter {chapter.Number}: analyzed voice track, " +
+                $"{active.Count} speech section(s), {total:0.0}/{seconds:0.0}s audible.");
+            return active;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            log?.Invoke($"Captions chapter {chapter.Number}: speech analysis unavailable " +
+                $"({ex.Message}); using chapter timing.");
+            return fallback;
+        }
+    }
+
+    private static double SpeechPosition(
+        IReadOnlyList<(double Start, double End)> intervals, double progress)
+    {
+        var total = intervals.Sum(x => x.End - x.Start);
+        if (total <= 0) return 0;
+        var remaining = Math.Clamp(progress, 0, 1) * total;
+        foreach (var span in intervals)
+        {
+            var duration = span.End - span.Start;
+            if (remaining <= duration) return span.Start + remaining;
+            remaining -= duration;
+        }
+        return intervals[^1].End;
+    }
+
+    // Pronunciation pace differs between short and long words; a light
+    // syllable-length estimate distributes narration between audio pauses.
+    private static double CaptionWordWeight(string word)
+    {
+        var clean = Regex.Replace(word, @"[^\p{L}\p{N}]", "");
+        return Math.Clamp(clean.Length / 4.2, 0.85, 3.4);
+    }
+
+    private async Task<bool> WriteBoldCaptionAssAsync(
+        VideoProject project, ZeroVideoSettings settings, string path,
+        Action<string>? log, CancellationToken ct)
     {
         var sb = new StringBuilder();
         sb.AppendLine("[Script Info]")
@@ -578,72 +659,77 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
           .AppendLine()
           .AppendLine("[V4+ Styles]")
           .AppendLine("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
-          .AppendLine("Style: Punchy,Arial Black,104,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,9,0,2,64,64,350,1")
+          .AppendLine("Style: Punchy,Arial Black,88,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,7,0,2,64,64,350,1")
           .AppendLine()
           .AppendLine("[Events]")
           .AppendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
+
         var elapsed = 0.0;
-        var count = 0;
+        var captions = 0;
         foreach (var chapter in project.Chapters)
         {
-            foreach (var scene in chapter.Scenes)
+            ct.ThrowIfCancellationRequested();
+            // The actual duration of the TTS chapter is the only reliable
+            // boundary between concatenated audio chapters.
+            var seconds = !string.IsNullOrWhiteSpace(chapter.AudioPath) &&
+                File.Exists(chapter.AudioPath)
+                ? await ProbeDurationAsync(chapter.AudioPath, settings, ct)
+                : 0;
+            if (seconds <= 0)
+                seconds = Math.Max(0.1, chapter.Scenes.Sum(sc => Math.Max(0.1, sc.TargetSeconds)));
+
+            var active = await DetectNarrationSpeechAsync(chapter, settings, seconds, log, ct);
+            var groups = new List<List<string>>();
+            var current = new List<string>();
+            // Clipchamp TTS uses chapter.Narration as its input, NOT the
+            // individual scene texts. Align exactly that narration first.
+            var script = !string.IsNullOrWhiteSpace(chapter.Narration)
+                ? chapter.Narration
+                : string.Join(" ", chapter.Scenes.Select(scene => scene.Narration));
+            var words = Regex.Matches(script,
+                @"[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*[.!?,;:]?")
+                .Select(m => m.Value).ToList();
+            foreach (var word in words)
             {
-                ct.ThrowIfCancellationRequested();
-                var seconds = Math.Max(0.1, scene.TargetSeconds);
-                // Preserve apostrophes and punctuation while avoiding
-                // multiline/ASS control sequence injection in subtitles.
-                var words = Regex.Matches(scene.Narration ?? "",
-                    @"[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*[.!?,;:]?")
-                    .Select(m => m.Value).ToList();
-                var groups = new List<List<string>>();
-                var current = new List<string>();
-                foreach (var word in words)
+                var proposedLength = current.Sum(x => x.Length) + current.Count + word.Length;
+                if (current.Count > 0 && (current.Count >= 4 || proposedLength > 20))
                 {
-                    var proposedLength = current.Sum(w => w.Length) + current.Count + word.Length;
-                    if (current.Count > 0 && (current.Count >= 4 || proposedLength > 20))
-                    {
-                        groups.Add(current);
-                        current = new List<string>();
-                    }
-                    current.Add(word);
+                    groups.Add(current);
+                    current = new List<string>();
                 }
-                if (current.Count > 0) groups.Add(current);
-                if (groups.Count > 0)
-                {
-                    var wordTotal = groups.Sum(g => g.Count);
-                    var passed = 0;
-                    foreach (var group in groups)
-                    {
-                        var from = elapsed + seconds * passed / wordTotal;
-                        passed += group.Count;
-                        var to = elapsed + seconds * passed / wordTotal;
-                        if (to <= from) continue;
-                        var first = EscapeAssCaptionWord(group[0]);
-                        var rest = string.Join(" ", group.Skip(1).Select(EscapeAssCaptionWord));
-                        // ASS uses BGR ordering. Cyan #00D9FF => &HFFD900&.
-                        var styled = "{\\1c&HFFD900&}" + first +
-                            "{\\1c&HFFFFFF&}" +
-                            (rest.Length > 0 ? " " + rest : "");
-                        sb.Append("Dialogue: 0,")
-                          .Append(AssCaptionTime(from)).Append(',')
-                          .Append(AssCaptionTime(to))
-                          .Append(",Punchy,,0,0,0,,")
-                          .AppendLine(styled);
-                        count++;
-                    }
-                }
-                elapsed += seconds;
+                current.Add(word);
             }
+            if (current.Count > 0) groups.Add(current);
+
+            var chapterWeight = groups.Sum(g => g.Sum(CaptionWordWeight));
+            var used = 0.0;
+            foreach (var group in groups)
+            {
+                var groupWeight = group.Sum(CaptionWordWeight);
+                var from = elapsed + SpeechPosition(active, used / Math.Max(0.001, chapterWeight));
+                used += groupWeight;
+                var to = elapsed + SpeechPosition(active, used / Math.Max(0.001, chapterWeight));
+                if (to - from < 0.08) continue;
+                var caption = string.Join(" ", group.Select(EscapeAssCaptionWord));
+                sb.Append("Dialogue: 0,")
+                  .Append(AssCaptionTime(from)).Append(',')
+                  .Append(AssCaptionTime(to))
+                  .Append(",Punchy,,0,0,0,,")
+                  .AppendLine(caption); // All text stays white: no color overrides.
+                captions++;
+            }
+            elapsed += seconds;
         }
-        if (count == 0) return false;
+
+        if (captions == 0) return false;
         await File.WriteAllTextAsync(path, sb.ToString(), new UTF8Encoding(false), ct);
+        log?.Invoke($"Audio-aware captions written: {captions} short phrases, " +
+            "white only, 88pt; timing follows detected narration speech/pause regions.");
         return true;
     }
 
     private static string EscapeAssCaptionWord(string value)
     {
-        // Remove control tokens. Generated words use Unicode letters and
-        // numbers plus selected punctuation; these escapes are defensive.
         var upper = value.ToUpperInvariant();
         return upper.Replace("\\", "").Replace("{", "").Replace("}", "");
     }
