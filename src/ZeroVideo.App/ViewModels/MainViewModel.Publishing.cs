@@ -299,8 +299,27 @@ public sealed partial class MainViewModel
             if (!youtube && string.IsNullOrWhiteSpace(TikTokCaptionText))
             { PublishStatus = "Generate or enter the TikTok caption first."; return; }
             var site = youtube ? "YouTube Studio" : "TikTok Studio";
-            if (MessageBox.Show("Open " + site + " for this video? The browser uploader still requires manual review and final submission.",
-                "Prepare browser publishing", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+            if (!youtube && SelectedPublishItem is { } existingItem &&
+                (existingItem.TikTokStatus.Equals("Scheduled", StringComparison.OrdinalIgnoreCase) ||
+                 existingItem.TikTokStatus.Equals("Published", StringComparison.OrdinalIgnoreCase) ||
+                 existingItem.TikTokStatus.StartsWith("Submission attempted", StringComparison.OrdinalIgnoreCase)))
+            {
+                PublishStatus = "TikTok submission was already attempted for this video. Check TikTok Studio Posts before starting another upload; a retry could create a duplicate.";
+                return;
+            }
+            var warning = youtube
+                ? "Open YouTube Studio for this video? Final YouTube submission still requires manual review."
+                : "AUTOMATIC TIKTOK SUBMISSION\n\n" +
+                  "ZeroVideo will upload this selected video, set its schedule when requested, then CLICK TikTok's final " +
+                  (SelectedPublishItem?.IsScheduled == true ? "Schedule" : "Post") +
+                  " button automatically, without a second confirmation in TikTok Studio.\n\n" +
+                  (SelectedPublishItem?.IsScheduled == true
+                    ? "Scheduled local time: " + SelectedPublishItem.ScheduleDateText + "\n\n" :
+                      "This video is currently set to post immediately.\n\n") +
+                  "Only continue if you authorize this video to be submitted now. Check the caption, privacy, and rights first.\n" +
+                  "If TikTok's receipt is unclear, ZeroVideo will not retry automatically.";
+            if (MessageBox.Show(warning, youtube ? "Prepare YouTube publishing" : "Confirm automatic TikTok publishing",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
             try
             {
                 var uploader = new StudioUploadService(_browser);
@@ -339,7 +358,24 @@ public sealed partial class MainViewModel
                         Log(message);
                         Application.Current.Dispatcher.Invoke(() => PublishStatus = message);
                     }, _cts.Token);
-                PublishCheckpointStage = "Video selected";
+                if (!youtube && SelectedPublishItem is { } item &&
+                    result.StartsWith("TikTok: SUBMISSION_", StringComparison.Ordinal))
+                {
+                    var confirmed = result.StartsWith("TikTok: SUBMISSION_CONFIRMED",
+                        StringComparison.Ordinal);
+                    item.TikTokStatus = confirmed
+                        ? (requestedSlot.HasValue ? "Scheduled" : "Published")
+                        : "Submission attempted - check Studio";
+                    PublishCheckpointStage = confirmed ? "Platform confirmed" : "Upload accepted";
+                    PublishCheckpointNote = confirmed
+                        ? "TikTok showed explicit confirmation after final submission."
+                        : "Final TikTok action clicked once. Outcome not confirmed. Verify in TikTok Studio Posts before retrying.";
+                    SavePublishingQueue();
+                }
+                else
+                {
+                    PublishCheckpointStage = "Video selected";
+                }
                 SaveSelectedCheckpoint();
                 PublishStatus = result;
             }
