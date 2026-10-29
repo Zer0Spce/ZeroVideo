@@ -306,7 +306,11 @@ public sealed partial class MainViewModel
                 var uploader = new StudioUploadService(_browser);
                 PublishStatus = "Preparing " + site + " upload with Playwright...";
                 var result = await uploader.PrepareAsync(Settings, PublishDestination, PublishFile,
-                    YouTubeTitleText, YouTubeDescriptionText, TikTokCaptionText, PublishThumbnail, message =>
+                    YouTubeTitleText, YouTubeDescriptionText, TikTokCaptionText, PublishThumbnail,
+                    SelectedPublishItem?.IsScheduled == true ? SelectedPublishItem.ScheduledAt :
+                    (DateTime.TryParseExact(PublishSchedule, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture,
+                        DateTimeStyles.AssumeLocal, out var chosen) && chosen > DateTime.Now
+                        ? new DateTimeOffset(chosen) : null), message =>
                     {
                         Log(message);
                         Application.Current.Dispatcher.Invoke(() => PublishStatus = message);

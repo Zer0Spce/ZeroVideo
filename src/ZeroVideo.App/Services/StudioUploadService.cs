@@ -79,9 +79,51 @@ public sealed class StudioUploadService(BrowserSession browser)
         }
     }
 
+
+    private static async Task<bool> SetTikTokScheduleAsync(IPage page, DateTimeOffset slot, Action<string>? log, CancellationToken ct)
+    {
+        var local = slot.LocalDateTime;
+        if (local <= DateTime.Now.AddMinutes(20))
+            throw new InvalidOperationException("Scheduled time must be at least 20 minutes in the future.");
+        var radio = page.GetByText("Schedule", new() { Exact = true }).First;
+        await radio.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 30000 });
+        await radio.ClickAsync();
+        await Task.Delay(750, ct);
+        log?.Invoke("TikTok: Schedule selected for " + local.ToString("yyyy-MM-dd HH:mm") + " local time.");
+        var dateDone = false;
+        var timeDone = false;
+        foreach (var frame in page.Frames)
+        {
+            var dates = frame.Locator("input[type='date'], input[placeholder*='date' i], input[placeholder*='yyyy' i]");
+            for (var i = 0; i < await dates.CountAsync(); i++)
+            {
+                var field = dates.Nth(i);
+                if (!await field.IsVisibleAsync()) continue;
+                try { await field.FillAsync(local.ToString("yyyy-MM-dd")); await field.PressAsync("Tab"); dateDone = true; break; }
+                catch (PlaywrightException) { }
+            }
+            var times = frame.Locator("input[type='time'], input[placeholder*='time' i], input[placeholder*='hh' i]");
+            for (var i = 0; i < await times.CountAsync(); i++)
+            {
+                var field = times.Nth(i);
+                if (!await field.IsVisibleAsync()) continue;
+                try { await field.FillAsync(local.ToString("HH:mm")); await field.PressAsync("Tab"); timeDone = true; break; }
+                catch (PlaywrightException) { }
+            }
+        }
+        if (!dateDone || !timeDone)
+        {
+            var screenshot = await SaveDiagnosticAsync(page, "TikTok-Schedule", log);
+            log?.Invoke("TikTok: schedule switch selected but date/time fields require manual selection. Screenshot: " + screenshot);
+            return false;
+        }
+        log?.Invoke("TikTok: schedule fields entered. Verify timezone and date/time before manually submitting.");
+        return true;
+    }
+
     public async Task<string> PrepareAsync(ZeroVideoSettings settings, string destination,
         string videoPath, string title, string description, string caption, string thumbnailPath,
-        Action<string>? log = null, CancellationToken ct = default)
+        DateTimeOffset? scheduledAt, Action<string>? log = null, CancellationToken ct = default)
     {
         if (!File.Exists(videoPath)) throw new FileNotFoundException("Video is missing.", videoPath);
         if (new FileInfo(videoPath).Length == 0) throw new IOException("Video is empty.");
@@ -220,6 +262,16 @@ public sealed class StudioUploadService(BrowserSession browser)
             }
             log?.Invoke(filled ? "TikTok: caption entered; review before posting." :
                 "TikTok: video selected, but caption input did not appear. Enter the prepared caption manually.");
+            if (scheduledAt.HasValue)
+            {
+                try { await SetTikTokScheduleAsync(page, scheduledAt.Value, log, ct); }
+                catch (Exception ex) when (ex is PlaywrightException or TimeoutException or InvalidOperationException)
+                {
+                    var screenshot = await SaveDiagnosticAsync(page, "TikTok-Schedule", log);
+                    log?.Invoke("TikTok: schedule setup failed: " + ex.Message +
+                        ". Set it manually before submission. Screenshot: " + screenshot);
+                }
+            }
         }
         return destination + ": video selected in Studio. Review upload completion, metadata, thumbnail and " +
             "schedule/privacy before manually confirming. No post has been submitted.";
