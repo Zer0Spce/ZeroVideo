@@ -83,121 +83,137 @@ public sealed class StudioUploadService(BrowserSession browser)
 
     // TikTok's scheduling widgets are custom popup pickers, not standard HTML
     // date/time fields. Read values from their CLOSED controls after each action.
+    // TikTok Studio renders its own calendar and two-column time picker.
+    // The ordinary input and generic page-text locators do not commit these controls.
     private static async Task<bool> SetTikTokScheduleAsync(IPage page, DateTimeOffset slot,
         Action<string>? log, CancellationToken ct)
     {
         var target = slot.LocalDateTime;
         if (target <= DateTime.Now.AddMinutes(20))
-            throw new InvalidOperationException("The requested TikTok schedule must be in the future.");
+            throw new InvalidOperationException("TikTok schedule must be at least 20 minutes ahead.");
+        if (target.Minute % 5 != 0)
+            throw new InvalidOperationException("TikTok time picker uses 5-minute intervals. Choose a time ending in 00, 05, 10, etc. Requested: " + target.ToString("HH:mm"));
 
-        // Commit the caption and close the hashtags popup before touching scheduling.
-        var caption = page.Locator("[contenteditable=true]").First;
-        if (await caption.CountAsync() > 0)
-            await caption.PressAsync("Tab", new() { Timeout = 3000 });
+        // Blur caption and close hashtag completion menu before opening Schedule.
+        var editor = page.Locator("[contenteditable=true]").First;
+        if (await editor.CountAsync() > 0 && await editor.IsVisibleAsync())
+            await editor.PressAsync("Tab", new() { Timeout = 3500 });
         await page.Keyboard.PressAsync("Escape");
         await page.GetByText("Schedule", new() { Exact = true }).First.ClickAsync();
-        await Task.Delay(600, ct);
+        await Task.Delay(400, ct);
+        log?.Invoke("TikTok: selecting " + target.ToString("yyyy-MM-dd HH:mm") + " local time.");
 
-        var requestedDate = target.ToString("MMM d, yyyy", System.Globalization.CultureInfo.GetCultureInfo("en-US"));
-        var requestedTime = target.ToString("HH:mm");
-        log?.Invoke("TikTok: setting schedule to " + requestedDate + " at " + requestedTime + " (local).");
-
-        // TikTok's gray selectors are not ordinary editable date/time inputs.
-        // Read the visible trigger and choose options inside the OPEN popup.
-        var dateTrigger = page.Locator("button, [role=button], [role=combobox], [class*=select], [class*=Select]")
-            .Filter(new() { HasTextRegex = new System.Text.RegularExpressions.Regex(
-                @"[A-Za-z]{3}\s+\d{1,2},?\s+\d{4}") }).First;
-        if (await dateTrigger.CountAsync() > 0)
+        var datePicker = page.Locator(".date-picker-input").First;
+        var dateOk = false;
+        if (await datePicker.CountAsync() > 0)
         {
-            await dateTrigger.ClickAsync(new() { Timeout = 7000 });
-            await Task.Delay(500, ct);
-            var iso = target.ToString("yyyy-MM-dd");
-            var full = target.ToString("MMMM d, yyyy", System.Globalization.CultureInfo.GetCultureInfo("en-US"));
-            var dateCell = page.Locator(
-                "[data-date='" + iso + "'], [aria-label='" + full + "'], [title='" + full + "'], [datetime='" + iso + "']").First;
-            if (await dateCell.CountAsync() > 0 && await dateCell.IsVisibleAsync())
-                await dateCell.ClickAsync(new() { Timeout = 7000 });
-            else
+            await datePicker.ClickAsync();
+            var calendar = page.Locator(".calendar-wrapper").First;
+            await calendar.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 10000 });
+            for (var i = 0; i < 18; i++)
             {
-                // Navigate the calendar by its month/year heading before choosing
-                // a day. Never select a generic 29 from some other month.
-                for (var attempt = 0; attempt < 18; attempt++)
+                ct.ThrowIfCancellationRequested();
+                var monthTitle = calendar.Locator(".month-title").First;
+                var monthLabel = (await monthTitle.InnerTextAsync()).Trim();
+                var month = DateTime.MinValue;
+                foreach (var fmt in new[] { "MMMM yyyy", "MMMM", "MMM yyyy", "MMM" })
                 {
-                    ct.ThrowIfCancellationRequested();
-                    var heading = page.Locator("[class*=calendar] [class*=header], [class*=Calendar] [class*=header], [class*=calendar] [class*=title], [class*=Calendar] [class*=title]").First;
-                    var label = await heading.CountAsync() > 0 ? await heading.InnerTextAsync() : "";
-                    var month = target.ToString("MMMM", System.Globalization.CultureInfo.GetCultureInfo("en-US"));
-                    if (label.Contains(month, StringComparison.OrdinalIgnoreCase) &&
-                        label.Contains(target.Year.ToString(), StringComparison.Ordinal)) break;
-                    var match = System.Text.RegularExpressions.Regex.Match(label, @"([A-Za-z]+)\s+(\d{4})");
-                    if (!match.Success || !DateTime.TryParseExact(match.Value, "MMMM yyyy",
+                    if (DateTime.TryParseExact(monthLabel, fmt,
                         System.Globalization.CultureInfo.GetCultureInfo("en-US"),
-                        System.Globalization.DateTimeStyles.None, out var shown)) break;
-                    var forward = new DateTime(target.Year, target.Month, 1) > shown;
-                    var arrow = page.Locator(forward
-                        ? "[aria-label*='next month' i], [class*=calendar] [class*=next], [class*=Calendar] [class*=next]"
-                        : "[aria-label*='previous month' i], [class*=calendar] [class*=prev], [class*=Calendar] [class*=prev]").First;
-                    if (await arrow.CountAsync() == 0) break;
-                    await arrow.ClickAsync(new() { Timeout = 5000 });
-                    await Task.Delay(250, ct);
-                }
-                // Match a day of CURRENT month, excluding disabled/outside cells.
-                var day = page.Locator("[role=gridcell]:not([aria-disabled=true]), [class*=calendar] [class*=day]:not([class*=disabled]):not([class*=outside]), [class*=Calendar] [class*=day]:not([class*=disabled]):not([class*=outside])")
-                    .Filter(new() { HasTextRegex = new System.Text.RegularExpressions.Regex(
-                        @"^\s*" + target.Day + @"\s*$") }).First;
-                if (await day.CountAsync() > 0 && await day.IsVisibleAsync())
-                    await day.ClickAsync(new() { Timeout = 7000 });
-            }
-        }
-        await page.Keyboard.PressAsync("Escape");
-        await Task.Delay(350, ct);
-
-        var timeTrigger = page.Locator("button, [role=button], [role=combobox], [class*=select], [class*=Select]")
-            .Filter(new() { HasTextRegex = new System.Text.RegularExpressions.Regex(@"^\s*\d{1,2}:\d{2}\s*$") }).First;
-        if (await timeTrigger.CountAsync() > 0)
-        {
-            await timeTrigger.ClickAsync(new() { Timeout = 7000 });
-            await Task.Delay(450, ct);
-            // TikTok's time popup can show one full-time option or separate
-            // scrollable columns. Click only an option INSIDE the visible popup.
-            var pop = page.Locator("[role=listbox]:visible, [role=dialog]:visible, [class*=timePicker]:visible, [class*=TimePicker]:visible, [class*=time-picker]:visible, [class*=dropdown]:visible").Last;
-            if (await pop.CountAsync() > 0)
-            {
-                var exact = pop.GetByText(requestedTime, new() { Exact = true }).First;
-                if (await exact.CountAsync() > 0 && await exact.IsVisibleAsync())
-                    await exact.ClickAsync(new() { Timeout = 7000 });
-                else
-                {
-                    var hours = pop.GetByText(target.ToString("HH"), new() { Exact = true });
-                    var mins = pop.GetByText(target.ToString("mm"), new() { Exact = true });
-                    if (await hours.CountAsync() > 0 && await mins.CountAsync() > 0)
+                        System.Globalization.DateTimeStyles.None, out var parsed))
                     {
-                        await hours.Last.ScrollIntoViewIfNeededAsync();
-                        await hours.Last.ClickAsync(new() { Timeout = 7000 });
-                        await mins.Last.ScrollIntoViewIfNeededAsync();
-                        await mins.Last.ClickAsync(new() { Timeout = 7000 });
+                        month = parsed;
+                        break;
                     }
                 }
+                if (month == DateTime.MinValue)
+                    throw new InvalidOperationException("TikTok calendar month could not be interpreted: " + monthLabel);
+                var currentMonth = month.Month;
+                var currentYear = monthLabel.Contains(target.Year.ToString()) ? target.Year :
+                    monthLabel.Contains(DateTime.Now.Year.ToString()) ? DateTime.Now.Year : target.Year;
+                var delta = (target.Year - currentYear) * 12 + target.Month - currentMonth;
+                if (delta == 0) break;
+                var arrows = calendar.Locator("span[class*='arrow']");
+                if (await arrows.CountAsync() < 2)
+                    throw new InvalidOperationException("TikTok calendar month arrows not available.");
+                await (delta > 0 ? arrows.Last : arrows.First).ClickAsync();
+                await Task.Delay(180, ct);
+            }
+            // Only valid current-month day cells; duplicate days from previous/next
+            // month must never be selected.
+            var validDays = calendar.Locator(".days-wrapper span[class*='day'][class*='valid']");
+            for (var i = 0; i < await validDays.CountAsync(); i++)
+            {
+                var cell = validDays.Nth(i);
+                if ((await cell.InnerTextAsync()).Trim() != target.Day.ToString()) continue;
+                await cell.ClickAsync(new() { Timeout = 7000 });
+                dateOk = true;
+                break;
             }
         }
-        await page.Keyboard.PressAsync("Escape");
-        await Task.Delay(450, ct);
-
-        // Check only the two CLOSED trigger values (not the popup's choices).
-        var selectedDate = await dateTrigger.CountAsync() > 0 ? (await dateTrigger.InnerTextAsync()).Trim() : "";
-        var selectedTime = await timeTrigger.CountAsync() > 0 ? (await timeTrigger.InnerTextAsync()).Trim() : "";
-        var dateMatch = DateTime.TryParse(selectedDate,
-            System.Globalization.CultureInfo.GetCultureInfo("en-US"),
-            System.Globalization.DateTimeStyles.None, out var readDate) && readDate.Date == target.Date;
-        var timeMatch = selectedTime == requestedTime || selectedTime == target.ToString("H:mm");
-        if (!dateMatch || !timeMatch)
+        else
         {
-            var diagnostic = await SaveDiagnosticAsync(page, "TikTok-Schedule-Picker", log);
-            log?.Invoke("TikTok schedule NOT set. Requested " + requestedDate + " " + requestedTime +
-                "; selected " + selectedDate + " " + selectedTime + ". Screenshot: " + diagnostic);
-            return false;
+            log?.Invoke("TikTok: custom date-picker-input unavailable; no speculative calendar click performed.");
         }
-        log?.Invoke("TikTok schedule verified on controls: " + selectedDate + " " + selectedTime);
+        if (!dateOk)
+            throw new InvalidOperationException("TikTok calendar did not select requested day " + target.ToString("yyyy-MM-dd"));
+
+        var timePicker = page.Locator(".time-picker-input").First;
+        var timeOk = false;
+        if (await timePicker.CountAsync() > 0)
+        {
+            await timePicker.ClickAsync();
+            var container = page.Locator(".tiktok-timepicker-time-picker-container").First;
+            await container.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 10000 });
+            var hours = container.Locator("span[class*='tiktok-timepicker-left']");
+            var minutes = container.Locator("span[class*='tiktok-timepicker-right']");
+            // TikTok hour options are 00..23 and minutes are 00,05,...55.
+            if (await hours.CountAsync() >= 24 && await minutes.CountAsync() >= 12)
+            {
+                var hour = hours.Nth(target.Hour);
+                var minute = minutes.Nth(target.Minute / 5);
+                await hour.ScrollIntoViewIfNeededAsync();
+                await hour.ClickAsync();
+                await Task.Delay(150, ct);
+                await minute.ScrollIntoViewIfNeededAsync();
+                await minute.ClickAsync();
+                await timePicker.ClickAsync();
+            }
+            else
+            {
+                // Same custom picker, alternate DOM structure: select exact values
+                // from each separate column rather than clicking arbitrary page text.
+                var hour = hours.Filter(new() { HasTextRegex = new System.Text.RegularExpressions.Regex(
+                    @"^\s*" + target.ToString("HH") + @"\s*$") }).First;
+                var minute = minutes.Filter(new() { HasTextRegex = new System.Text.RegularExpressions.Regex(
+                    @"^\s*" + target.ToString("mm") + @"\s*$") }).First;
+                if (await hour.CountAsync() > 0 && await minute.CountAsync() > 0)
+                {
+                    await hour.ScrollIntoViewIfNeededAsync();
+                    await hour.ClickAsync();
+                    await minute.ScrollIntoViewIfNeededAsync();
+                    await minute.ClickAsync();
+                    await timePicker.ClickAsync();
+                }
+            }
+            var selected = (await timePicker.InnerTextAsync()).Trim();
+            timeOk = selected.Contains(target.ToString("HH:mm"), StringComparison.Ordinal);
+            log?.Invoke("TikTok: time picker displays " + selected + ", requested " + target.ToString("HH:mm"));
+        }
+        if (!timeOk)
+            throw new InvalidOperationException("TikTok time picker did not commit requested " + target.ToString("HH:mm"));
+
+        var chosenDate = (await datePicker.InnerTextAsync()).Trim();
+        var dateMatches = DateTime.TryParse(chosenDate, System.Globalization.CultureInfo.GetCultureInfo("en-US"),
+            System.Globalization.DateTimeStyles.None, out var parsedDate) && parsedDate.Date == target.Date;
+        // Original TikTok component also uses yyyy-MM-dd as a closed picker label.
+        if (!dateMatches)
+            dateMatches = chosenDate.Contains(target.ToString("yyyy-MM-dd"), StringComparison.Ordinal);
+        if (!dateMatches)
+            throw new InvalidOperationException("TikTok date did not commit. Requested " +
+                target.ToString("yyyy-MM-dd") + ", actual " + chosenDate);
+        log?.Invoke("TikTok: schedule controls VERIFIED " + chosenDate + " " + target.ToString("HH:mm") +
+            ". Manually review before final Schedule submission.");
         return true;
     }
 
