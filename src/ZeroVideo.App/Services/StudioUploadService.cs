@@ -82,84 +82,178 @@ public sealed class StudioUploadService(BrowserSession browser)
 
 
 
-    // The October 2026 TikTok picker shows a 7-column grid with adjacent-month
-    // dates. Select the intended grid position, NOT an ambiguous "30" text
-    // locator. Mouse coordinates are derived from real DOM bounding boxes.
-    private static async Task<bool> ClickTikTokCalendarGridDayAsync(IPage page,
-        DateTime target, Action<string>? log, CancellationToken ct)
+    // Read the calendar by its VISIBLE month/year heading and 7-column day
+    // grid, not TikTok's changing CSS class names. The October 2026 DOM in the
+    // provided diagnostic renders a calendar that our old selectors cannot find.
+    // Only click when the grid index and number agree with the target date.
+    private static async Task<bool> SelectTikTokVisualCalendarAsync(
+        IPage page, ILocator trigger, DateTime target, Action<string>? log, CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
-        var grid = page.Locator(".days-wrapper:visible").First;
-        if (await grid.CountAsync() == 0)
-            grid = page.Locator("[role=grid]:visible").First;
-        if (await grid.CountAsync() == 0)
-        {
-            log?.Invoke("TikTok: numeric day grid not found.");
-            return false;
-        }
-        const string findCell = @"
-(root, args) => {
-  const gr = root.getBoundingClientRect();
-  const candidates = [];
-  for (const el of root.querySelectorAll('span,button,div,li,[role=gridcell]')) {
-    const t = (el.textContent || '').trim();
-    if (!/^(?:[1-9]|[12][0-9]|3[01])$/.test(t)) continue;
-    // Only leaf day-number nodes; ignore enclosing rows and grids.
-    if ([...el.children].some(c => /^(?:[1-9]|[12][0-9]|3[01])$/.test((c.textContent || '').trim()))) continue;
-    const rect = el.getBoundingClientRect();
-    if (rect.width < 5 || rect.height < 5 || rect.width > 100 || rect.height > 80) continue;
-    const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
-    if (x < gr.left - 4 || x > gr.right + 4 || y < gr.top - 4 || y > gr.bottom + 4) continue;
-    if (getComputedStyle(el).visibility === 'hidden') continue;
-    candidates.push({n:Number(t),x,y,cl:String(el.className||'')});
+        const string probeScript = @"
+(args) => {
+  const months=['January','February','March','April','May','June','July',
+    'August','September','October','November','December'];
+  const styleVisible = el => {
+    const r=el.getBoundingClientRect(), s=getComputedStyle(el);
+    return r.width>3 && r.height>3 && s.display!=='none' && s.visibility!=='hidden';
+  };
+  const smallLeaf = el => {
+    const t=(el.textContent||'').trim();
+    return ![...el.children].some(c=>(c.textContent||'').trim()===t);
+  };
+  const nodes=[...document.querySelectorAll('body *')].filter(
+    el=>styleVisible(el) && smallLeaf(el));
+  const monthCandidates = nodes.filter(el=>months.some(m=>
+    m.toLowerCase()===(el.textContent||'').trim().toLowerCase()));
+  const nearby = monthCandidates.map(el=>{
+    const r=el.getBoundingClientRect();
+    const x=r.left+r.width/2,y=r.top+r.height/2;
+    return { el,x,y,idx:months.findIndex(m=>
+      m.toLowerCase()===(el.textContent||'').trim().toLowerCase()),
+      score:Math.abs(x-(args.x+110))*0.7+Math.abs(y-args.y) };
+  }).filter(m=>m.x>args.x-130 && m.x<args.x+530 &&
+    m.y>args.y-600 && m.y<args.y+440)
+    .sort((a,b)=>a.score-b.score);
+  if (!nearby.length) return {error:'No visible calendar month header'};
+  const header=nearby[0];
+  const hr=header.el.getBoundingClientRect();
+  const years=nodes.filter(el=>/^20\d{2}$/.test((el.textContent||'').trim()))
+    .map(el=>{
+      const r=el.getBoundingClientRect();
+      return {year:Number((el.textContent||'').trim()),
+        x:r.left+r.width/2,y:r.top+r.height/2};
+    }).filter(y=>Math.abs(y.y-header.y)<35 && Math.abs(y.x-header.x)<240)
+    .sort((a,b)=>Math.abs(a.x-header.x)-Math.abs(b.x-header.x));
+  const shownYear=years.length?years[0].year:args.initialYear;
+  const shownMonth=header.idx+1;
+  const delta=(args.targetYear-shownYear)*12+args.targetMonth-shownMonth;
+  const left=header.x-265, right=header.x+335;
+  const top=hr.bottom+22;
+  const bottom=header.y<args.y ? Math.min(args.y-6,top+360) : top+390;
+  const dayNodes = nodes.filter(el=>{
+    const t=(el.textContent||'').trim();
+    if (!/^(?:[1-9]|[12][0-9]|3[01])$/.test(t)) return false;
+    const r=el.getBoundingClientRect();
+    const x=r.left+r.width/2,y=r.top+r.height/2;
+    return x>left && x<right && y>top && y<bottom &&
+      r.width<105 && r.height<90;
+  }).map(el=>{
+    const r=el.getBoundingClientRect();
+    return {n:Number((el.textContent||'').trim()),
+      x:r.left+r.width/2,y:r.top+r.height/2};
+  });
+  // Ignore overlapping ancestors that duplicate the same day glyph.
+  const dedup=[];
+  for (const item of dayNodes) {
+    if (!dedup.some(d=>Math.abs(d.x-item.x)<17 && Math.abs(d.y-item.y)<17))
+      dedup.push(item);
   }
-  // Multiple nested nodes can share a center; remove duplicates geometrically.
-  const unique=[];
-  for (const e of candidates) {
-    if (!unique.some(q=>Math.abs(e.x-q.x)<7 && Math.abs(e.y-q.y)<7)) unique.push(e);
+  dedup.sort((a,b)=>Math.abs(a.y-b.y)>16 ? a.y-b.y : a.x-b.x);
+  const weekday=new Date(args.targetYear,args.targetMonth-1,1).getDay();
+  const idx=weekday+args.targetDay-1;
+  const matched=dedup.length>=28 && dedup.length<=42 &&
+    dedup.length%7===0 && delta===0 && dedup[idx] &&
+    dedup[idx].n===args.targetDay;
+  const result={shownMonth,shownYear,delta,cellCount:dedup.length,
+    index:idx,observed:dedup[idx]?.n ?? -1,
+    preview:dedup.slice(0,9).map(x=>x.n).join(','),
+    x:matched?dedup[idx].x:0,y:matched?dedup[idx].y:0,
+    matched:!!matched};
+  if (delta!==0) {
+    // Locate chevron icons near the month/year heading; this is the header's
+    // only pair of horizontal navigation icons in the calendar popup.
+    const arrows=[...document.querySelectorAll('svg')].filter(styleVisible)
+      .map(el=>{ const r=el.getBoundingClientRect();
+        return {x:r.left+r.width/2,y:r.top+r.height/2,w:r.width,h:r.height};
+      }).filter(a=>a.w<50 && a.h<50 && Math.abs(a.y-header.y)<35 &&
+        a.x>header.x-200 && a.x<header.x+235);
+    const rightArrow=arrows.filter(a=>a.x>header.x+38).sort((a,b)=>b.x-a.x)[0];
+    const leftArrow=arrows.filter(a=>a.x<header.x-38).sort((a,b)=>a.x-b.x)[0];
+    const arrow=delta>0?rightArrow:leftArrow;
+    result.arrowX=arrow?.x ?? 0; result.arrowY=arrow?.y ?? 0;
   }
-  unique.sort((a,b)=>Math.abs(a.y-b.y)>10 ? a.y-b.y : a.x-b.x);
-  const firstWeekday = new Date(args.year,args.month-1,1).getDay();
-  const expectedIndex = firstWeekday + args.day - 1;
-  const picked = unique.length >= 28 && unique.length % 7 === 0
-      ? unique[expectedIndex] : null;
-  return { count:unique.length, expectedIndex, displayed:picked?.n ?? -1,
-           x:picked?.x ?? 0,y:picked?.y ?? 0,
-           sample:unique.slice(0,8).map(v=>v.n).join(',') };
+  return result;
 }";
-        var probe = await grid.EvaluateAsync<System.Text.Json.JsonElement>(
-            findCell, new { year = target.Year, month = target.Month, day = target.Day });
-        var count = probe.GetProperty("count").GetInt32();
-        var displayed = probe.GetProperty("displayed").GetInt32();
-        log?.Invoke("TikTok: calendar grid has " + count +
-            " date cells; index " + probe.GetProperty("expectedIndex").GetInt32() +
-            " contains " + displayed + " (wanted " + target.Day + ")" +
-            "; first cells: " + probe.GetProperty("sample").GetString());
-        if (displayed != target.Day) return false;
-        var x = (float)probe.GetProperty("x").GetDouble();
-        var y = (float)probe.GetProperty("y").GetDouble();
-        await page.Mouse.ClickAsync(x, y);
-        await Task.Delay(350, ct);
-        return true;
+        var anchor = await trigger.BoundingBoxAsync();
+        if (anchor is null) return false;
+        var initialLabel = (await trigger.InnerTextAsync()).Trim();
+        DateTime.TryParse(initialLabel, System.Globalization.CultureInfo.GetCultureInfo("en-US"),
+            System.Globalization.DateTimeStyles.None, out var initialDate);
+        for (var attempt = 0; attempt < 18; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var data = await page.EvaluateAsync<System.Text.Json.JsonElement>(probeScript,
+                new { x = anchor.X, y = anchor.Y,
+                    initialYear = initialDate == default ? DateTime.Today.Year : initialDate.Year,
+                    targetYear = target.Year, targetMonth = target.Month, targetDay = target.Day });
+            if (data.TryGetProperty("error", out var failure))
+            {
+                log?.Invoke("TikTok: visual calendar detection: " + failure.GetString());
+                return false;
+            }
+            var delta = data.GetProperty("delta").GetInt32();
+            var count = data.GetProperty("cellCount").GetInt32();
+            log?.Invoke("TikTok: visible calendar " +
+                data.GetProperty("shownMonth").GetInt32() + "/" +
+                data.GetProperty("shownYear").GetInt32() +
+                ", desired " + target.ToString("yyyy-MM-dd") +
+                ", offset " + delta + ", cells " + count +
+                ", index cell " + data.GetProperty("observed").GetInt32() +
+                ", preview " + data.GetProperty("preview").GetString());
+            if (delta == 0)
+            {
+                if (!data.GetProperty("matched").GetBoolean()) return false;
+                await page.Mouse.ClickAsync((float)data.GetProperty("x").GetDouble(),
+                    (float)data.GetProperty("y").GetDouble());
+                await Task.Delay(350, ct);
+                return true;
+            }
+            var arrowX = (float)data.GetProperty("arrowX").GetDouble();
+            var arrowY = (float)data.GetProperty("arrowY").GetDouble();
+            if (arrowX == 0 || arrowY == 0)
+            {
+                log?.Invoke("TikTok: no reliable month arrow visible.");
+                return false;
+            }
+            await page.Mouse.ClickAsync(arrowX, arrowY);
+            await Task.Delay(250, ct);
+        }
+        log?.Invoke("TikTok: calendar month navigation limit reached.");
+        return false;
     }
 
     private static async Task SaveTikTokCalendarDomAsync(IPage page, Action<string>? log)
     {
         try
         {
+            // Run even when all calendar CSS selectors fail. Capture the
+            // visible month text and its surrounding DOM, not the entire page.
             var html = await page.EvaluateAsync<string>(@"
-() => [...document.querySelectorAll('.calendar-wrapper, .days-wrapper, .month-title, .date-picker-input')]
-  .filter(el => el.getBoundingClientRect().width > 0)
-  .map(el=>el.outerHTML.slice(0,20000)).join('\n\n---\n\n').slice(0,65000)");
+() => {
+  const visible=e=>{ const r=e.getBoundingClientRect();
+    return r.width>0 && r.height>0 };
+  const month=/^(January|February|March|April|May|June|July|August|September|October|November|December)$/i;
+  const candidates=[...document.querySelectorAll('body *')].filter(e=>
+    visible(e) && month.test((e.textContent||'').trim()) &&
+    ![...e.children].some(c=>(c.textContent||'').trim()===(e.textContent||'').trim()));
+  return candidates.slice(0,4).map(e=>{
+    let p=e;
+    for (let n=0;n<4&&p.parentElement;n++)p=p.parentElement;
+    return p.outerHTML.slice(0,30000);
+  }).join('\n--- calendar candidate ---\n').slice(0,80000);
+}");
             var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "ZeroVideo", "PublishingDiagnostics");
             Directory.CreateDirectory(dir);
-            var dest = Path.Combine(dir,"TikTok-Calendar-DOM-" +
+            var dest = Path.Combine(dir, "TikTok-Calendar-DOM-" +
                 DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".txt");
             await File.WriteAllTextAsync(dest, html);
-            log?.Invoke("TikTok: calendar DOM diagnostic saved: " + dest);
+            log?.Invoke("TikTok: calendar HTML diagnostic saved: " + dest);
         }
-        catch (Exception e) { log?.Invoke("TikTok: calendar DOM diagnostic failed: " + e.Message); }
+        catch (Exception ex)
+        {
+            log?.Invoke("TikTok: calendar HTML diagnostic failed: " + ex.Message);
+        }
     }
 
     // TikTok Studio shows a calendar grid and a scrolling two-column hour/minute
@@ -288,121 +382,26 @@ public sealed class StudioUploadService(BrowserSession browser)
         await dateTrigger.ClickAsync(new() { Timeout = 7000 });
         await Task.Delay(350, ct);
 
-        var calendar = page.Locator(".calendar-wrapper:visible").First;
-        if (await calendar.CountAsync() == 0)
-            calendar = page.Locator("[class*=calendar]:visible:has(.days-wrapper)").First;
-        if (await calendar.CountAsync() == 0)
+        await SaveTikTokCalendarDomAsync(page, log);
+        var selected = await SelectTikTokVisualCalendarAsync(page, dateTrigger, target, log, ct);
+        if (!selected)
         {
-            log?.Invoke("TikTok: visible calendar popup not found.");
-            await SaveDiagnosticAsync(page, "TikTok-Calendar-NotFound", log);
+            await SaveDiagnosticAsync(page, "TikTok-Visual-Calendar-Selection-Failed", log);
+            await page.Keyboard.PressAsync("Escape");
+            // Explicitly click OUTSIDE the date popup if Escape did not work.
+            var bounds = await dateTrigger.BoundingBoxAsync();
+            if (bounds is not null)
+                await page.Mouse.ClickAsync(Math.Max(12, bounds.X - 50),
+                    Math.Max(12, bounds.Y + bounds.Height + 65));
             return false;
         }
-
-        // Capture the relevant picker DOM so that any future failure can be
-        // diagnosed from real markup, rather than guessing TikTok selectors.
-        await SaveTikTokCalendarDomAsync(page, log);
-        var calendarOpened = true;
-        try
-        {
-            var monthMatched = false;
-            for (var attempt = 0; attempt < 18; attempt++)
-            {
-                ct.ThrowIfCancellationRequested();
-                var raw = (await calendar.InnerTextAsync()).Trim();
-                var flattened = System.Text.RegularExpressions.Regex.Replace(raw, @"\s+", " ");
-                var monthText = System.Text.RegularExpressions.Regex.Match(flattened,
-                    @"\b(January|February|March|April|May|June|July|August|September|October|November|December)\b",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                var yearText = System.Text.RegularExpressions.Regex.Match(flattened, @"\b20\d{2}\b");
-
-                // If the component renders header labels outside .calendar-wrapper,
-                // read their visible text from the surrounding popup as a fallback.
-                if (!monthText.Success || !yearText.Success)
-                {
-                    var header = await page.Locator(".month-title:visible, [class*=month-title]:visible")
-                        .First.AllInnerTextsAsync();
-                    var combined = flattened + " " + string.Join(" ", header);
-                    monthText = System.Text.RegularExpressions.Regex.Match(combined,
-                        @"\b(January|February|March|April|May|June|July|August|September|October|November|December)\b",
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    yearText = System.Text.RegularExpressions.Regex.Match(combined, @"\b20\d{2}\b");
-                }
-
-                // The trigger displays Oct 29, 2026 while the calendar is
-                // visibly on October 2026. If its year label is not inside the
-                // queried subtree, infer the displayed year from that trigger.
-                if (!yearText.Success && DateTime.TryParse(initialDate, culture,
-                    System.Globalization.DateTimeStyles.None, out var initialMonth))
-                    yearText = System.Text.RegularExpressions.Regex.Match(
-                        initialMonth.Year.ToString(), @"20\d{2}");
-
-                if (!monthText.Success || !yearText.Success ||
-                    !DateTime.TryParseExact(monthText.Value + " " + yearText.Value,
-                        "MMMM yyyy", culture, System.Globalization.DateTimeStyles.None,
-                        out var shown))
-                {
-                    log?.Invoke("TikTok: cannot read month/year: " +
-                        flattened.Substring(0, Math.Min(150, flattened.Length)));
-                    break;
-                }
-                var difference = (target.Year - shown.Year) * 12 + target.Month - shown.Month;
-                log?.Invoke("TikTok: calendar shows " + shown.ToString("MMMM yyyy", culture) +
-                    "; target " + target.ToString("MMMM yyyy", culture));
-                if (difference == 0)
-                {
-                    monthMatched = true;
-                    break;
-                }
-                var arrows = calendar.Locator("span[class*='arrow'], button[class*='arrow']");
-                ILocator arrow;
-                if (await arrows.CountAsync() >= 2)
-                    arrow = difference > 0 ? arrows.Last : arrows.First;
-                else
-                    arrow = calendar.Locator(difference > 0
-                        ? "[aria-label*='next' i], [class*='next-month'], [class*='nextMonth']"
-                        : "[aria-label*='prev' i], [class*='prev-month'], [class*='prevMonth']").First;
-                if (await arrow.CountAsync() == 0 || !await arrow.IsVisibleAsync())
-                {
-                    log?.Invoke("TikTok: month arrow missing.");
-                    break;
-                }
-                await arrow.ClickAsync(new() { Timeout = 5000 });
-                await Task.Delay(300, ct);
-            }
-
-            if (!monthMatched)
-            {
-                log?.Invoke("TikTok: calendar month did not match; will not select arbitrary day.");
-                await SaveDiagnosticAsync(page, "TikTok-Calendar-Month-Mismatch", log);
-                return false;
-            }
-
-            if (!await ClickTikTokCalendarGridDayAsync(page, target, log, ct))
-            {
-                log?.Invoke("TikTok: grid position for requested day could not be verified.");
-                await SaveDiagnosticAsync(page, "TikTok-Calendar-Grid-Mismatch", log);
-                return false;
-            }
-            log?.Invoke("TikTok: attempted calendar day " + target.Day + ".");
-        }
-        finally
-        {
-            // Always dismiss the popup, even if calendar parsing or clicking
-            // failed. Do not leave TikTok stuck behind an open calendar.
-            if (calendarOpened && await calendar.IsVisibleAsync())
-            {
-                await page.Keyboard.PressAsync("Escape");
-                await Task.Delay(150, ct);
-                if (await calendar.IsVisibleAsync())
-                {
-                    // Click outside the popup without reopening the date trigger.
-                    var fieldBox = await dateTrigger.BoundingBoxAsync();
-                    if (fieldBox is not null)
-                        await page.Mouse.ClickAsync(fieldBox.X + fieldBox.Width + 12,
-                            fieldBox.Y + fieldBox.Height + 45);
-                }
-            }
-        }
+        // A day click may leave the popup visible briefly; dismiss it by
+        // clicking an unquestionably outside area, not the toggle trigger.
+        var rect = await dateTrigger.BoundingBoxAsync();
+        if (rect is not null)
+            await page.Mouse.ClickAsync(Math.Max(12, rect.X - 50),
+                Math.Max(12, rect.Y + rect.Height + 65));
+        await Task.Delay(300, ct);
         } // end date-change branch
 
         var selectedDate = (await dateTrigger.InnerTextAsync()).Trim();
