@@ -303,10 +303,15 @@ public sealed partial class MainViewModel
         try
         {
             PublishStatus = $"AI is estimating suitable TikTok slots for {checkedVideos.Count} checked videos...";
+            static string SafeSnippet(string value, int maxLength)
+            {
+                var cleaned = (value ?? "").Replace('\n',' ').Replace('\r',' ').Trim();
+                return cleaned[..Math.Min(maxLength, cleaned.Length)];
+            }
             var items = string.Join("\n", checkedVideos.Select((x,i) =>
-                $"{i+1}. Title: {x.Title.Replace('\n',' ')}; " +
-                $"Description: {x.Description.Replace('\n',' ')[..Math.Min(140,x.Description.Length)]}; " +
-                $"Caption: {x.TikTokCaption.Replace('\n',' ')[..Math.Min(170,x.TikTokCaption.Length)]}"));
+                $"{i+1}. Title: {SafeSnippet(x.Title, 110)}; " +
+                $"Description: {SafeSnippet(x.Description, 140)}; " +
+                $"Caption: {SafeSnippet(x.TikTokCaption, 170)}"));
             var prompt = "You are an editorial TikTok publishing schedule planner. " +
                 $"Current local date and time: {now:yyyy-MM-dd HH:mm}. " +
                 $"Local timezone: {TimeZoneInfo.Local.Id}. " +
