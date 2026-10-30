@@ -19,6 +19,10 @@ public sealed class PublishQueueItem : ObservableObject
     public string YouTubeTitle { get; set; } = "";
     public string YouTubeDescription { get; set; } = "";
     public string TikTokCaption { get; set; } = "";
+    private bool _isChecked;
+    public bool IsChecked { get => _isChecked; set => Set(ref _isChecked, value); }
+    private string _metadataStatus = "Pending";
+    public string MetadataStatus { get => _metadataStatus; set => Set(ref _metadataStatus, value); }
     private bool _isScheduled;
     public bool IsScheduled { get => _isScheduled; set { if (Set(ref _isScheduled, value)) Raise(nameof(IsInstant)); } }
     public bool IsInstant { get => !IsScheduled; set { if (value) IsScheduled = false; } }
@@ -35,7 +39,8 @@ public sealed class PublishQueueItem : ObservableObject
     public DateTimeOffset? YouTubeCheckpointUpdated { get; set; }
     public DateTimeOffset? TikTokCheckpointUpdated { get; set; }
     public string YouTubeStatus { get; set; } = "Ready";
-    public string TikTokStatus { get; set; } = "Ready";
+    private string _tikTokStatus = "Ready";
+    public string TikTokStatus { get => _tikTokStatus; set => Set(ref _tikTokStatus, value); }
     public void RaiseSeoChanged()
     {
         Raise(nameof(SeoTitle));
@@ -53,8 +58,8 @@ public sealed partial class MainViewModel
     public ObservableCollection<PublishQueueItem> PublishingQueue { get; } = [];
     private PublishQueueItem? _selectedPublishItem;
     private int _publishIntervalHours = 6;
-    private string _publishFirstSlot = DateTime.Now.AddDays(1).ToString("yyyy-MM-dd HH:mm");
-    public ObservableCollection<int> PublishIntervals { get; } = [6, 12, 24, 48];
+    private string _publishFirstSlot = DateTime.Now.Date.AddDays(1).AddHours(12).ToString("yyyy-MM-dd HH:mm");
+    public ObservableCollection<int> PublishIntervals { get; } = [1, 2, 3, 6, 12, 24, 48];
     public PublishQueueItem? SelectedPublishItem
     {
         get => _selectedPublishItem;
@@ -139,10 +144,14 @@ public sealed partial class MainViewModel
         SavePublishingQueue();
         PublishStatus = "Checkpoint saved locally. This is user-confirmed progress, not platform verification.";
     }
-    private string _publishDestination = "YouTube";
+    private string _publishDestination = "TikTok";
     public string PublishDestination { get => _publishDestination; set { if (Set(ref _publishDestination, value)) LoadSelectedCheckpoint(); } }
-    public ObservableCollection<string> PublishDestinations { get; } = ["YouTube", "TikTok"];
+    public ObservableCollection<string> PublishDestinations { get; } = ["TikTok"];
     public ICommand RemovePublishQueueCommand { get; private set; } = null!;
+    public ICommand SelectAllPublishQueueCommand { get; private set; } = null!;
+    public ICommand ClearPublishQueueSelectionCommand { get; private set; } = null!;
+    private bool _isBatchPublishing;
+    public bool IsBatchPublishing { get => _isBatchPublishing; private set => Set(ref _isBatchPublishing, value); }
 
     private void LoadPublishingQueue()
     {
@@ -154,6 +163,8 @@ public sealed partial class MainViewModel
                 {
                     item.IsScheduled = item.ScheduledAt.HasValue;
                     item.ScheduleDateText = item.ScheduledAt?.LocalDateTime.ToString("yyyy-MM-dd HH:mm") ?? "";
+                    if (!string.IsNullOrWhiteSpace(item.YouTubeTitle) && !string.IsNullOrWhiteSpace(item.TikTokCaption))
+                        item.MetadataStatus = "Ready";
                     TrackPublishingItem(item);
                     PublishingQueue.Add(item);
                 }
@@ -219,23 +230,25 @@ public sealed partial class MainViewModel
 
     private void SchedulePublishingQueue()
     {
-        if (!DateTime.TryParseExact(PublishFirstSlot, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture,
-            DateTimeStyles.AssumeLocal, out var first) || first <= DateTime.Now)
-        { PublishStatus = "Choose a future first slot: YYYY-MM-DD HH:MM (computer local time)."; return; }
+        if (IsBatchPublishing) { PublishStatus = "Wait for the current TikTok batch to finish."; return; }
+        if (!DateTime.TryParseExact(PublishFirstSlot.Trim(), "yyyy-MM-dd HH:mm",
+            CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var first) || first <= DateTime.Now)
+        { PublishStatus = "Enter a future local start date: YYYY-MM-DD HH:MM."; return; }
+        if (first.Minute % 5 != 0)
+        { PublishStatus = "TikTok schedules in 5-minute increments. Choose minutes 00, 05, 10, etc."; return; }
         var interval = PublishIntervalHours;
         if (!PublishIntervals.Contains(interval)) { PublishStatus = "Choose a valid interval."; return; }
-        var ready = PublishingQueue.Where(x => x.YouTubeStatus == "Ready" && x.IsScheduled).ToList();
-        if (ready.Count == 0) { PublishStatus = "No ready videos to schedule."; return; }
-        var slot = new DateTimeOffset(first);
-        foreach (var item in ready)
+        var chosen = PublishingQueue.Where(x => x.IsChecked).ToList();
+        if (chosen.Count == 0) { PublishStatus = "Check the videos you want to schedule first."; return; }
+        for (var i = 0; i < chosen.Count; i++)
         {
-            item.ScheduledAt = slot;
-            item.ScheduleDateText = slot.LocalDateTime.ToString("yyyy-MM-dd HH:mm");
-            slot = slot.AddHours(interval);
+            var localSlot = first.AddHours((double)i * interval);
+            chosen[i].IsScheduled = true;
+            chosen[i].ScheduleDateText = localSlot.ToString("yyyy-MM-dd HH:mm");
+            chosen[i].ScheduledAt = new DateTimeOffset(localSlot);
         }
         SavePublishingQueue();
-        SelectedPublishItem = ready[0];
-        PublishStatus = $"Assigned {ready.Count} schedule slots every {interval} hours. Review each in Studio.";
+        PublishStatus = $"Assigned {chosen.Count} TikTok schedule slots at {interval}-hour intervals in queue order.";
     }
 
     private readonly PublishingService _publishing = new();
