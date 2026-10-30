@@ -60,6 +60,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         InitializeShortsCommands();
         InitializeIdeasCommands();
         InitializePublishingCommands();
+        InitializeTikTokIntelligenceCommands();
+        InitializeLibraryAndCalendarCommands();
+        InitializeContentSeriesCommands();
         BrowseMusicCommand = new RelayCommand(BrowseMusic);
     }
 
@@ -104,6 +107,10 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public async Task InitializeAsync()
     {
         Settings = await _settingsService.LoadAsync();
+        LoadTikTokIntelligence();
+        LoadShortsRecovery();
+        RefreshPublishingCalendar();
+        RefreshVideoLibrary();
         if (string.IsNullOrWhiteSpace(Project.Voice)) Project.Voice = Settings.ClipchampVoice;
         Raise(nameof(Project));
         Log("ZeroVideo initialized.");
@@ -280,6 +287,17 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             Progress = 100;
             Log($"FINAL VIDEO: {output}");
             QueueCompletedVideo(output);
+            // A finished MP4 is immediately queued. Metadata is generated
+            // automatically for BOTH platforms, independent of publishing.
+            // Failures are logged and the finished video stays in the queue.
+            var finishedItem = PublishingQueue.FirstOrDefault(x =>
+                x.VideoPath.Equals(output, StringComparison.OrdinalIgnoreCase));
+            if (finishedItem is not null)
+            {
+                Status = "Finished video; generating YouTube/TikTok SEO metadata...";
+                await TryGenerateMetadataForItemAsync(finishedItem, force: false);
+                Status = "Finished";
+            }
             if (ShortsRunning)
                 Log("Shorts automation: video finished and queued for Publishing; continuing to the next video.");
             else
