@@ -64,6 +64,35 @@ public partial class MainWindow : Window
         }
     }
 
+    // Only controls the embedded local video preview. The TikTok uploader
+    // and video rendering/playback engine are untouched.
+    private void OnLibraryPlayClicked(object sender, RoutedEventArgs e)
+    {
+        try { LibraryPreviewPlayer.Play(); }
+        catch (Exception ex) { MessageBox.Show("Video preview: " + ex.Message); }
+    }
+
+    private void OnLibraryPauseClicked(object sender, RoutedEventArgs e)
+    {
+        try { LibraryPreviewPlayer.Pause(); }
+        catch (Exception ex) { MessageBox.Show("Video preview: " + ex.Message); }
+    }
+
+    private void OnLibraryStopClicked(object sender, RoutedEventArgs e)
+    {
+        try { LibraryPreviewPlayer.Stop(); }
+        catch (Exception ex) { MessageBox.Show("Video preview: " + ex.Message); }
+    }
+
+    private void OnLibraryMediaFailed(object sender,
+        System.Windows.ExceptionRoutedEventArgs e)
+    {
+        // The underlying Windows MediaElement may not support certain codecs.
+        // The Open Full Video action always remains available.
+        _vm.Log("Local library preview codec error: " +
+            (e.ErrorException?.Message ?? "Unknown Windows MediaElement error"));
+    }
+
     protected override async void OnClosing(CancelEventArgs e)
     {
         await _vm.DisposeAsync();
