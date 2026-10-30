@@ -479,9 +479,9 @@ QUALITY REQUIREMENTS:
 
         var lastVisible = await TryReadLatestAssistantTextAsync(page) ?? "";
         await SaveChatGptResponseDiagnosticAsync(page, "Json-NotFound", lastVisible, log);
-        throw new TimeoutException("ChatGPT finished, but ZeroVideo could not capture a new valid JSON response. " +
+        throw new TimeoutException("ZeroVideo could not find a new ChatGPT assistant response in the browser. " +
             "A local diagnostic was saved in %LOCALAPPDATA%\\ZeroVideo\\diagnostics. " +
-            "Open the ChatGPT conversation to check whether the reply is JSON or plain text.");
+            "Check the diagnostic TXT and PNG to see whether ChatGPT generated a reply, displayed a sign-in prompt, or changed its page structure.");
     }
 
     private static async Task<string?> TryReadLatestResponseAsync(IPage page, IEnumerable<string> configuredSelectors)
@@ -540,42 +540,82 @@ QUALITY REQUIREMENTS:
         return null;
     }
 
-    // Capture ONLY assistant-authored visible text. The user's own prompt may
-    // contain a full JSON schema/example; reading main.innerText would incorrectly
-    // treat that prompt as a new model response.
+    // The DOM of ChatGPT can vary across accounts and updates. Collect only
+    // assistant-authored turns; never accept a JSON schema example in a user
+    // prompt or sidebar as if it were a fresh ChatGPT answer.
     private static async Task<string?> TryReadLatestAssistantTextAsync(IPage page)
     {
-        try
-        {
-            return await page.EvaluateAsync<string?>(@"
+        const string script = @"
 () => {
-  const visible = e => {
-    const r=e.getBoundingClientRect(),s=getComputedStyle(e);
-    return r.width>0 && r.height>0 && s.display!=='none' &&
-      s.visibility!=='hidden';
+  const getText = n => {
+    const raw = (n.innerText || n.textContent || '').trim();
+    const code = [...n.querySelectorAll('pre code,pre,code,textarea')]
+       .map(e => e instanceof HTMLTextAreaElement ? e.value :
+         (e.innerText || e.textContent || '')).filter(Boolean).join('\n');
+    // Prefer the full assistant response; retain embedded JSON/markup blocks.
+    return (raw.length >= code.length ? raw : code).trim();
+  };
+  const visible = n => {
+    const st = getComputedStyle(n);
+    return st.visibility !== 'hidden' && st.display !== 'none';
   };
   const selectors = [
     '[data-message-author-role=""assistant""]',
     '[data-testid=""conversation-turn-assistant""]',
-    'article[data-message-author-role=""assistant""]',
-    'main [data-testid=""assistant-response""]'
+    '[data-testid*=""assistant-response""]',
+    '[data-role=""assistant""]',
+    'article[data-message-author-role=""assistant""]'
   ];
-  for (const selector of selectors) {
-    const nodes=[...document.querySelectorAll(selector)].filter(visible);
-    for(let i=nodes.length-1;i>=0;i--) {
-      const node=nodes[i];
-      const text=(node.innerText||node.textContent||'').trim();
-      const code=[...node.querySelectorAll('pre,code,textarea')]
-        .map(el=>el instanceof HTMLTextAreaElement?el.value:(el.innerText||el.textContent||''))
-        .filter(Boolean).join('\n');
-      const found=(code.length>text.length?code:text).trim();
-      if(found.length>0) return found.slice(0,200000);
-    }
+  let found = [];
+  for(const selector of selectors) {
+    try {
+      for(const n of document.querySelectorAll(selector)) {
+        if(!visible(n))continue;
+        if(n.closest('[data-message-author-role=""user""]'))continue;
+        const t=getText(n);
+        if(t.length)found.push({n,t});
+      }
+    }catch{}
+  }
+  if(found.length) {
+    // DOM order over selector order prevents returning an old answer.
+    found.sort((a,b) => {
+      const v=a.n.compareDocumentPosition(b.n);
+      return (v&Node.DOCUMENT_POSITION_FOLLOWING)?-1:
+        (v&Node.DOCUMENT_POSITION_PRECEDING)?1:0;
+    });
+    return found[found.length-1].t.slice(0,200000);
+  }
+  // Fallback: modern ChatGPT turns may lose the author-role attributes.
+  // Only accept a turn with explicit assistant-like markup; reject user turns.
+  let turns=[...document.querySelectorAll(
+     '[data-testid^=""conversation-turn-""], [data-testid*=""assistant-turn""]')];
+  for(let i=turns.length-1;i>=0;i--){
+    const n=turns[i],tag=(n.getAttribute('data-testid')||'').toLowerCase();
+    const role=n.getAttribute('data-message-author-role')||
+      n.querySelector('[data-message-author-role]')?.getAttribute('data-message-author-role')||'';
+    if(role.toLowerCase()==='user'||n.querySelector('[data-message-author-role=""user""]'))continue;
+    const assistantLike=role.toLowerCase()==='assistant'||tag.includes('assistant')||
+      n.querySelector('[data-testid*=""assistant""], [data-role=""assistant""]')!==null;
+    if(!assistantLike)continue;
+    const t=getText(n);
+    if(t.length)return t.slice(0,200000);
   }
   return null;
-}");
+}";
+        foreach (var frame in page.Frames)
+        {
+            try
+            {
+                if (frame != page.MainFrame &&
+                    !frame.Url.Contains("chatgpt.com", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var text = await frame.EvaluateAsync<string?>(script);
+                if (!string.IsNullOrWhiteSpace(text)) return text;
+            }
+            catch (PlaywrightException) { }
         }
-        catch (PlaywrightException) { return null; }
+        return null;
     }
 
     private static async Task SaveChatGptResponseDiagnosticAsync(
@@ -584,20 +624,73 @@ QUALITY REQUIREMENTS:
         try
         {
             Directory.CreateDirectory(AppPaths.DiagnosticsDirectory);
-            var file = Path.Combine(AppPaths.DiagnosticsDirectory,
-                "ChatGPT-JSON-" + reason + "-" +
-                DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".txt");
-            // Keep diagnostics on the local machine only. Never transmit chat
-            // content or upload it automatically. Include enough context to
-            // distinguish a plain-text answer from a changed ChatGPT DOM.
-            var detail = "URL: " + page.Url + Environment.NewLine +
-                "Assistant response length: " + assistantText.Length + Environment.NewLine +
-                "Captured assistant text (first 20000 chars):" + Environment.NewLine +
-                assistantText[..Math.Min(assistantText.Length, 20000)];
-            await File.WriteAllTextAsync(file, detail);
-            log?.Invoke("ChatGPT: response diagnostic saved locally: " + file);
+            var stamp=DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            var file=Path.Combine(AppPaths.DiagnosticsDirectory,
+                "ChatGPT-JSON-"+reason+"-"+stamp+".txt");
+            // Local-only evidence for an actual DOM detection failure.
+            // Does not upload the browser page or private conversations.
+            var summary=await page.EvaluateAsync<string>(@"
+() => {
+  const selectors=[
+    'main','[data-message-author-role=""user""]',
+    '[data-message-author-role=""assistant""]',
+    '[data-testid^=""conversation-turn-""]',
+    '[data-testid*=""assistant""]','main .markdown',
+    'main pre','main code','main article',
+    '[data-testid=""send-button""]',
+    'button[aria-label*=""Stop""]'
+  ];
+  const lines=['Page title: '+document.title,
+    'Document state: '+document.readyState,
+    'URL path: '+location.pathname,
+    'Visible main text length: '+(document.querySelector('main')?.innerText||'').length,
+    'Focused element: '+(document.activeElement?.tagName||'(none)')];
+  for(const selector of selectors) {
+    try {
+      const items=[...document.querySelectorAll(selector)];
+      lines.push(selector+': '+items.length);
+    }catch(e){lines.push(selector+': selector failed '+e.message)}
+  }
+  const turns=[...document.querySelectorAll(
+    '[data-testid^=""conversation-turn-""], [data-message-author-role]')];
+  lines.push('Last conversation nodes (role, testid, length, preview):');
+  for(const e of turns.slice(-12)) {
+    const txt=(e.innerText||e.textContent||'').trim();
+    lines.push('role='+(e.getAttribute('data-message-author-role')||'?')+
+      ' testid='+(e.getAttribute('data-testid')||'?')+
+      ' length='+txt.length+' preview='+txt.slice(0,200).replace(/\s+/g,' '));
+  }
+  const main=document.querySelector('main');
+  if(main) {
+    const end=(main.innerText||'').slice(-1800);
+    lines.push('Last 1800 visible main characters (may include prompt): '+end);
+  }
+  return lines.join('\n');
+}");
+            var detail="URL: "+page.Url+Environment.NewLine+
+                "Assistant response length: "+assistantText.Length+Environment.NewLine+
+                "Frames: "+string.Join(" | ",page.Frames.Select(fr=>fr.Url))+Environment.NewLine+
+                "DOM snapshot:"+Environment.NewLine+summary+Environment.NewLine+
+                "Captured assistant text (first 20000 chars):"+Environment.NewLine+
+                assistantText[..Math.Min(assistantText.Length,20000)];
+            await File.WriteAllTextAsync(file,detail);
+            log?.Invoke("ChatGPT: local DOM diagnostic saved: "+file);
+            try
+            {
+                var screenshot=Path.Combine(AppPaths.DiagnosticsDirectory,
+                    "ChatGPT-JSON-"+reason+"-"+stamp+".png");
+                await page.ScreenshotAsync(new(){Path=screenshot,FullPage=false,Timeout=10000});
+                log?.Invoke("ChatGPT: diagnostic screenshot: "+screenshot);
+            }
+            catch (PlaywrightException ex)
+            {
+                log?.Invoke("ChatGPT: screenshot diagnostic unavailable: "+ex.Message);
+            }
         }
-        catch (Exception ex) { log?.Invoke("ChatGPT: could not save response diagnostic: " + ex.Message); }
+        catch (Exception ex)
+        {
+            log?.Invoke("ChatGPT: could not save response diagnostic: "+ex.Message);
+        }
     }
 
     private static async Task<bool> AnyVisibleAsync(IPage page, IEnumerable<string> selectors)
