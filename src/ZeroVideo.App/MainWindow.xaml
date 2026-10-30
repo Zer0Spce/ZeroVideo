@@ -108,7 +108,11 @@
                   <Button Style="{StaticResource SecondaryButton}" Command="{Binding AddShortRowCommand}" Content="+ Add row"/>
                   <Button Style="{StaticResource SecondaryButton}" Command="{Binding RemoveShortRowCommand}" Content="Remove last row"/>
                   <Button Style="{StaticResource PrimaryButton}" Command="{Binding StartShortsCommand}" Content="Start automation"/>
+                  <Button Style="{StaticResource SecondaryButton}" Command="{Binding ResumeShortsCommand}"
+                          Content="Resume Unfinished" ToolTip="Continue previously saved scripts, images, audio and unfinished video jobs."/>
                 </WrapPanel>
+                <TextBlock Text="{Binding ShortsRecoveryStatus}" Foreground="{StaticResource Muted}"
+                           TextWrapping="Wrap" Margin="0,7,0,0"/>
               </StackPanel>
               <DataGrid ItemsSource="{Binding ShortQueue}" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False">
                 <DataGrid.Columns>
@@ -196,6 +200,59 @@
                   </DataGridTemplateColumn>
                   <DataGridTextColumn Header="Video title" Binding="{Binding Title}" IsReadOnly="True" Width="2*"/>
                   <DataGridTextColumn Header="Opening hook" Binding="{Binding Hook}" IsReadOnly="True" Width="3*"/>
+                </DataGrid.Columns>
+              </DataGrid>
+            </DockPanel>
+          </Border>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Content Series">
+        <Grid Margin="0,12,0,0">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="350"/>
+            <ColumnDefinition Width="16"/>
+            <ColumnDefinition Width="*"/>
+          </Grid.ColumnDefinitions>
+          <Border Style="{StaticResource CardBorder}">
+            <StackPanel>
+              <TextBlock Text="Content Series Generator" FontSize="21" FontWeight="SemiBold"/>
+              <TextBlock Text="Plan a connected series of unique, standalone episodes. Generated titles and hooks can be queued for Automation Shorts without changing your current videos."
+                         Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,12"/>
+              <Label Content="SERIES THEME / NICHE"/>
+              <TextBox Text="{Binding SeriesTheme, UpdateSourceTrigger=PropertyChanged}"
+                       MinHeight="60" TextWrapping="Wrap" AcceptsReturn="True"/>
+              <Label Content="NUMBER OF EPISODES (3–30)" Margin="0,12,0,0"/>
+              <TextBox Text="{Binding SeriesEpisodeCount, UpdateSourceTrigger=LostFocus}"/>
+              <Button Style="{StaticResource PrimaryButton}" Content="Generate Content Series"
+                      Command="{Binding GenerateContentSeriesCommand}" HorizontalAlignment="Left"
+                      Margin="0,14,0,6"/>
+              <TextBlock Text="{Binding SeriesStatus}" Foreground="{StaticResource Muted}"
+                         TextWrapping="Wrap" Margin="0,7,0,12"/>
+              <Button Style="{StaticResource SecondaryButton}" Content="+ Add Checked Episodes to Automation"
+                      Command="{Binding AddContentSeriesToShortsCommand}"
+                      HorizontalAlignment="Left"/>
+              <TextBlock Text="The episode plan is generated using ChatGPT. It does not start video creation or publishing until you run Automation Shorts."
+                         Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,14,0,0"/>
+            </StackPanel>
+          </Border>
+          <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+            <DockPanel>
+              <TextBlock DockPanel.Dock="Top" Text="Series episode plan"
+                         FontSize="19" FontWeight="SemiBold" Margin="0,0,0,10"/>
+              <DataGrid ItemsSource="{Binding SeriesEpisodes}" AutoGenerateColumns="False"
+                        CanUserAddRows="False" IsReadOnly="False">
+                <DataGrid.Columns>
+                  <DataGridTemplateColumn Header="Use" Width="52">
+                    <DataGridTemplateColumn.CellTemplate>
+                      <DataTemplate>
+                        <CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                      </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                  </DataGridTemplateColumn>
+                  <DataGridTextColumn Header="Episode" Width="2*" Binding="{Binding Title}" IsReadOnly="True"/>
+                  <DataGridTextColumn Header="Story hook" Width="3*" Binding="{Binding Hook}" IsReadOnly="True"/>
                 </DataGrid.Columns>
               </DataGrid>
             </DockPanel>
@@ -305,6 +362,189 @@
             </Border>
           </StackPanel>
         </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Calendar">
+        <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+          <DockPanel>
+            <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+              <TextBlock Text="Visual Publishing Calendar" FontSize="22" FontWeight="SemiBold"/>
+              <TextBlock Text="Local queue schedules only — changing a date here does not modify an already submitted TikTok post."
+                         Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,10"/>
+              <StackPanel Orientation="Horizontal">
+                <Button Style="{StaticResource SecondaryButton}" Content="Previous Month"
+                        Command="{Binding PreviousCalendarMonthCommand}"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Today"
+                        Command="{Binding CurrentCalendarMonthCommand}"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Next Month"
+                        Command="{Binding NextCalendarMonthCommand}"/>
+                <TextBlock Text="{Binding CalendarMonthLabel}" FontSize="20" FontWeight="SemiBold"
+                           Margin="18,0,0,0" VerticalAlignment="Center"/>
+              </StackPanel>
+            </StackPanel>
+            <StackPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+              <Separator Margin="0,0,0,8"/>
+              <TextBlock Text="EDIT SELECTED CALENDAR VIDEO" Foreground="{StaticResource Muted}" FontSize="11"/>
+              <StackPanel Orientation="Horizontal" Margin="0,5,0,4">
+                <TextBox Width="190" Text="{Binding CalendarEditTime, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="Future local date and time in YYYY-MM-DD HH:MM"/>
+                <Button Style="{StaticResource PrimaryButton}" Content="Apply New Date / Time"
+                        Command="{Binding ApplyCalendarTimeCommand}" Margin="10,0,0,0"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Refresh"
+                        Command="{Binding RefreshCalendarCommand}"/>
+              </StackPanel>
+              <TextBlock Text="{Binding CalendarStatus}" TextWrapping="Wrap"
+                         Foreground="{StaticResource Muted}"/>
+            </StackPanel>
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel>
+                <UniformGrid Columns="7" Margin="0,0,0,6">
+                  <TextBlock Text="SUN" TextAlignment="Center" FontWeight="SemiBold"/>
+                  <TextBlock Text="MON" TextAlignment="Center" FontWeight="SemiBold"/>
+                  <TextBlock Text="TUE" TextAlignment="Center" FontWeight="SemiBold"/>
+                  <TextBlock Text="WED" TextAlignment="Center" FontWeight="SemiBold"/>
+                  <TextBlock Text="THU" TextAlignment="Center" FontWeight="SemiBold"/>
+                  <TextBlock Text="FRI" TextAlignment="Center" FontWeight="SemiBold"/>
+                  <TextBlock Text="SAT" TextAlignment="Center" FontWeight="SemiBold"/>
+                </UniformGrid>
+                <ItemsControl ItemsSource="{Binding CalendarDays}">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate><UniformGrid Columns="7"/></ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border BorderBrush="{StaticResource Border}" BorderThickness="1"
+                              CornerRadius="6" Margin="2" Padding="5" MinHeight="108"
+                              Background="#201F29">
+                        <DockPanel>
+                          <TextBlock DockPanel.Dock="Top" Text="{Binding DayLabel}" FontWeight="SemiBold"
+                                     HorizontalAlignment="Right" Margin="0,0,0,4"/>
+                          <ListBox ItemsSource="{Binding Videos}" BorderThickness="0" Background="Transparent"
+                                   MaxHeight="90" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                   SelectedItem="{Binding DataContext.SelectedCalendarVideo,
+                                   RelativeSource={RelativeSource AncestorType=Window}, Mode=TwoWay}">
+                            <ListBox.ItemTemplate>
+                              <DataTemplate>
+                                <StackPanel ToolTip="{Binding Title}">
+                                  <TextBlock Text="{Binding Time}" FontSize="10" Foreground="#54DDE9" FontWeight="SemiBold"/>
+                                  <TextBlock Text="{Binding Title}" FontSize="10"
+                                             TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
+                                </StackPanel>
+                              </DataTemplate>
+                            </ListBox.ItemTemplate>
+                          </ListBox>
+                        </DockPanel>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+            </ScrollViewer>
+          </DockPanel>
+        </Border>
+      </TabItem>
+
+      <TabItem Header="Video Library">
+        <Grid Margin="0,12,0,0">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="390"/>
+            <ColumnDefinition Width="16"/>
+            <ColumnDefinition Width="*"/>
+          </Grid.ColumnDefinitions>
+          <Border Style="{StaticResource CardBorder}">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Top">
+                <TextBlock Text="Finished Video Library" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="Search completed MP4s in your existing Projects Root."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
+                <TextBox Text="{Binding LibrarySearch, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="Filter by file path or filename"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Refresh Library"
+                        Command="{Binding RefreshLibraryCommand}" HorizontalAlignment="Left" Margin="0,8,0,6"/>
+                <TextBlock Text="{Binding LibraryStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+              </StackPanel>
+              <ListBox ItemsSource="{Binding VideoLibrary}" SelectedItem="{Binding SelectedLibraryVideo, Mode=TwoWay}"
+                       Margin="0,12,0,0">
+                <ListBox.ItemTemplate>
+                  <DataTemplate>
+                    <Grid Margin="3">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="60"/>
+                        <ColumnDefinition Width="*"/>
+                      </Grid.ColumnDefinitions>
+                      <Image Source="{Binding ThumbnailPath}" Width="56" Height="80" Stretch="UniformToFill"/>
+                      <StackPanel Grid.Column="1" Margin="10,0,0,0">
+                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Text="{Binding PublishingStatus}" Foreground="{StaticResource Muted}"
+                                   FontSize="11" Margin="0,4,0,0"/>
+                        <TextBlock Text="{Binding SizeLabel}" Foreground="{StaticResource Muted}" FontSize="11"/>
+                        <TextBlock Text="{Binding Modified, StringFormat={}{0:yyyy-MM-dd HH:mm}}"
+                                   Foreground="{StaticResource Muted}" FontSize="11"/>
+                      </StackPanel>
+                    </Grid>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </DockPanel>
+          </Border>
+          <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+                <WrapPanel>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Play Preview"
+                          Click="OnLibraryPlayClicked"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Pause"
+                          Click="OnLibraryPauseClicked"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Stop"
+                          Click="OnLibraryStopClicked"/>
+                  <Button Style="{StaticResource PrimaryButton}" Content="Open Full Video"
+                          Command="{Binding OpenLibraryVideoCommand}"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Open Project Folder"
+                          Command="{Binding OpenLibraryFolderCommand}"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding SelectedLibraryVideo.VideoPath}" TextWrapping="Wrap"
+                           Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
+                <TextBlock Text="Preview uses Windows media codecs. Open Full Video uses your default media player if the built-in preview cannot play this MP4."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+              </StackPanel>
+              <MediaElement x:Name="LibraryPreviewPlayer"
+                            Source="{Binding SelectedLibraryVideo.VideoUri}"
+                            LoadedBehavior="Manual" UnloadedBehavior="Stop"
+                            Stretch="Uniform" MediaFailed="OnLibraryMediaFailed"
+                            HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+            </DockPanel>
+          </Border>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="File Manager">
+        <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel MaxWidth="850" HorizontalAlignment="Left">
+              <TextBlock Text="Smart File Management" FontSize="23" FontWeight="SemiBold"/>
+              <TextBlock Text="Organize safely with COPY-ONLY project ZIP archives. Existing MP4s, thumbnails, scripts, working folders and publishing queue entries stay in place."
+                         Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,18"/>
+              <TextBlock Text="CHOOSE PROJECT" FontSize="12" Foreground="{StaticResource Muted}"/>
+              <ComboBox Width="600" HorizontalAlignment="Left"
+                        ItemsSource="{Binding VideoLibrary}" SelectedItem="{Binding SelectedLibraryVideo, Mode=TwoWay}"
+                        DisplayMemberPath="Title" Margin="0,7,0,10"/>
+              <WrapPanel>
+                <Button Style="{StaticResource SecondaryButton}" Content="Refresh Projects"
+                        Command="{Binding RefreshLibraryCommand}"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Preview Files / Archive Size"
+                        Command="{Binding PreviewArchiveCommand}"/>
+                <Button Style="{StaticResource PrimaryButton}" Content="Create Verified Project ZIP"
+                        Command="{Binding ArchiveLibraryProjectCommand}"/>
+              </WrapPanel>
+              <TextBlock Text="{Binding FileManagementStatus}" TextWrapping="Wrap"
+                         Margin="0,12,0,0"/>
+              <Separator Margin="0,20,0,12"/>
+              <TextBlock Text="Archive safety rules" FontSize="17" FontWeight="SemiBold"/>
+              <TextBlock Text="Archives are stored in the _ZeroVideoArchives folder inside Projects Root. The operation copies the selected project's files into a ZIP and verifies the archive entry count before completion. No automatic file deletion, renaming, moving or publishing is performed."
+                         Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,0"/>
+            </StackPanel>
+          </ScrollViewer>
+        </Border>
       </TabItem>
 
       <TabItem Header="Publishing">
