@@ -60,6 +60,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         InitializeShortsCommands();
         InitializeIdeasCommands();
         InitializePublishingCommands();
+        InitializeTikTokIntelligenceCommands();
         BrowseMusicCommand = new RelayCommand(BrowseMusic);
     }
 
@@ -104,6 +105,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public async Task InitializeAsync()
     {
         Settings = await _settingsService.LoadAsync();
+        LoadTikTokIntelligence();
         if (string.IsNullOrWhiteSpace(Project.Voice)) Project.Voice = Settings.ClipchampVoice;
         Raise(nameof(Project));
         Log("ZeroVideo initialized.");
