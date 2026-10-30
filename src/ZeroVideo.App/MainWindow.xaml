@@ -71,6 +71,7 @@
 
               <WrapPanel Margin="0,0,0,2">
                 <CheckBox Content=".SRT captions" IsChecked="{Binding Project.Options.GenerateCaptions}" Margin="0,4,15,4"/>
+                <CheckBox Content="Bold in-video captions (9:16)" IsChecked="{Binding Project.Options.BurnInBoldCaptions}" Margin="0,4,15,4" ToolTip="Slightly smaller all-white uppercase subtitles with a black outline, centered near the lower third. Audio-pause-aware timing; adds a render pass."/>
                 <CheckBox Content="Visual motion" IsChecked="{Binding Project.Options.AddMotion}" Margin="0,4,15,4"/>
                 <CheckBox Content="Music" IsChecked="{Binding Project.Options.AddBackgroundMusic}" Margin="0,4,15,4"/>
                 <CheckBox Content="SFX hooks" IsChecked="{Binding Project.Options.AddSoundEffects}" Margin="0,4,0,4"/>
@@ -138,6 +139,7 @@
                 <Label Content="SAFETY TOTAL IMAGE CAP"/>
                 <TextBox Text="{Binding Project.Options.MaxGeneratedVisuals, UpdateSourceTrigger=LostFocus}"/>
                 <CheckBox Content=".SRT captions" IsChecked="{Binding Project.Options.GenerateCaptions}" Margin="0,8,0,0"/>
+                <CheckBox Content="Bold in-video captions (9:16)" IsChecked="{Binding Project.Options.BurnInBoldCaptions}" Margin="0,5,0,0" ToolTip="Slightly smaller all-white outlined text. Audio-pause-aware timing; word-level matching is approximate. Adds an FFmpeg render pass."/>
                 <CheckBox Content="Visual motion" IsChecked="{Binding Project.Options.AddMotion}"/>
                 <CheckBox Content="Music" IsChecked="{Binding Project.Options.AddBackgroundMusic}"/>
                 <CheckBox Content="SFX hooks" IsChecked="{Binding Project.Options.AddSoundEffects}"/>
@@ -147,7 +149,7 @@
                 <TextBlock Text="Creates a title-specific vertical cover saved as thumbnail.png in each project folder." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
                 <Separator Margin="0,12"/>
                 <TextBlock Text="Publishing" FontWeight="SemiBold"/>
-                <TextBlock Text="YouTube / TikTok automatic posting and scheduling are not enabled yet; account authorization and platform integration are required." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                <TextBlock Text="TikTok browser publishing is available in the Publishing tab. YouTube publishing is disabled for now; YouTube metadata is still generated." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
               </StackPanel>
             </ScrollViewer>
           </Border>
@@ -166,20 +168,34 @@
               <Label Content="NUMBER OF IDEAS" Margin="0,10,0,0"/>
               <TextBox Text="{Binding IdeaCount, UpdateSourceTrigger=LostFocus}"/>
               <Button Style="{StaticResource PrimaryButton}" Content="Generate video ideas" Command="{Binding GenerateIdeasCommand}" HorizontalAlignment="Left" Margin="0,14,0,0"/>
+              <Button Style="{StaticResource SecondaryButton}" Content="Smart Ideas — Trending Now" Command="{Binding GenerateSmartIdeasCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"
+                      ToolTip="Use dated Google News/Trends headlines and ChatGPT to suggest niche-relevant original video ideas. Requires internet."/>
               <TextBlock Text="{Binding IdeaStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,14,0,0"/>
               <Separator Margin="0,14"/>
-              <TextBlock Text="Select an idea from the list, then add it to your Shorts queue or copy it into Create." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
-              <Button Style="{StaticResource PrimaryButton}" Content="+ Add selected to Shorts queue" Command="{Binding QueueSelectedIdeaCommand}" HorizontalAlignment="Left" Margin="0,14,0,0"/>
-              <Button Style="{StaticResource SecondaryButton}" Content="Use selected idea in Create" Command="{Binding UseSelectedIdeaCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+              <TextBlock Text="Check several ideas and send them to Automation Shorts in one click. Duplicate titles are skipped." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+              <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                <Button Style="{StaticResource SecondaryButton}" Content="Check All" Command="{Binding CheckAllIdeasCommand}"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Clear Checks" Command="{Binding ClearIdeaChecksCommand}"/>
+              </StackPanel>
+              <Button Style="{StaticResource PrimaryButton}" Content="+ Add Checked to Automation" Command="{Binding QueueSelectedIdeaCommand}" HorizontalAlignment="Left" Margin="0,10,0,0"/>
+              <Button Style="{StaticResource SecondaryButton}" Content="Use highlighted idea in Create" Command="{Binding UseSelectedIdeaCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
             </StackPanel>
           </Border>
           <Border Grid.Column="2" Style="{StaticResource CardBorder}">
             <DockPanel>
               <TextBlock DockPanel.Dock="Top" Text="Generated ideas — title and hook" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,12"/>
-              <DataGrid ItemsSource="{Binding GeneratedIdeas}" SelectedItem="{Binding SelectedIdea, Mode=TwoWay}" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single">
+              <DataGrid ItemsSource="{Binding GeneratedIdeas}" SelectedItem="{Binding SelectedIdea, Mode=TwoWay}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False" SelectionMode="Single">
                 <DataGrid.Columns>
-                  <DataGridTextColumn Header="Video title" Binding="{Binding Title}" Width="2*"/>
-                  <DataGridTextColumn Header="Opening hook" Binding="{Binding Hook}" Width="3*"/>
+                  <DataGridTemplateColumn Header="Use" Width="55">
+                    <DataGridTemplateColumn.CellTemplate>
+                      <DataTemplate>
+                        <CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center" ToolTip="Add this idea to Automation Shorts"/>
+                      </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                  </DataGridTemplateColumn>
+                  <DataGridTextColumn Header="Video title" Binding="{Binding Title}" IsReadOnly="True" Width="2*"/>
+                  <DataGridTextColumn Header="Opening hook" Binding="{Binding Hook}" IsReadOnly="True" Width="3*"/>
                 </DataGrid.Columns>
               </DataGrid>
             </DockPanel>
@@ -242,85 +258,207 @@
         </Grid>
       </TabItem>
 
+      <TabItem Header="TikTok Intelligence">
+        <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,12,0,0">
+          <StackPanel Margin="0,0,12,12">
+            <TextBlock Text="TikTok Intelligence" FontSize="24" FontWeight="SemiBold" Margin="0,0,0,6"/>
+            <TextBlock Text="Optional, read-only analytics and trend research. Your account is opened in the existing dedicated Edge profile, and data is saved locally on this Windows PC. No TikTok passwords, private APIs, uploads or publishing settings are changed."
+                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,12"/>
+            <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+              <StackPanel>
+                <TextBlock Text="1. TikTok Studio — Your Analytics" FontSize="19" FontWeight="SemiBold"/>
+                <TextBlock Text="Sign in manually to your own TikTok Studio. Capture only the visible Analytics page, or import an exported per-video CSV for reliable historical posting-hour analysis."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,12"/>
+                <WrapPanel Margin="0,0,0,8">
+                  <Button Style="{StaticResource SecondaryButton}" Content="Open TikTok Studio Analytics" Command="{Binding OpenTikTokAnalyticsCommand}"/>
+                  <Button Style="{StaticResource PrimaryButton}" Content="Capture Visible Analytics" Command="{Binding CaptureTikTokAnalyticsCommand}"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Import Analytics CSV" Command="{Binding ImportTikTokAnalyticsCsvCommand}"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding TikTokAnalyticsStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                <Separator Margin="0,12"/>
+                <TextBlock Text="Your TikTok Posting Insights" FontWeight="SemiBold" FontSize="15"/>
+                <TextBlock Text="{Binding TikTokInsightsSummary}" TextWrapping="Wrap" Margin="0,7,0,0"/>
+              </StackPanel>
+            </Border>
+            <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+              <StackPanel>
+                <TextBlock Text="2. TikTok Creative Center — Platform Trends" FontSize="19" FontWeight="SemiBold"/>
+                <TextBlock Text="Open TikTok Creative Center, select your preferred country/category and Trending Hashtags, then capture hashtags visible in the browser. No hidden data or invented ranks are used."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,12"/>
+                <WrapPanel Margin="0,0,0,8">
+                  <Button Style="{StaticResource SecondaryButton}" Content="Open Creative Center Trends" Command="{Binding OpenTikTokCreativeCenterCommand}"/>
+                  <Button Style="{StaticResource PrimaryButton}" Content="Capture Visible Trends" Command="{Binding CaptureTikTokTrendsCommand}"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding TikTokTrendsStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+              </StackPanel>
+            </Border>
+            <Border Style="{StaticResource CardBorder}">
+              <StackPanel>
+                <TextBlock Text="3. AI Features Using Your Insights" FontSize="19" FontWeight="SemiBold"/>
+                <TextBlock Text="Smart Ideas 2.0 combines your historical high-view topics, recent captured Creative Center hashtags and dated public news/search signals when available. Smart Scheduling 2.0 considers observed posting-hour engagement before estimating daily time slots."
+                           TextWrapping="Wrap" Margin="0,8,0,8"/>
+                <TextBlock Text="Go to Idea Generation → Smart Ideas — Trending Now, or Publishing → AI Smart Schedule. Existing 1×–10× per day, checkboxes, bulk schedule, captions and TikTok publishing are unchanged."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                <TextBlock Text="Limitations: Capture reads the current visible page, not a verified TikTok analytics API. CSV timestamps use this PC's local time. Suggested posting times are correlations and planning estimates, not guarantees."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
       <TabItem Header="Publishing">
         <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
           <Grid Margin="4">
-            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="*"/>
+              <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
             <StackPanel Grid.Row="0" Margin="0,0,0,8">
-            
-              <TextBlock Text="Finished Video Queue" FontSize="23" FontWeight="SemiBold" Margin="0,0,0,12"/>
-              <TextBlock Text="Finished Create and Automation Shorts videos appear here with their thumbnails and SEO metadata." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,10"/>
+              <StackPanel Orientation="Horizontal" Margin="0,0,0,7">
+                <CheckBox Content="Select All" IsChecked="{Binding AllPublishItemsChecked, Mode=TwoWay}" VerticalAlignment="Center"
+                          ToolTip="Check or uncheck all finished videos for publishing and smart scheduling."
+                          Margin="0,0,14,0"/>
+                <TextBlock Text="Finished Video Queue" FontSize="23" FontWeight="SemiBold" VerticalAlignment="Center"/>
+              </StackPanel>
+              <TextBlock Text="Check the videos you want to publish to TikTok. Checked videos will upload one by one in the order shown. YouTube metadata is saved for later use."
+                         Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,8"/>
             </StackPanel>
-            <ListBox Grid.Row="1" MinHeight="100" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" ScrollViewer.VerticalScrollBarVisibility="Auto" ItemsSource="{Binding PublishingQueue}" SelectedItem="{Binding SelectedPublishItem}" Margin="0,0,0,8">
-                <ListBox.ItemTemplate>
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                          MinHeight="110" Margin="0,0,0,8">
+              <ItemsControl ItemsSource="{Binding PublishingQueue}" HorizontalAlignment="Stretch">
+                <ItemsControl.ItemTemplate>
                   <DataTemplate>
-                    <Border BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="9" Padding="12" Margin="0,5" HorizontalAlignment="Stretch">
+                    <Border BorderBrush="{StaticResource Border}" BorderThickness="1"
+                            HorizontalAlignment="Stretch" CornerRadius="10"
+                            Background="#201F29" Padding="12" Margin="0,4">
                       <Grid>
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="140"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                        <Border Width="126" Height="175" CornerRadius="6" ClipToBounds="True" VerticalAlignment="Top">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="37"/>
+                          <ColumnDefinition Width="82"/>
+                          <ColumnDefinition Width="*"/>
+                          <ColumnDefinition Width="218"/>
+                        </Grid.ColumnDefinitions>
+                        <CheckBox Grid.Column="0" IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                                  VerticalAlignment="Center" HorizontalAlignment="Center"
+                                  ToolTip="Include this video in TikTok batch publishing, bulk scheduling and metadata retry."/>
+                        <Border Grid.Column="1" Width="78" Height="106" CornerRadius="7" ClipToBounds="True"
+                                Background="#111117" VerticalAlignment="Center">
                           <Image Source="{Binding ThumbnailPath}" Stretch="UniformToFill"/>
                         </Border>
-                        <StackPanel Grid.Column="1" Margin="12,0,0,0">
-                          <TextBlock Text="{Binding SeoTitle}" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap"/>
-                          <TextBlock Text="{Binding SeoDescription}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" MaxHeight="52" Margin="0,5,0,0"/>
-                          <TextBlock Text="{Binding SeoHashtags}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
-                          <StackPanel Orientation="Horizontal">
-                            <CheckBox Content="Instant Publish" IsChecked="{Binding IsInstant, Mode=TwoWay}" Margin="0,0,22,0"/>
-                            <CheckBox Content="Schedule" IsChecked="{Binding IsScheduled, Mode=TwoWay}"/>
-                          </StackPanel>
-                          <StackPanel Margin="0,8,0,0">
-                            <StackPanel.Style>
-                              <Style TargetType="StackPanel">
-                                <Setter Property="Visibility" Value="Collapsed"/>
-                                <Style.Triggers><DataTrigger Binding="{Binding IsScheduled}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
-                              </Style>
-                            </StackPanel.Style>
-                            <TextBlock Text="Schedule date &amp; time (local: YYYY-MM-DD HH:MM)" Foreground="{StaticResource Muted}"/>
-                            <TextBox Width="250" HorizontalAlignment="Left" Text="{Binding ScheduleDateText, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0"/>
-                          </StackPanel>
+                        <StackPanel Grid.Column="2" Margin="14,2,16,0" VerticalAlignment="Center">
+                          <TextBlock Text="{Binding SeoTitle}" FontSize="15" FontWeight="SemiBold"
+                                     TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                                     Foreground="{StaticResource Text}" ToolTip="{Binding SeoTitle}"/>
+                          <TextBlock Text="{Binding SeoDescription}" Foreground="{StaticResource Muted}"
+                                     FontSize="11.5" TextWrapping="Wrap" MaxHeight="34"
+                                     Margin="0,6,0,7" ToolTip="{Binding SeoDescription}"/>
+                          <WrapPanel>
+                            <Border Background="#233038" CornerRadius="5" Padding="7,3" Margin="0,0,7,0">
+                              <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="TIKTOK " Foreground="#54DDE9" FontWeight="Bold" FontSize="10"/>
+                                <TextBlock Text="{Binding TikTokStatus}" Foreground="{StaticResource Text}" FontSize="10"/>
+                              </StackPanel>
+                            </Border>
+                            <Border Background="#30283D" CornerRadius="5" Padding="7,3">
+                              <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="METADATA " Foreground="#C4B5FD" FontWeight="Bold" FontSize="10"/>
+                                <TextBlock Text="{Binding MetadataStatus}" Foreground="{StaticResource Text}" FontSize="10"/>
+                              </StackPanel>
+                            </Border>
+                          </WrapPanel>
                         </StackPanel>
+                        <Border Grid.Column="3" BorderBrush="{StaticResource Border}"
+                                BorderThickness="1,0,0,0" Padding="14,0,0,0" Margin="0,2,0,2">
+                          <StackPanel VerticalAlignment="Center">
+                            <CheckBox Content="Schedule on TikTok" IsChecked="{Binding IsScheduled, Mode=TwoWay}"
+                                      FontSize="12" Margin="0,0,0,4"/>
+                            <StackPanel>
+                              <StackPanel.Style>
+                                <Style TargetType="StackPanel">
+                                  <Setter Property="Visibility" Value="Collapsed"/>
+                                  <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsScheduled}" Value="True">
+                                      <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                  </Style.Triggers>
+                                </Style>
+                              </StackPanel.Style>
+                              <TextBlock Text="LOCAL DATE · TIME" FontSize="10" Foreground="{StaticResource Muted}"/>
+                              <TextBox Width="182" HorizontalAlignment="Left"
+                                       Text="{Binding ScheduleDateText, UpdateSourceTrigger=PropertyChanged}"
+                                       ToolTip="YYYY-MM-DD HH:MM. TikTok uses 5-minute increments."
+                                       Margin="0,4,0,0"/>
+                            </StackPanel>
+                            <TextBlock Text="Post immediately" FontSize="11" Foreground="{StaticResource Muted}"
+                                       Margin="0,5,0,0">
+                              <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                  <Setter Property="Visibility" Value="Visible"/>
+                                  <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsScheduled}" Value="True">
+                                      <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                  </Style.Triggers>
+                                </Style>
+                              </TextBlock.Style>
+                            </TextBlock>
+                          </StackPanel>
+                        </Border>
                       </Grid>
                     </Border>
                   </DataTemplate>
-                </ListBox.ItemTemplate>
-              </ListBox>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
             <StackPanel Grid.Row="2" Margin="0,6,0,0">
               <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                <Button Style="{StaticResource SecondaryButton}" Content="Generate SEO Metadata" Command="{Binding GeneratePublishMetadataCommand}"/>
-                <Button Style="{StaticResource SecondaryButton}" Content="Remove Selected" Command="{Binding RemovePublishQueueCommand}"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Check All" Command="{Binding SelectAllPublishQueueCommand}"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Clear Checks" Command="{Binding ClearPublishQueueSelectionCommand}"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Retry Metadata" Command="{Binding GeneratePublishMetadataCommand}"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Remove Checked" Command="{Binding RemovePublishQueueCommand}"/>
               </StackPanel>
               <Separator Margin="0,4,0,8"/>
-              <TextBlock Text="Bulk Schedule Interval" FontSize="17" FontWeight="SemiBold"/>
-              <TextBlock Text="Applies to videos with Schedule checked. Choose the first local posting date/time and spacing between videos." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,8"/>
+              <TextBlock Text="Bulk TikTok Schedule" FontSize="17" FontWeight="SemiBold"/>
+              <TextBlock Text="Applies to CHECKED videos in queue order. Set the first local date/time; all checked videos will be set to Schedule automatically with the selected interval. Use 5-minute time increments."
+                         Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,8"/>
               <StackPanel Orientation="Horizontal">
-                <TextBox Width="220" Text="{Binding PublishFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
-                <ComboBox Width="110" Margin="10,0,0,0" ItemsSource="{Binding PublishIntervals}" SelectedItem="{Binding PublishIntervalHours}"/>
-                <TextBlock Text="hours" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                <TextBox Width="220" Text="{Binding PublishFirstSlot, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="YYYY-MM-DD HH:MM"/>
+                <ComboBox Width="110" Margin="10,0,0,0" ItemsSource="{Binding PublishIntervals}"
+                          SelectedItem="{Binding PublishIntervalHours}"/>
+                <TextBlock Text="hours apart" VerticalAlignment="Center" Margin="6,0,0,0"/>
               </StackPanel>
-              <Button Style="{StaticResource SecondaryButton}" Content="Apply Bulk Schedule" Command="{Binding SchedulePublishQueueCommand}" HorizontalAlignment="Left" Margin="0,9,0,14"/>
+              <StackPanel Orientation="Horizontal" Margin="0,9,0,4">
+                <Button Style="{StaticResource SecondaryButton}" Content="Apply Bulk Schedule"
+                        Command="{Binding SchedulePublishQueueCommand}"/>
+                <TextBlock Text="AI posts per day:" Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                           Margin="18,0,6,0"/>
+                <ComboBox Width="76" ItemsSource="{Binding SmartPostsPerDayOptions}"
+                          SelectedItem="{Binding SmartPostsPerDay, Mode=TwoWay}"
+                          ToolTip="Select 1x to 10x posts per calendar day."/>
+                <TextBlock Text="× / day" Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                           Margin="6,0,10,0"/>
+                <Button Style="{StaticResource PrimaryButton}" Content="AI Smart Schedule"
+                        Command="{Binding SmartSchedulePublishQueueCommand}"
+                        ToolTip="ChatGPT recommends daily posting hours, then ZeroVideo spreads all checked videos across consecutive days at this daily frequency. Review before applying; this does not publish."/>
+              </StackPanel>
+              <TextBlock Text="Smart Schedule: select 1–10 posts per day. Checked videos are distributed in order, beginning tomorrow, within a conservative 20-day window. Use Select All to include the whole available queue."
+                         Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,2,0,12"/>
               <Separator Margin="0,0,0,8"/>
               <StackPanel Orientation="Horizontal">
-                <ComboBox Width="160" ItemsSource="{Binding PublishDestinations}" SelectedItem="{Binding PublishDestination}"/>
-                <Button Style="{StaticResource PrimaryButton}" Content="Publish Selected" Command="{Binding BrowserPublishCommand}" Margin="12,0,0,0"/>
+                <TextBlock Text="TikTok Only" FontSize="14" FontWeight="SemiBold"
+                           VerticalAlignment="Center" Foreground="#54DDE9"/>
+                <Button Style="{StaticResource PrimaryButton}" Content="Publish Checked to TikTok"
+                        Command="{Binding BrowserPublishCommand}" Margin="12,0,0,0"/>
               </StackPanel>
-              <Expander Header="Temporary Publishing Checkpoint (optional)" Margin="0,8,0,0" IsExpanded="False">
-              <Border BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,4,0,4">
-                <StackPanel>
-                  <TextBlock Text="Temporary Publishing Checkpoint" FontSize="16" FontWeight="SemiBold"/>
-                  <TextBlock Text="If posting stops, record the last step you verified. Each video and platform has its own saved checkpoint. Remove this helper once publishing is reliable." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,9"/>
-                  <ComboBox Width="270" HorizontalAlignment="Left" ItemsSource="{Binding PublishCheckpointStages}" SelectedItem="{Binding PublishCheckpointStage}"/>
-                  <TextBox Width="600" HorizontalAlignment="Left" Text="{Binding PublishCheckpointNote, UpdateSourceTrigger=PropertyChanged}" Margin="0,7,0,0"/>
-                  <StackPanel Orientation="Horizontal" Margin="0,9,0,0">
-                    <Button Style="{StaticResource SecondaryButton}" Content="Save Checkpoint" Command="{Binding SavePublishCheckpointCommand}"/>
-                    <Button Style="{StaticResource SecondaryButton}" Content="Resume in Studio" Command="{Binding ResumePublishCheckpointCommand}"/>
-                  </StackPanel>
-                  <TextBlock Text="Resume reopens Studio; inspect existing drafts or uploads before retrying. ZeroVideo cannot restore partially submitted browser forms automatically." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                </StackPanel>
-              </Border>
-              </Expander>
-              <CheckBox Content="I have rights to this video and authorize opening the platform uploader." IsChecked="{Binding PublishConsent}" Margin="0,12,0,0"/>
-              <TextBlock Text="{Binding PublishStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
-              <TextBlock Text="Playwright selects the video and prepares supported metadata. Review everything and confirm publication or scheduling manually in Studio." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+              <CheckBox Content="I have rights to the checked videos and authorize TikTok scheduling/posting, including the automatic Continue to post confirmation."
+                        IsChecked="{Binding PublishConsent}" Margin="0,12,0,0"/>
+              <TextBlock Text="{Binding PublishStatus}" Foreground="{StaticResource Muted}"
+                         TextWrapping="Wrap" Margin="0,10,0,0"/>
+              <TextBlock Text="Videos are submitted sequentially. ZeroVideo never retries an uncertain TikTok submission automatically. YouTube uploads are disabled, but YouTube SEO metadata remains available."
+                         Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
             </StackPanel>
           </Grid>
         </Border>
