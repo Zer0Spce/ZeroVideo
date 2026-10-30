@@ -258,6 +258,55 @@
         </Grid>
       </TabItem>
 
+      <TabItem Header="TikTok Intelligence">
+        <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,12,0,0">
+          <StackPanel Margin="0,0,12,12">
+            <TextBlock Text="TikTok Intelligence" FontSize="24" FontWeight="SemiBold" Margin="0,0,0,6"/>
+            <TextBlock Text="Optional, read-only analytics and trend research. Your account is opened in the existing dedicated Edge profile, and data is saved locally on this Windows PC. No TikTok passwords, private APIs, uploads or publishing settings are changed."
+                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,12"/>
+            <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+              <StackPanel>
+                <TextBlock Text="1. TikTok Studio — Your Analytics" FontSize="19" FontWeight="SemiBold"/>
+                <TextBlock Text="Sign in manually to your own TikTok Studio. Capture only the visible Analytics page, or import an exported per-video CSV for reliable historical posting-hour analysis."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,12"/>
+                <WrapPanel Margin="0,0,0,8">
+                  <Button Style="{StaticResource SecondaryButton}" Content="Open TikTok Studio Analytics" Command="{Binding OpenTikTokAnalyticsCommand}"/>
+                  <Button Style="{StaticResource PrimaryButton}" Content="Capture Visible Analytics" Command="{Binding CaptureTikTokAnalyticsCommand}"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Import Analytics CSV" Command="{Binding ImportTikTokAnalyticsCsvCommand}"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding TikTokAnalyticsStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                <Separator Margin="0,12"/>
+                <TextBlock Text="Your TikTok Posting Insights" FontWeight="SemiBold" FontSize="15"/>
+                <TextBlock Text="{Binding TikTokInsightsSummary}" TextWrapping="Wrap" Margin="0,7,0,0"/>
+              </StackPanel>
+            </Border>
+            <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+              <StackPanel>
+                <TextBlock Text="2. TikTok Creative Center — Platform Trends" FontSize="19" FontWeight="SemiBold"/>
+                <TextBlock Text="Open TikTok Creative Center, select your preferred country/category and Trending Hashtags, then capture hashtags visible in the browser. No hidden data or invented ranks are used."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,12"/>
+                <WrapPanel Margin="0,0,0,8">
+                  <Button Style="{StaticResource SecondaryButton}" Content="Open Creative Center Trends" Command="{Binding OpenTikTokCreativeCenterCommand}"/>
+                  <Button Style="{StaticResource PrimaryButton}" Content="Capture Visible Trends" Command="{Binding CaptureTikTokTrendsCommand}"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding TikTokTrendsStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+              </StackPanel>
+            </Border>
+            <Border Style="{StaticResource CardBorder}">
+              <StackPanel>
+                <TextBlock Text="3. AI Features Using Your Insights" FontSize="19" FontWeight="SemiBold"/>
+                <TextBlock Text="Smart Ideas 2.0 combines your historical high-view topics, recent captured Creative Center hashtags and dated public news/search signals when available. Smart Scheduling 2.0 considers observed posting-hour engagement before estimating daily time slots."
+                           TextWrapping="Wrap" Margin="0,8,0,8"/>
+                <TextBlock Text="Go to Idea Generation → Smart Ideas — Trending Now, or Publishing → AI Smart Schedule. Existing 1×–10× per day, checkboxes, bulk schedule, captions and TikTok publishing are unchanged."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                <TextBlock Text="Limitations: Capture reads the current visible page, not a verified TikTok analytics API. CSV timestamps use this PC's local time. Suggested posting times are correlations and planning estimates, not guarantees."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
       <TabItem Header="Publishing">
         <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
           <Grid Margin="4">
