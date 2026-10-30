@@ -138,13 +138,28 @@ public sealed partial class MainViewModel
                 u.Host.EndsWith("tiktok.com",StringComparison.OrdinalIgnoreCase) &&
                 u.AbsolutePath.Contains("tiktokstudio",StringComparison.OrdinalIgnoreCase) &&
                 u.AbsolutePath.Contains("analytic",StringComparison.OrdinalIgnoreCase)).ToList();
-            if(pages.Count==0)
+            // The dedicated manual Edge window closes during Playwright's
+            // authorized profile handoff. If its original analytics tab was
+            // not restored, open only the official analytics page read-only.
+            var analyticsPage = pages.LastOrDefault();
+            if(analyticsPage is null)
             {
-                TikTokAnalyticsStatus = "No TikTok Studio Analytics page found in ZeroVideo's dedicated Edge profile. " +
-                    "Open Studio Analytics first, log in, and select the Analytics screen.";
+                analyticsPage = await _browser.Context.NewPageAsync();
+                await analyticsPage.GotoAsync(
+                    "https://www.tiktok.com/tiktokstudio/analytics",
+                    new() { WaitUntil=Microsoft.Playwright.WaitUntilState.DOMContentLoaded,
+                            Timeout=45000 });
+                await Task.Delay(1500,_cts.Token);
+            }
+            if(!Uri.TryCreate(analyticsPage.Url,UriKind.Absolute,out var actual) ||
+               !actual.Host.EndsWith("tiktok.com",StringComparison.OrdinalIgnoreCase) ||
+               !actual.AbsolutePath.Contains("tiktokstudio",StringComparison.OrdinalIgnoreCase))
+            {
+                TikTokAnalyticsStatus="TikTok Studio did not open Analytics; check your login " +
+                    "in the browser and retry.";
                 return;
             }
-            var text=await pages[^1].EvaluateAsync<string>(@"
+            var text=await analyticsPage.EvaluateAsync<string>(@"
 ()=> {
  const main=document.querySelector('main')||document.body;
  const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);
@@ -289,8 +304,22 @@ public sealed partial class MainViewModel
                 u.AbsolutePath.Contains("creativecenter",StringComparison.OrdinalIgnoreCase));
             if(page==null)
             {
-                TikTokTrendsStatus="No TikTok Creative Center page found in the dedicated browser. " +
-                    "Open Creative Center first, select your desired region and trends, then retry.";
+                // Reopen Creative Center in the same logged-in Edge profile
+                // after manual-to-automation handoff, without clicks or
+                // calls to internal TikTok endpoints.
+                page=await _browser.Context.NewPageAsync();
+                await page.GotoAsync(
+                    "https://ads.tiktok.com/business/creativecenter/inspiration/popular/hashtag/pc/en",
+                    new() { WaitUntil=Microsoft.Playwright.WaitUntilState.DOMContentLoaded,
+                            Timeout=45000 });
+                await Task.Delay(1500,_cts.Token);
+            }
+            if(!Uri.TryCreate(page.Url,UriKind.Absolute,out var creativeUrl) ||
+               !creativeUrl.Host.Equals("ads.tiktok.com",StringComparison.OrdinalIgnoreCase) ||
+               !creativeUrl.AbsolutePath.Contains("creativecenter",StringComparison.OrdinalIgnoreCase))
+            {
+                TikTokTrendsStatus="Creative Center did not open its Trends page. " +
+                    "Sign in manually if requested, then retry capture.";
                 return;
             }
             var text=await page.EvaluateAsync<string>(@"()=>(document.body?.innerText||'').slice(0,35000)");
