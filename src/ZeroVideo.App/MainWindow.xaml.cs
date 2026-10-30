@@ -89,7 +89,7 @@ public partial class MainWindow : Window
     {
         // The underlying Windows MediaElement may not support certain codecs.
         // The Open Full Video action always remains available.
-        _vm.Log("Local library preview codec error: " +
+        System.Diagnostics.Debug.WriteLine("ZeroVideo local preview codec error: " +
             (e.ErrorException?.Message ?? "Unknown Windows MediaElement error"));
     }
 
