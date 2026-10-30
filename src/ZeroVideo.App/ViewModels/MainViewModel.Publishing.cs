@@ -340,7 +340,9 @@ public sealed partial class MainViewModel
                 $"{i+1}. {SafeTitle(x.Title)}"));
             var prompt = "Suggest practical local posting TIMES of day for a TikTok short-form video channel. " +
                 $"You must suggest EXACTLY {postsPerDay} different times for EACH day, in chronological order, " +
-                "using general viewer engagement heuristics, never falsely claiming account analytics. " +
+                "using available historical account evidence when explicitly imported, " +
+                "or general viewer engagement heuristics when none exists. " +
+                "Do not invent follower activity, hour-by-hour audience statistics or causal performance claims. " +
                 $"Local timezone is {TimeZoneInfo.Local.Id}. " +
                 "Consider the themes in this sample of titles, evening peak viewing and reasonable spacing. " +
                 "Use 24-hour HH:mm times between 08:00 and 22:30 inclusive, on 5-minute increments, " +
@@ -351,7 +353,11 @@ public sealed partial class MainViewModel
                 "{\"response_type\":\"zerovideo_daily_slots_v1\",\"times\":[\"12:00\",\"18:00\"]}. " +
                 "The example is illustrative; your times array MUST contain exactly " +
                 postsPerDay + " values. Do not include commentary or markdown. " +
-                "Do not claim the times will go viral. Video titles:\n" + titles;
+                "Do not claim the times will go viral. " +
+                "If historical posting-hour evidence is available, use it cautiously " +
+                "as a relative preference rather than claiming an optimal posting hour. " +
+                "Evidence:\n" + TikTokSchedulingEvidence() +
+                "\nVideo titles:\n" + titles;
             var raw = await _chat.GenerateTextAsync(new ZeroVideo.App.Models.VideoProject
             {
                 Title = "TikTok daily smart schedule",
@@ -421,8 +427,12 @@ public sealed partial class MainViewModel
                 item.ScheduledAt = new DateTimeOffset(planned[i]);
             }
             SavePublishingQueue();
-            PublishStatus = $"Smart Schedule applied {chosen.Count} videos at " +
-                $"{postsPerDay}x/day across {neededDays} days. Review before TikTok publishing.";
+            PublishStatus = $"Smart Schedule 2.0 applied {chosen.Count} videos at " +
+                $"{postsPerDay}x/day across {neededDays} days. " +
+                (_tiktokIntelligence.Videos.Count >= 4 ?
+                    "Recommendations considered imported historical TikTok engagement. " :
+                    "No sufficient historical analytics: used general timing heuristics. ") +
+                "Review before TikTok publishing.";
             Log(PublishStatus);
         }
         catch(OperationCanceledException)
