@@ -19,6 +19,10 @@ public sealed class PublishQueueItem : ObservableObject
     public string YouTubeTitle { get; set; } = "";
     public string YouTubeDescription { get; set; } = "";
     public string TikTokCaption { get; set; } = "";
+    private bool _isChecked;
+    public bool IsChecked { get => _isChecked; set => Set(ref _isChecked, value); }
+    private string _metadataStatus = "Pending";
+    public string MetadataStatus { get => _metadataStatus; set => Set(ref _metadataStatus, value); }
     private bool _isScheduled;
     public bool IsScheduled { get => _isScheduled; set { if (Set(ref _isScheduled, value)) Raise(nameof(IsInstant)); } }
     public bool IsInstant { get => !IsScheduled; set { if (value) IsScheduled = false; } }
@@ -35,7 +39,8 @@ public sealed class PublishQueueItem : ObservableObject
     public DateTimeOffset? YouTubeCheckpointUpdated { get; set; }
     public DateTimeOffset? TikTokCheckpointUpdated { get; set; }
     public string YouTubeStatus { get; set; } = "Ready";
-    public string TikTokStatus { get; set; } = "Ready";
+    private string _tikTokStatus = "Ready";
+    public string TikTokStatus { get => _tikTokStatus; set => Set(ref _tikTokStatus, value); }
     public void RaiseSeoChanged()
     {
         Raise(nameof(SeoTitle));
@@ -53,8 +58,8 @@ public sealed partial class MainViewModel
     public ObservableCollection<PublishQueueItem> PublishingQueue { get; } = [];
     private PublishQueueItem? _selectedPublishItem;
     private int _publishIntervalHours = 6;
-    private string _publishFirstSlot = DateTime.Now.AddDays(1).ToString("yyyy-MM-dd HH:mm");
-    public ObservableCollection<int> PublishIntervals { get; } = [6, 12, 24, 48];
+    private string _publishFirstSlot = DateTime.Now.Date.AddDays(1).AddHours(12).ToString("yyyy-MM-dd HH:mm");
+    public ObservableCollection<int> PublishIntervals { get; } = [1, 2, 3, 6, 12, 24, 48];
     public PublishQueueItem? SelectedPublishItem
     {
         get => _selectedPublishItem;
@@ -139,10 +144,14 @@ public sealed partial class MainViewModel
         SavePublishingQueue();
         PublishStatus = "Checkpoint saved locally. This is user-confirmed progress, not platform verification.";
     }
-    private string _publishDestination = "YouTube";
+    private string _publishDestination = "TikTok";
     public string PublishDestination { get => _publishDestination; set { if (Set(ref _publishDestination, value)) LoadSelectedCheckpoint(); } }
-    public ObservableCollection<string> PublishDestinations { get; } = ["YouTube", "TikTok"];
+    public ObservableCollection<string> PublishDestinations { get; } = ["TikTok"];
     public ICommand RemovePublishQueueCommand { get; private set; } = null!;
+    public ICommand SelectAllPublishQueueCommand { get; private set; } = null!;
+    public ICommand ClearPublishQueueSelectionCommand { get; private set; } = null!;
+    private bool _isBatchPublishing;
+    public bool IsBatchPublishing { get => _isBatchPublishing; private set => Set(ref _isBatchPublishing, value); }
 
     private void LoadPublishingQueue()
     {
@@ -154,6 +163,8 @@ public sealed partial class MainViewModel
                 {
                     item.IsScheduled = item.ScheduledAt.HasValue;
                     item.ScheduleDateText = item.ScheduledAt?.LocalDateTime.ToString("yyyy-MM-dd HH:mm") ?? "";
+                    if (!string.IsNullOrWhiteSpace(item.YouTubeTitle) && !string.IsNullOrWhiteSpace(item.TikTokCaption))
+                        item.MetadataStatus = "Ready";
                     TrackPublishingItem(item);
                     PublishingQueue.Add(item);
                 }
@@ -219,23 +230,25 @@ public sealed partial class MainViewModel
 
     private void SchedulePublishingQueue()
     {
-        if (!DateTime.TryParseExact(PublishFirstSlot, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture,
-            DateTimeStyles.AssumeLocal, out var first) || first <= DateTime.Now)
-        { PublishStatus = "Choose a future first slot: YYYY-MM-DD HH:MM (computer local time)."; return; }
+        if (IsBatchPublishing) { PublishStatus = "Wait for the current TikTok batch to finish."; return; }
+        if (!DateTime.TryParseExact(PublishFirstSlot.Trim(), "yyyy-MM-dd HH:mm",
+            CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var first) || first <= DateTime.Now)
+        { PublishStatus = "Enter a future local start date: YYYY-MM-DD HH:MM."; return; }
+        if (first.Minute % 5 != 0)
+        { PublishStatus = "TikTok schedules in 5-minute increments. Choose minutes 00, 05, 10, etc."; return; }
         var interval = PublishIntervalHours;
         if (!PublishIntervals.Contains(interval)) { PublishStatus = "Choose a valid interval."; return; }
-        var ready = PublishingQueue.Where(x => x.YouTubeStatus == "Ready" && x.IsScheduled).ToList();
-        if (ready.Count == 0) { PublishStatus = "No ready videos to schedule."; return; }
-        var slot = new DateTimeOffset(first);
-        foreach (var item in ready)
+        var chosen = PublishingQueue.Where(x => x.IsChecked).ToList();
+        if (chosen.Count == 0) { PublishStatus = "Check the videos you want to schedule first."; return; }
+        for (var i = 0; i < chosen.Count; i++)
         {
-            item.ScheduledAt = slot;
-            item.ScheduleDateText = slot.LocalDateTime.ToString("yyyy-MM-dd HH:mm");
-            slot = slot.AddHours(interval);
+            var localSlot = first.AddHours((double)i * interval);
+            chosen[i].IsScheduled = true;
+            chosen[i].ScheduleDateText = localSlot.ToString("yyyy-MM-dd HH:mm");
+            chosen[i].ScheduledAt = new DateTimeOffset(localSlot);
         }
         SavePublishingQueue();
-        SelectedPublishItem = ready[0];
-        PublishStatus = $"Assigned {ready.Count} schedule slots every {interval} hours. Review each in Studio.";
+        PublishStatus = $"Assigned {chosen.Count} TikTok schedule slots at {interval}-hour intervals in queue order.";
     }
 
     private readonly PublishingService _publishing = new();
@@ -289,97 +302,45 @@ public sealed partial class MainViewModel
             catch (Exception ex) { PublishStatus = "Resume browser: " + ex.Message; }
         });
 
-        BrowserPublishCommand = new AsyncCommand(async () =>
-        {
-            if (!File.Exists(PublishFile)) { PublishStatus = "Select a queued MP4 first."; return; }
-            if (!PublishConsent) { PublishStatus = "Review the content and check the authorization box first."; return; }
-            var youtube = PublishDestination == "YouTube";
-            if (youtube && (string.IsNullOrWhiteSpace(YouTubeTitleText) || YouTubeTitleText.Length > 100))
-            { PublishStatus = "YouTube title including hashtags must be 1-100 characters."; return; }
-            if (!youtube && string.IsNullOrWhiteSpace(TikTokCaptionText))
-            { PublishStatus = "Generate or enter the TikTok caption first."; return; }
-            var site = youtube ? "YouTube Studio" : "TikTok Studio";
-            if (MessageBox.Show("Open " + site + " for this video? The browser uploader still requires manual review and final submission.",
-                "Prepare browser publishing", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-            try
-            {
-                var uploader = new StudioUploadService(_browser);
-                PublishStatus = "Preparing " + site + " upload with Playwright...";
-                var result = await uploader.PrepareAsync(Settings, PublishDestination, PublishFile,
-                    YouTubeTitleText, YouTubeDescriptionText, TikTokCaptionText, PublishThumbnail,
-                    SelectedPublishItem?.IsScheduled == true ? SelectedPublishItem.ScheduledAt :
-                    (DateTime.TryParseExact(PublishSchedule, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture,
-                        DateTimeStyles.AssumeLocal, out var chosen) && chosen > DateTime.Now
-                        ? new DateTimeOffset(chosen) : null), message =>
-                    {
-                        Log(message);
-                        Application.Current.Dispatcher.Invoke(() => PublishStatus = message);
-                    }, _cts.Token);
-                PublishCheckpointStage = "Video selected";
-                SaveSelectedCheckpoint();
-                PublishStatus = result;
-            }
-            catch (Exception ex) { PublishStatus = "Browser publishing: " + ex.Message; }
-            finally { PublishConsent = false; }
-        });
+        BrowserPublishCommand = new AsyncCommand(RunTikTokBatchAsync);
 
-        OpenYouTubeStudioCommand = new AsyncCommand(async () =>
-        {
-            try { await _browser.OpenManualAsync(Settings, "https://studio.youtube.com/"); PublishStatus = "YouTube Studio opened. Sign in and use Create > Upload videos. Review metadata and scheduling."; }
-            catch (Exception ex) { PublishStatus = "YouTube Studio: " + ex.Message; }
-        });
+        // YouTube publishing is disabled until explicitly re-enabled.
+        OpenYouTubeStudioCommand = new RelayCommand(() =>
+            PublishStatus = "YouTube publishing is disabled; metadata is saved for later.");
         OpenTikTokStudioCommand = new AsyncCommand(async () =>
         {
             try { await _browser.OpenManualAsync(Settings, "https://www.tiktok.com/tiktokstudio/upload"); PublishStatus = "TikTok Studio opened. Sign in and review cover and scheduling controls."; }
             catch (Exception ex) { PublishStatus = "TikTok Studio: " + ex.Message; }
         });
-        GeneratePublishMetadataCommand = new AsyncCommand(async () =>
-        {
-            if (SelectedPublishItem is null) { PublishStatus = "Select a queued video first."; return; }
-            try
-            {
-                var item = SelectedPublishItem;
-                PublishStatus = "Generating SEO metadata in ChatGPT...";
-                var subject = string.IsNullOrWhiteSpace(item.Description) ? item.Title : item.Description;
-                var prompt = "Generate platform-specific accurate metadata for a finished video. Return ONLY one valid JSON object with " +
-                    "response_type zerovideo_publish_v2, youtube_title (one string including 1-2 relevant #hashtags, total <=100 characters), " +
-                    "youtube_description (separate detailed description and optional relevant hashtags), " +
-                    "tiktok_caption (ONE combined string: compelling hook, short description, 3-6 relevant hashtags). " +
-                    "Avoid false facts, spam, misleading clickbait, promises of views. " +
-                    "Video title: " + item.Title + ". Subject: " + subject;
-                var raw = await _chat.GenerateTextAsync(Project, Settings, prompt, Log, _cts.Token);
-                using var doc = JsonDocument.Parse(raw);
-                var root = doc.RootElement;
-                if (root.GetProperty("response_type").GetString() != "zerovideo_publish_v2")
-                    throw new InvalidDataException("Unexpected metadata response.");
-                var youtubeTitle = root.GetProperty("youtube_title").GetString()?.Trim() ?? "";
-                var youtubeDescription = root.GetProperty("youtube_description").GetString()?.Trim() ?? "";
-                var tiktokCaption = root.GetProperty("tiktok_caption").GetString()?.Trim() ?? "";
-                if (string.IsNullOrWhiteSpace(youtubeTitle) || string.IsNullOrWhiteSpace(youtubeDescription) ||
-                    string.IsNullOrWhiteSpace(tiktokCaption) || youtubeTitle.Length > 100)
-                    throw new InvalidDataException("Invalid metadata: YouTube title must be 1-100 characters including hashtags, and both descriptions must be nonempty. Regenerate.");
-                item.YouTubeTitle = youtubeTitle;
-                item.YouTubeDescription = youtubeDescription;
-                item.TikTokCaption = tiktokCaption;
-                item.Hashtags = string.Join(" ", tiktokCaption.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(tag => tag.StartsWith("#")));
-                item.RaiseSeoChanged();
-                YouTubeTitleText = youtubeTitle;
-                YouTubeDescriptionText = youtubeDescription;
-                TikTokCaptionText = tiktokCaption;
-                SavePublishingQueue();
-                Raise(nameof(PublishingQueue));
-                PublishStatus = "YouTube and TikTok metadata ready in separate fields. Review before publishing.";
-            }
-            catch (Exception ex) { PublishStatus = "Metadata generation: " + ex.Message; }
-        });
+        GeneratePublishMetadataCommand = new AsyncCommand(RetryCheckedMetadataAsync);
 
         SchedulePublishQueueCommand = new RelayCommand(SchedulePublishingQueue);
+        SelectAllPublishQueueCommand = new RelayCommand(() =>
+        {
+            foreach (var item in PublishingQueue) item.IsChecked = true;
+            PublishStatus = "Checked all finished videos.";
+        });
+        ClearPublishQueueSelectionCommand = new RelayCommand(() =>
+        {
+            foreach (var item in PublishingQueue) item.IsChecked = false;
+            PublishStatus = "Cleared the video checkboxes.";
+        });
         RemovePublishQueueCommand = new RelayCommand(() =>
         {
-            if (SelectedPublishItem is null) return;
-            PublishingQueue.Remove(SelectedPublishItem);
-            SelectedPublishItem = null;
+            if (IsBatchPublishing) { PublishStatus = "Cannot remove while publishing."; return; }
+            var chosen = PublishingQueue.Where(x => x.IsChecked).ToList();
+            if (chosen.Count == 0)
+            { PublishStatus = "Check the videos you want to remove."; return; }
+            if (MessageBox.Show($"Remove {chosen.Count} checked video(s) from this queue? Files will remain on disk.",
+                "Remove from queue", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                return;
+            foreach (var item in chosen)
+            {
+                PublishingQueue.Remove(item);
+                if (ReferenceEquals(SelectedPublishItem, item)) SelectedPublishItem = null;
+            }
             SavePublishingQueue();
+            PublishStatus = $"Removed {chosen.Count} queue entry/entries; video files were not deleted.";
         });
         BrowsePublishFileCommand = new RelayCommand(() =>
         {
@@ -389,27 +350,9 @@ public sealed partial class MainViewModel
             PublishTitle = Path.GetFileNameWithoutExtension(dialog.FileName);
             QueueCompletedVideoFromBrowse(dialog.FileName);
         });
-        PublishYouTubeCommand = new AsyncCommand(async () =>
-        {
-            if (!ValidatePublish()) return;
-            try
-            {
-                DateTimeOffset? scheduled = null;
-                if (!string.IsNullOrWhiteSpace(PublishSchedule))
-                {
-                    if (!DateTimeOffset.TryParse(PublishSchedule, CultureInfo.CurrentCulture, DateTimeStyles.AssumeLocal, out var date))
-                        throw new FormatException("Schedule format invalid. Use e.g. 2026-11-01 18:00 (local time).");
-                    scheduled = date;
-                }
-                if (YouTubeTitleText.Length > 100 || string.IsNullOrWhiteSpace(YouTubeTitleText)) throw new InvalidDataException("YouTube title plus hashtags must be 1-100 characters.");
-                PublishStatus = "Uploading to YouTube...";
-                PublishStatus = await _publishing.UploadYouTubeAsync(PublishFile, YouTubeTitleText, YouTubeDescriptionText,
-                    YouTubeAccessToken, YouTubePrivacy, scheduled, _cts.Token);
-                if (SelectedPublishItem is not null) { SelectedPublishItem.YouTubeStatus = scheduled.HasValue ? "Scheduled" : "Uploaded"; SavePublishingQueue(); Raise(nameof(PublishingQueue)); }
-            }
-            catch (Exception ex) { PublishStatus = "YouTube: " + ex.Message; }
-            finally { PublishConsent = false; }
-        });
+        PublishYouTubeCommand = new RelayCommand(() =>
+            PublishStatus = "YouTube publishing is disabled for now.");
+
         PublishTikTokCommand = new AsyncCommand(async () =>
         {
             if (!ValidatePublish()) return;
@@ -423,6 +366,225 @@ public sealed partial class MainViewModel
             catch (Exception ex) { PublishStatus = "TikTok: " + ex.Message; }
             finally { PublishConsent = false; }
         });
+    }
+
+    // TikTok-only sequential publishing. The snapshot is taken once in visual
+    // queue order. A video never gets submitted twice within this batch.
+    private async Task RunTikTokBatchAsync()
+    {
+        if (IsBatchPublishing) return;
+        var chosen = PublishingQueue.Where(x => x.IsChecked).ToList();
+        if (chosen.Count == 0)
+        {
+            PublishStatus = "Check one or more finished videos to publish.";
+            return;
+        }
+        if (!PublishConsent)
+        {
+            PublishStatus = "Check the publishing authorization box before submitting TikTok videos.";
+            return;
+        }
+        var prepared = new List<(PublishQueueItem Item, DateTimeOffset? Slot)>();
+        foreach (var item in chosen)
+        {
+            if (!File.Exists(item.VideoPath))
+            { PublishStatus = "Video file missing: " + item.Title; return; }
+            if (string.IsNullOrWhiteSpace(item.TikTokCaption))
+            {
+                PublishStatus = "TikTok metadata missing for '" + item.Title +
+                    "'. Check it and use Retry Metadata.";
+                return;
+            }
+            DateTimeOffset? slot = null;
+            if (item.IsScheduled)
+            {
+                if (!DateTime.TryParseExact(item.ScheduleDateText.Trim(),
+                    "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeLocal, out var local) ||
+                    local <= DateTime.Now.AddMinutes(20) || local.Minute % 5 != 0)
+                {
+                    PublishStatus = "Invalid TikTok schedule for '" + item.Title +
+                        "'. Use a future YYYY-MM-DD HH:MM on 5-minute increments.";
+                    return;
+                }
+                slot = new DateTimeOffset(local);
+            }
+            prepared.Add((item, slot));
+        }
+        var preview = string.Join(Environment.NewLine,
+            prepared.Take(8).Select((x, i) => $"{i + 1}. {x.Item.Title} — " +
+                (x.Slot.HasValue ? x.Slot.Value.ToString("yyyy-MM-dd HH:mm") : "Post now")));
+        var extra = prepared.Count > 8 ? Environment.NewLine + $"...and {prepared.Count - 8} more" : "";
+        var consent = $"SUBMIT {prepared.Count} TIKTOK VIDEO(S) IN ORDER?" +
+            Environment.NewLine + Environment.NewLine + preview + extra +
+            Environment.NewLine + Environment.NewLine +
+            "ZeroVideo will upload and submit each video automatically, including " +
+            "TikTok's 'Continue to post?' warning if it appears while content " +
+            "checks are incomplete. Check your rights, captions, privacy and dates. " +
+            "The app will click each final submit button only once per attempt. " +
+            "An uncertain platform response will not trigger a retry.";
+        if (MessageBox.Show(consent, "Confirm sequential TikTok publishing",
+            MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            return;
+
+        IsBatchPublishing = true;
+        var submitted = 0;
+        var uploader = new StudioUploadService(_browser);
+        try
+        {
+            for (var index = 0; index < prepared.Count; index++)
+            {
+                _cts.Token.ThrowIfCancellationRequested();
+                var (item, slot) = prepared[index];
+                PublishStatus = $"TikTok {index + 1}/{prepared.Count}: uploading {item.Title}";
+                item.TikTokStatus = "Uploading";
+                SavePublishingQueue();
+                string result;
+                try
+                {
+                    result = await uploader.PrepareAsync(Settings, "TikTok", item.VideoPath,
+                        item.YouTubeTitle, item.YouTubeDescription, item.TikTokCaption,
+                        item.ThumbnailPath, slot, message =>
+                        {
+                            Log(message);
+                            // Progress is displayed but never used to initiate
+                            // another submit or interact with TikTok controls.
+                            Application.Current.Dispatcher.Invoke(() =>
+                                PublishStatus = $"TikTok {index + 1}/{prepared.Count}: " + message);
+                        }, _cts.Token);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    item.TikTokStatus = "Failed - review Studio";
+                    SavePublishingQueue();
+                    PublishStatus = $"TikTok {index + 1}/{prepared.Count} stopped: {ex.Message}";
+                    Log(PublishStatus);
+                    return;
+                }
+                if (result.StartsWith("TikTok: SUBMISSION_CONFIRMED", StringComparison.Ordinal))
+                {
+                    item.TikTokStatus = slot.HasValue ? "Scheduled" : "Published";
+                    submitted++;
+                }
+                else if (result.StartsWith("TikTok: SUBMISSION_ATTEMPTED", StringComparison.Ordinal))
+                {
+                    item.TikTokStatus = "Submission attempted - check Studio";
+                    submitted++;
+                    // #216 commonly navigates away after a successful submit
+                    // without a textual receipt. Allow the next DIFFERENT video
+                    // only when the upload form has been left. No retries.
+                    if (!result.Contains("left the upload page", StringComparison.OrdinalIgnoreCase))
+                    {
+                        SavePublishingQueue();
+                        PublishStatus = $"TikTok batch paused after {index + 1}/{prepared.Count}: " +
+                            result + " Verify the outcome before starting another batch.";
+                        return;
+                    }
+                }
+                else
+                {
+                    item.TikTokStatus = "Needs review";
+                    SavePublishingQueue();
+                    PublishStatus = $"TikTok batch stopped at {index + 1}/{prepared.Count}: " + result;
+                    return;
+                }
+                item.IsChecked = false; // Completed batch item, not future ones.
+                SavePublishingQueue();
+                Log($"TikTok batch {index + 1}/{prepared.Count}: {item.TikTokStatus}. " +
+                    "No repeat submit attempted.");
+            }
+            PublishStatus = $"TikTok batch finished: {submitted}/{prepared.Count} submission attempts. " +
+                "Review TikTok Studio Posts to verify final platform status.";
+        }
+        catch (OperationCanceledException)
+        {
+            PublishStatus = $"TikTok batch canceled after {submitted}/{prepared.Count} attempts. " +
+                "Inspect TikTok Studio before retrying.";
+        }
+        finally
+        {
+            IsBatchPublishing = false;
+            PublishConsent = false;
+            SavePublishingQueue();
+        }
+    }
+
+    private async Task RetryCheckedMetadataAsync()
+    {
+        if (IsBatchPublishing) { PublishStatus = "Wait for the TikTok batch first."; return; }
+        var chosen = PublishingQueue.Where(x => x.IsChecked).ToList();
+        if (chosen.Count == 0)
+        { PublishStatus = "Check the videos whose metadata you want to regenerate."; return; }
+        for (var i = 0; i < chosen.Count; i++)
+        {
+            PublishStatus = $"Regenerating metadata {i + 1}/{chosen.Count}: {chosen[i].Title}";
+            await TryGenerateMetadataForItemAsync(chosen[i], force: true);
+        }
+        PublishStatus = $"Metadata retry finished for {chosen.Count} checked video(s).";
+    }
+
+    private async Task TryGenerateMetadataForItemAsync(PublishQueueItem item, bool force)
+    {
+        if (!force && !string.IsNullOrWhiteSpace(item.TikTokCaption) &&
+            !string.IsNullOrWhiteSpace(item.YouTubeTitle) &&
+            !string.IsNullOrWhiteSpace(item.YouTubeDescription))
+            return;
+        item.MetadataStatus = "Generating";
+        SavePublishingQueue();
+        try
+        {
+            var subject = string.IsNullOrWhiteSpace(item.Description) ?
+                item.Title : item.Description;
+            var prompt = "Generate platform-specific accurate metadata for a FINISHED video. " +
+                "Return ONLY one valid JSON object with response_type zerovideo_publish_v2; " +
+                "youtube_title (include 1-2 relevant #hashtags, total <=100 characters), " +
+                "youtube_description (detailed separate description with optional hashtags), " +
+                "tiktok_caption (ONE combined engaging hook, short description, 3-6 hashtags). " +
+                "Never invent facts, spam, make false promises, or use misleading clickbait. " +
+                "Video title: " + item.Title + ". Subject: " + subject;
+            var raw = await _chat.GenerateTextAsync(Project, Settings, prompt, Log, _cts.Token);
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            if (root.GetProperty("response_type").GetString() != "zerovideo_publish_v2")
+                throw new InvalidDataException("Unexpected metadata response_type.");
+            var ytTitle = root.GetProperty("youtube_title").GetString()?.Trim() ?? "";
+            var ytDescription = root.GetProperty("youtube_description").GetString()?.Trim() ?? "";
+            var tikTok = root.GetProperty("tiktok_caption").GetString()?.Trim() ?? "";
+            if (string.IsNullOrWhiteSpace(ytTitle) || ytTitle.Length > 100 ||
+                string.IsNullOrWhiteSpace(ytDescription) || string.IsNullOrWhiteSpace(tikTok))
+                throw new InvalidDataException("Incomplete or invalid platform metadata.");
+            item.YouTubeTitle = ytTitle;
+            item.YouTubeDescription = ytDescription;
+            item.TikTokCaption = tikTok;
+            item.Hashtags = string.Join(" ", tikTok.Split(' ',
+                StringSplitOptions.RemoveEmptyEntries).Where(tag => tag.StartsWith("#")));
+            item.MetadataStatus = "Ready";
+            item.RaiseSeoChanged();
+            if (ReferenceEquals(item, SelectedPublishItem))
+            {
+                YouTubeTitleText = ytTitle;
+                YouTubeDescriptionText = ytDescription;
+                TikTokCaptionText = tikTok;
+            }
+            SavePublishingQueue();
+            Log("Publishing metadata automatically generated for both platforms: " + item.Title);
+        }
+        catch (OperationCanceledException)
+        {
+            item.MetadataStatus = "Retry needed";
+            SavePublishingQueue();
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Metadata failure must never discard a finished MP4 or stop
+            // another Automation Shorts job. Retry can be initiated later.
+            item.MetadataStatus = "Retry needed";
+            SavePublishingQueue();
+            Log("Publishing metadata could not be generated for '" + item.Title +
+                "': " + ex.Message + ". Check it and use Retry Metadata.");
+        }
     }
 
     private void QueueCompletedVideoFromBrowse(string path)
