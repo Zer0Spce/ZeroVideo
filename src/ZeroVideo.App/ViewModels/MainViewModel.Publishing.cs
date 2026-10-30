@@ -71,6 +71,14 @@ public sealed partial class MainViewModel
     private int _publishIntervalHours = 6;
     private string _publishFirstSlot = DateTime.Now.Date.AddDays(1).AddHours(12).ToString("yyyy-MM-dd HH:mm");
     public ObservableCollection<int> PublishIntervals { get; } = [1, 2, 3, 6, 12, 24, 48];
+    public ObservableCollection<int> SmartPostsPerDayOptions { get; } = [1,2,3,4,5,6,7,8,9,10];
+    private int _smartPostsPerDay = 3;
+    public int SmartPostsPerDay
+    {
+        get => _smartPostsPerDay;
+        set => Set(ref _smartPostsPerDay, Math.Clamp(value,1,10));
+    }
+
     public PublishQueueItem? SelectedPublishItem
     {
         get => _selectedPublishItem;
@@ -271,138 +279,159 @@ public sealed partial class MainViewModel
     {
         if (IsBatchPublishing)
         {
-            PublishStatus = "Wait until the current TikTok publishing batch finishes.";
+            PublishStatus = "Wait for the current TikTok publishing batch first.";
             return;
         }
-        var checkedVideos = PublishingQueue.Where(x => x.IsChecked).ToList();
-        if (checkedVideos.Count == 0)
+        var chosen = PublishingQueue.Where(x => x.IsChecked).ToList();
+        if (chosen.Count == 0)
         {
-            PublishStatus = "Check the videos you want AI to schedule.";
-            return;
-        }
-        if (checkedVideos.Count > 20)
-        {
-            PublishStatus = "Smart Schedule supports up to 20 videos per run.";
+            PublishStatus = "Check the videos to plan, or use Select All for every available video.";
             return;
         }
 
-        // TikTok's available schedule window is account-dependent. The user
-        // confirmed only short-range scheduling works in their Studio, so use
-        // a conservative 21-day window and validate all proposed slots.
+        var postsPerDay = SmartPostsPerDay;
+        if (postsPerDay < 1 || postsPerDay > 10)
+        {
+            PublishStatus = "Choose between 1 and 10 posts per day.";
+            return;
+        }
+        // Start tomorrow so the first day's hours are never in the past.
+        // The 20-day cap stays inside the one-month range that has actually
+        // worked in this user's TikTok Studio, without promising TikTok
+        // will accept every slot.
+        const int maxDays = 20;
+        var neededDays = (chosen.Count + postsPerDay - 1) / postsPerDay;
+        if (neededDays > maxDays)
+        {
+            PublishStatus = $"{chosen.Count} videos at {postsPerDay}x/day need " +
+                $"{neededDays} days, which exceeds the safe {maxDays}-day plan window. " +
+                "Select fewer videos or increase posts per day.";
+            return;
+        }
+
+        var unsuitable = chosen.FirstOrDefault(x =>
+            x.TikTokStatus.Equals("Published",StringComparison.OrdinalIgnoreCase) ||
+            x.TikTokStatus.Equals("Scheduled",StringComparison.OrdinalIgnoreCase) ||
+            x.TikTokStatus.StartsWith("Submission attempted",StringComparison.OrdinalIgnoreCase));
+        if (unsuitable is not null)
+        {
+            PublishStatus = "Uncheck videos already posted/scheduled or with an uncertain " +
+                "submission before creating a new Smart Schedule: " + unsuitable.Title;
+            return;
+        }
+
         var now = DateTime.Now;
-        var earliest = now.AddHours(3);
-        var latest = now.AddDays(21);
+        var startDate = now.Date.AddDays(1);
         var reserved = PublishingQueue.Where(x => !x.IsChecked && x.IsScheduled &&
-            x.ScheduledAt.HasValue).Select(x => x.ScheduledAt!.Value.LocalDateTime)
-            .ToList();
-        var originals = checkedVideos.Select(x => new
-        {
-            x.IsScheduled, x.ScheduleDateText, x.ScheduledAt
-        }).ToList();
-
+            x.ScheduledAt.HasValue).Select(x => x.ScheduledAt!.Value.LocalDateTime).ToList();
         try
         {
-            PublishStatus = $"AI is estimating suitable TikTok slots for {checkedVideos.Count} checked videos...";
-            static string SafeSnippet(string value, int maxLength)
+            PublishStatus = $"AI is planning {chosen.Count} videos at {postsPerDay}x/day " +
+                $"across {neededDays} calendar day(s)...";
+            // Only a compact sample is required for AI's daily time-of-day
+            // recommendations. The actual distribution is deterministic so
+            // it always respects the requested frequency even with many videos.
+            static string SafeTitle(string value)
             {
-                var cleaned = (value ?? "").Replace('\n',' ').Replace('\r',' ').Trim();
-                return cleaned[..Math.Min(maxLength, cleaned.Length)];
+                var clean = (value ?? "").Replace('\r',' ').Replace('\n',' ').Trim();
+                return clean[..Math.Min(90,clean.Length)];
             }
-            var items = string.Join("\n", checkedVideos.Select((x,i) =>
-                $"{i+1}. Title: {SafeSnippet(x.Title, 110)}; " +
-                $"Description: {SafeSnippet(x.Description, 140)}; " +
-                $"Caption: {SafeSnippet(x.TikTokCaption, 170)}"));
-            var prompt = "You are an editorial TikTok publishing schedule planner. " +
-                $"Current local date and time: {now:yyyy-MM-dd HH:mm}. " +
-                $"Local timezone: {TimeZoneInfo.Local.Id}. " +
-                $"Choose EXACTLY {checkedVideos.Count} realistic local posting dates/times for " +
-                "the videos in the listed order using topic/niche, time-of-day and weekday " +
-                "engagement heuristics. These are educated estimates, NOT actual audience analytics. " +
-                "Do not pretend you measured account follower activity, engagement, or TikTok trend data. " +
-                $"All slots MUST be after {earliest:yyyy-MM-dd HH:mm} and before " +
-                $"{latest:yyyy-MM-dd HH:mm}. They must be strictly chronological, " +
-                "at least 60 minutes apart, and multiples of 5 minutes. " +
-                "Prefer realistic afternoon/evening windows for a general audience " +
-                "but vary slots where topic relevance suggests. " +
-                "Avoid these already-booked slots (+/- 60 minutes): " +
-                string.Join(", ",reserved.Take(30).Select(x=>x.ToString("yyyy-MM-dd HH:mm"))) +
-                ". Return ONLY one valid JSON object with the EXACT schema " +
-                "{\"response_type\":\"zerovideo_smart_schedule_v1\",\"schedule\":" +
-                "[{\"index\":1,\"local_time\":\"yyyy-MM-dd HH:mm\",\"reason\":\"Short rationale\"}]}. " +
-                "Use consecutive 1-based indices starting at 1. " +
-                "No markdown. Never claim viral success. VIDEOS:\n" + items;
-
+            var titles = string.Join("\n",chosen.Take(24).Select((x,i) =>
+                $"{i+1}. {SafeTitle(x.Title)}"));
+            var prompt = "Suggest practical local posting TIMES of day for a TikTok short-form video channel. " +
+                $"You must suggest EXACTLY {postsPerDay} different times for EACH day, in chronological order, " +
+                "using general viewer engagement heuristics, never falsely claiming account analytics. " +
+                $"Local timezone is {TimeZoneInfo.Local.Id}. " +
+                "Consider the themes in this sample of titles, evening peak viewing and reasonable spacing. " +
+                "Use 24-hour HH:mm times between 08:00 and 22:30 inclusive, on 5-minute increments, " +
+                "with at least 60 minutes between times. " +
+                "Do not specify calendar dates. The app will distribute the entire queue into " +
+                "consecutive days and assign these recommended times in queue order. " +
+                "Return ONLY one JSON object with schema " +
+                "{\"response_type\":\"zerovideo_daily_slots_v1\",\"times\":[\"12:00\",\"18:00\"]}. " +
+                "The example is illustrative; your times array MUST contain exactly " +
+                postsPerDay + " values. Do not include commentary or markdown. " +
+                "Do not claim the times will go viral. Video titles:\n" + titles;
             var raw = await _chat.GenerateTextAsync(new ZeroVideo.App.Models.VideoProject
             {
-                Title = "TikTok smart schedule",
-                Topic = "Publishing time planning"
-            }, Settings, prompt, Log, _cts.Token);
-            using var document = JsonDocument.Parse(raw);
-            var root = document.RootElement;
-            if (root.GetProperty("response_type").GetString() != "zerovideo_smart_schedule_v1")
-                throw new InvalidDataException("AI schedule response was not in the requested format.");
-            var slots = root.GetProperty("schedule");
-            if (slots.ValueKind != JsonValueKind.Array ||
-                slots.GetArrayLength() != checkedVideos.Count)
-                throw new InvalidDataException("AI returned a different number of schedule slots.");
-
-            var planned = new List<(DateTime Slot, string Reason)>();
-            for (var i = 0; i < checkedVideos.Count; i++)
+                Title = "TikTok daily smart schedule",
+                Topic = "Recommended local times for TikTok posts"
+            },Settings,prompt,Log,_cts.Token);
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            if (root.GetProperty("response_type").GetString() != "zerovideo_daily_slots_v1")
+                throw new InvalidDataException("AI returned the wrong daily schedule format.");
+            var jsonTimes = root.GetProperty("times");
+            if (jsonTimes.ValueKind != JsonValueKind.Array ||
+                jsonTimes.GetArrayLength() != postsPerDay)
+                throw new InvalidDataException($"AI did not provide exactly {postsPerDay} times per day.");
+            var dailyTimes = new List<TimeSpan>();
+            foreach(var record in jsonTimes.EnumerateArray())
             {
-                var record = slots[i];
-                if (record.GetProperty("index").GetInt32() != i+1)
-                    throw new InvalidDataException("AI schedule video indices are out of order.");
-                var rawTime = record.GetProperty("local_time").GetString() ?? "";
-                if (!DateTime.TryParseExact(rawTime, "yyyy-MM-dd HH:mm",
-                    CultureInfo.InvariantCulture, DateTimeStyles.None, out var time) ||
-                    time <= earliest || time >= latest || time.Minute%5 != 0)
-                    throw new InvalidDataException("AI schedule provided an out-of-range or invalid time: " + rawTime);
-                if (planned.Count>0 && time < planned[^1].Slot.AddHours(1))
-                    throw new InvalidDataException("AI schedule slots are out of order or closer than one hour.");
-                if (reserved.Any(x => Math.Abs((x-time).TotalMinutes)<60))
-                    throw new InvalidDataException("AI schedule collides with an existing video: " + rawTime);
-                var reason = record.TryGetProperty("reason",out var reasonJson) &&
-                    reasonJson.ValueKind==JsonValueKind.String
-                    ? (reasonJson.GetString() ?? "") : "";
-                planned.Add((time,reason));
+                var value = record.GetString() ?? "";
+                if (!TimeSpan.TryParseExact(value,"hh\\:mm",CultureInfo.InvariantCulture,out var time) ||
+                    time < TimeSpan.FromHours(8) || time > new TimeSpan(22,30,0) ||
+                    time.Minutes%5 != 0)
+                    throw new InvalidDataException("AI suggested an invalid HH:mm posting time: " + value);
+                if (dailyTimes.Count > 0 && time < dailyTimes[^1]+TimeSpan.FromHours(1))
+                    throw new InvalidDataException("AI suggested duplicate or too-close daily times.");
+                dailyTimes.Add(time);
             }
 
-            var preview = string.Join(Environment.NewLine,
-                checkedVideos.Zip(planned, (item, slot) =>
-                    $"{slot.Slot:MMM dd HH:mm} — {item.Title} (" +
-                    slot.Reason[..Math.Min(80,slot.Reason.Length)] + ")"));
-            if (MessageBox.Show("AI-SUGGESTED TIKTOK SCHEDULE (LOCAL TIME)\n\n" +
-                    preview + "\n\nThese are estimates based on content and typical " +
-                    "engagement patterns, NOT your account's private analytics. " +
-                    "Apply these schedule slots? This does NOT post videos.",
-                    "Review Smart Schedule", MessageBoxButton.YesNo,
-                    MessageBoxImage.Question) != MessageBoxResult.Yes)
+            var planned = new List<DateTime>();
+            for(var i=0; i<chosen.Count; i++)
             {
-                PublishStatus = "AI schedule suggestions canceled. Existing dates unchanged.";
+                var day = i/postsPerDay;
+                var timeIndex = i%postsPerDay;
+                var when = startDate.AddDays(day).Add(dailyTimes[timeIndex]);
+                if (when <= now.AddHours(2) || when > now.AddDays(21))
+                    throw new InvalidDataException("A proposed day exceeds the tested TikTok scheduling window.");
+                if (reserved.Any(slot => Math.Abs((slot-when).TotalMinutes) < 60))
+                    throw new InvalidDataException("A proposed time conflicts with an already scheduled video: " +
+                        when.ToString("yyyy-MM-dd HH:mm") + ". Change checked videos or try another frequency.");
+                planned.Add(when);
+            }
+
+            var previewLines = chosen.Zip(planned,(item,when)=>
+                $"{when:ddd MMM dd, HH:mm} — {SafeTitle(item.Title)}").ToList();
+            var preview = string.Join(Environment.NewLine,previewLines.Take(18));
+            if(previewLines.Count>18)
+                preview += Environment.NewLine + $"...and {previewLines.Count-18} more videos";
+            var scheduleMessage = $"SMART SCHEDULE — {postsPerDay}x PER DAY\n" +
+                $"{chosen.Count} videos across {neededDays} days, starting {startDate:yyyy-MM-dd}.\n\n" +
+                preview + "\n\nAI suggests daily time windows based on content themes and " +
+                "general engagement patterns, NOT actual account analytics. " +
+                "Dates are distributed in queue order, with up to " +
+                postsPerDay + " posts per day. This only fills schedule dates; it does NOT post. " +
+                "Apply these times?";
+            if(MessageBox.Show(scheduleMessage,"Review Smart Schedule",
+                MessageBoxButton.YesNo,MessageBoxImage.Question)!=MessageBoxResult.Yes)
+            {
+                PublishStatus = "Smart Schedule canceled. Existing dates unchanged.";
                 return;
             }
 
-            for (var i = 0; i < checkedVideos.Count; i++)
+            // All validation happens before any queue changes: no partial plans.
+            for(var i=0;i<chosen.Count;i++)
             {
-                checkedVideos[i].IsScheduled = true;
-                checkedVideos[i].ScheduleDateText = planned[i].Slot.ToString(
+                var item=chosen[i];
+                item.IsScheduled = true;
+                item.ScheduleDateText = planned[i].ToString(
                     "yyyy-MM-dd HH:mm",CultureInfo.InvariantCulture);
-                checkedVideos[i].ScheduledAt = new DateTimeOffset(planned[i].Slot);
+                item.ScheduledAt = new DateTimeOffset(planned[i]);
             }
             SavePublishingQueue();
-            PublishStatus = $"AI proposed and assigned {checkedVideos.Count} slots " +
-                "within 21 days. Review the dates before publishing.";
+            PublishStatus = $"Smart Schedule applied {chosen.Count} videos at " +
+                $"{postsPerDay}x/day across {neededDays} days. Review before TikTok publishing.";
             Log(PublishStatus);
         }
-        catch (OperationCanceledException)
+        catch(OperationCanceledException)
         {
-            PublishStatus = "Smart Schedule canceled; existing dates preserved.";
+            PublishStatus = "Smart Schedule canceled; previous dates preserved.";
         }
-        catch (Exception ex)
+        catch(Exception ex)
         {
-            // Validation finishes before any mutation: failure leaves every
-            // previously chosen slot untouched.
-            PublishStatus = "Smart Schedule could not create a valid plan: " + ex.Message;
+            PublishStatus = "Smart Schedule could not make a valid plan: " + ex.Message;
             Log(PublishStatus);
         }
     }
