@@ -56,6 +56,17 @@ public sealed partial class MainViewModel
     private static readonly string QueueFile = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZeroVideo", "publishing-queue.json");
     public ObservableCollection<PublishQueueItem> PublishingQueue { get; } = [];
+    // Select All is computed from individual checkbox state.
+    public bool AllPublishItemsChecked
+    {
+        get => PublishingQueue.Count > 0 && PublishingQueue.All(x => x.IsChecked);
+        set
+        {
+            if (IsBatchPublishing) return;
+            foreach (var item in PublishingQueue) item.IsChecked = value;
+            Raise(nameof(AllPublishItemsChecked));
+        }
+    }
     private PublishQueueItem? _selectedPublishItem;
     private int _publishIntervalHours = 6;
     private string _publishFirstSlot = DateTime.Now.Date.AddDays(1).AddHours(12).ToString("yyyy-MM-dd HH:mm");
@@ -104,6 +115,7 @@ public sealed partial class MainViewModel
     public int PublishIntervalHours { get => _publishIntervalHours; set => Set(ref _publishIntervalHours, value); }
     public string PublishFirstSlot { get => _publishFirstSlot; set => Set(ref _publishFirstSlot, value); }
     public ICommand SchedulePublishQueueCommand { get; private set; } = null!;
+    public ICommand SmartSchedulePublishQueueCommand { get; private set; } = null!;
     public ICommand GeneratePublishMetadataCommand { get; private set; } = null!;
     public ICommand OpenYouTubeStudioCommand { get; private set; } = null!;
     public ICommand OpenTikTokStudioCommand { get; private set; } = null!;
@@ -168,6 +180,7 @@ public sealed partial class MainViewModel
                     TrackPublishingItem(item);
                     PublishingQueue.Add(item);
                 }
+            Raise(nameof(AllPublishItemsChecked));
         }
         catch (Exception ex) { Log("Publishing queue could not be loaded: " + ex.Message); }
     }
@@ -180,6 +193,8 @@ public sealed partial class MainViewModel
                 DateTime.TryParseExact(item.ScheduleDateText, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture,
                     DateTimeStyles.AssumeLocal, out var scheduled) && scheduled > DateTime.Now)
                 item.ScheduledAt = new DateTimeOffset(scheduled);
+            if (args.PropertyName == nameof(PublishQueueItem.IsChecked))
+                Raise(nameof(AllPublishItemsChecked));
             if (args.PropertyName == nameof(PublishQueueItem.IsScheduled) && !item.IsScheduled)
                 item.ScheduledAt = null;
             SavePublishingQueue();
@@ -212,6 +227,7 @@ public sealed partial class MainViewModel
         };
         TrackPublishingItem(item);
         PublishingQueue.Add(item);
+        Raise(nameof(AllPublishItemsChecked));
         SavePublishingQueue();
         Log("Publishing queue: added " + item.Title);
     }
@@ -249,6 +265,141 @@ public sealed partial class MainViewModel
         }
         SavePublishingQueue();
         PublishStatus = $"Assigned {chosen.Count} TikTok schedule slots at {interval}-hour intervals in queue order.";
+    }
+
+    private async Task SmartSchedulePublishingQueueAsync()
+    {
+        if (IsBatchPublishing)
+        {
+            PublishStatus = "Wait until the current TikTok publishing batch finishes.";
+            return;
+        }
+        var checkedVideos = PublishingQueue.Where(x => x.IsChecked).ToList();
+        if (checkedVideos.Count == 0)
+        {
+            PublishStatus = "Check the videos you want AI to schedule.";
+            return;
+        }
+        if (checkedVideos.Count > 20)
+        {
+            PublishStatus = "Smart Schedule supports up to 20 videos per run.";
+            return;
+        }
+
+        // TikTok's available schedule window is account-dependent. The user
+        // confirmed only short-range scheduling works in their Studio, so use
+        // a conservative 21-day window and validate all proposed slots.
+        var now = DateTime.Now;
+        var earliest = now.AddHours(3);
+        var latest = now.AddDays(21);
+        var reserved = PublishingQueue.Where(x => !x.IsChecked && x.IsScheduled &&
+            x.ScheduledAt.HasValue).Select(x => x.ScheduledAt!.Value.LocalDateTime)
+            .ToList();
+        var originals = checkedVideos.Select(x => new
+        {
+            x.IsScheduled, x.ScheduleDateText, x.ScheduledAt
+        }).ToList();
+
+        try
+        {
+            PublishStatus = $"AI is estimating suitable TikTok slots for {checkedVideos.Count} checked videos...";
+            var items = string.Join("\n", checkedVideos.Select((x,i) =>
+                $"{i+1}. Title: {x.Title.Replace('\n',' ')}; " +
+                $"Description: {x.Description.Replace('\n',' ')[..Math.Min(140,x.Description.Length)]}; " +
+                $"Caption: {x.TikTokCaption.Replace('\n',' ')[..Math.Min(170,x.TikTokCaption.Length)]}"));
+            var prompt = "You are an editorial TikTok publishing schedule planner. " +
+                $"Current local date and time: {now:yyyy-MM-dd HH:mm}. " +
+                $"Local timezone: {TimeZoneInfo.Local.Id}. " +
+                $"Choose EXACTLY {checkedVideos.Count} realistic local posting dates/times for " +
+                "the videos in the listed order using topic/niche, time-of-day and weekday " +
+                "engagement heuristics. These are educated estimates, NOT actual audience analytics. " +
+                "Do not pretend you measured account follower activity, engagement, or TikTok trend data. " +
+                $"All slots MUST be after {earliest:yyyy-MM-dd HH:mm} and before " +
+                $"{latest:yyyy-MM-dd HH:mm}. They must be strictly chronological, " +
+                "at least 60 minutes apart, and multiples of 5 minutes. " +
+                "Prefer realistic afternoon/evening windows for a general audience " +
+                "but vary slots where topic relevance suggests. " +
+                "Avoid these already-booked slots (+/- 60 minutes): " +
+                string.Join(", ",reserved.Take(30).Select(x=>x.ToString("yyyy-MM-dd HH:mm"))) +
+                ". Return ONLY one valid JSON object with the EXACT schema " +
+                "{\"response_type\":\"zerovideo_smart_schedule_v1\",\"schedule\":" +
+                "[{\"index\":1,\"local_time\":\"yyyy-MM-dd HH:mm\",\"reason\":\"Short rationale\"}]}. " +
+                "Use consecutive 1-based indices starting at 1. " +
+                "No markdown. Never claim viral success. VIDEOS:\n" + items;
+
+            var raw = await _chat.GenerateTextAsync(new ZeroVideo.App.Models.VideoProject
+            {
+                Title = "TikTok smart schedule",
+                Topic = "Publishing time planning"
+            }, Settings, prompt, Log, _cts.Token);
+            using var document = JsonDocument.Parse(raw);
+            var root = document.RootElement;
+            if (root.GetProperty("response_type").GetString() != "zerovideo_smart_schedule_v1")
+                throw new InvalidDataException("AI schedule response was not in the requested format.");
+            var slots = root.GetProperty("schedule");
+            if (slots.ValueKind != JsonValueKind.Array ||
+                slots.GetArrayLength() != checkedVideos.Count)
+                throw new InvalidDataException("AI returned a different number of schedule slots.");
+
+            var planned = new List<(DateTime Slot, string Reason)>();
+            for (var i = 0; i < checkedVideos.Count; i++)
+            {
+                var record = slots[i];
+                if (record.GetProperty("index").GetInt32() != i+1)
+                    throw new InvalidDataException("AI schedule video indices are out of order.");
+                var rawTime = record.GetProperty("local_time").GetString() ?? "";
+                if (!DateTime.TryParseExact(rawTime, "yyyy-MM-dd HH:mm",
+                    CultureInfo.InvariantCulture, DateTimeStyles.None, out var time) ||
+                    time <= earliest || time >= latest || time.Minute%5 != 0)
+                    throw new InvalidDataException("AI schedule provided an out-of-range or invalid time: " + rawTime);
+                if (planned.Count>0 && time < planned[^1].Slot.AddHours(1))
+                    throw new InvalidDataException("AI schedule slots are out of order or closer than one hour.");
+                if (reserved.Any(x => Math.Abs((x-time).TotalMinutes)<60))
+                    throw new InvalidDataException("AI schedule collides with an existing video: " + rawTime);
+                var reason = record.TryGetProperty("reason",out var reasonJson) &&
+                    reasonJson.ValueKind==JsonValueKind.String
+                    ? (reasonJson.GetString() ?? "") : "";
+                planned.Add((time,reason));
+            }
+
+            var preview = string.Join(Environment.NewLine,
+                checkedVideos.Zip(planned, (item, slot) =>
+                    $"{slot.Slot:MMM dd HH:mm} — {item.Title} (" +
+                    slot.Reason[..Math.Min(80,slot.Reason.Length)] + ")"));
+            if (MessageBox.Show("AI-SUGGESTED TIKTOK SCHEDULE (LOCAL TIME)\n\n" +
+                    preview + "\n\nThese are estimates based on content and typical " +
+                    "engagement patterns, NOT your account's private analytics. " +
+                    "Apply these schedule slots? This does NOT post videos.",
+                    "Review Smart Schedule", MessageBoxButton.YesNo,
+                    MessageBoxImage.Question) != MessageBoxResult.Yes)
+            {
+                PublishStatus = "AI schedule suggestions canceled. Existing dates unchanged.";
+                return;
+            }
+
+            for (var i = 0; i < checkedVideos.Count; i++)
+            {
+                checkedVideos[i].IsScheduled = true;
+                checkedVideos[i].ScheduleDateText = planned[i].Slot.ToString(
+                    "yyyy-MM-dd HH:mm",CultureInfo.InvariantCulture);
+                checkedVideos[i].ScheduledAt = new DateTimeOffset(planned[i].Slot);
+            }
+            SavePublishingQueue();
+            PublishStatus = $"AI proposed and assigned {checkedVideos.Count} slots " +
+                "within 21 days. Review the dates before publishing.";
+            Log(PublishStatus);
+        }
+        catch (OperationCanceledException)
+        {
+            PublishStatus = "Smart Schedule canceled; existing dates preserved.";
+        }
+        catch (Exception ex)
+        {
+            // Validation finishes before any mutation: failure leaves every
+            // previously chosen slot untouched.
+            PublishStatus = "Smart Schedule could not create a valid plan: " + ex.Message;
+            Log(PublishStatus);
+        }
     }
 
     private readonly PublishingService _publishing = new();
@@ -315,14 +466,15 @@ public sealed partial class MainViewModel
         GeneratePublishMetadataCommand = new AsyncCommand(RetryCheckedMetadataAsync);
 
         SchedulePublishQueueCommand = new RelayCommand(SchedulePublishingQueue);
+        SmartSchedulePublishQueueCommand = new AsyncCommand(SmartSchedulePublishingQueueAsync);
         SelectAllPublishQueueCommand = new RelayCommand(() =>
         {
-            foreach (var item in PublishingQueue) item.IsChecked = true;
+            AllPublishItemsChecked = true;
             PublishStatus = "Checked all finished videos.";
         });
         ClearPublishQueueSelectionCommand = new RelayCommand(() =>
         {
-            foreach (var item in PublishingQueue) item.IsChecked = false;
+            AllPublishItemsChecked = false;
             PublishStatus = "Cleared the video checkboxes.";
         });
         RemovePublishQueueCommand = new RelayCommand(() =>
@@ -340,6 +492,7 @@ public sealed partial class MainViewModel
                 if (ReferenceEquals(SelectedPublishItem, item)) SelectedPublishItem = null;
             }
             SavePublishingQueue();
+            Raise(nameof(AllPublishItemsChecked));
             PublishStatus = $"Removed {chosen.Count} queue entry/entries; video files were not deleted.";
         });
         BrowsePublishFileCommand = new RelayCommand(() =>
