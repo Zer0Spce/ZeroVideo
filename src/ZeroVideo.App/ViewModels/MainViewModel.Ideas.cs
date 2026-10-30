@@ -168,37 +168,46 @@ public sealed partial class MainViewModel
         {
             IdeaStatus = "Checking live trend/news sources for " + niche + "...";
             var signals = await GetCurrentTrendSignalsAsync(niche, _cts.Token);
-            if (signals.Count < 2)
+            var tikTokSignals = TikTokIdeaSignals();
+            if (signals.Count + tikTokSignals.Count < 2)
             {
-                IdeaStatus = "Smart Ideas needs current source evidence. News and trends feeds " +
-                    "are unavailable; no ideas were labeled trending. Try again later or use Generate video ideas.";
+                IdeaStatus = "Smart Ideas 2.0 needs current trend evidence. No fresh " +
+                    "Creative Center capture or recent public news/search feed was available. " +
+                    "Capture TikTok trends in the Intelligence tab or use Generate video ideas.";
                 return;
             }
-            IdeaStatus = $"Researching {signals.Count} recent signals and generating ideas...";
+            IdeaStatus = $"Smart Ideas 2.0: researching {signals.Count} public " +
+                $"and {tikTokSignals.Count} TikTok signals...";
             var prompt =
                 $"Act as a careful short-form video researcher and creator. Today's local date is " +
                 $"{DateTimeOffset.Now:yyyy-MM-dd}. My niche is: {niche}. " +
                 $"Generate exactly {IdeaCount} distinct original curiosity-driven video ideas with specific hooks. " +
-                "Use ONLY the dated search and news signals below as evidence of current topical interest. " +
-                "Prioritize signals relevant to the niche; explain facts conservatively, " +
-                "do not invent facts, spread allegations as facts, or claim guaranteed popularity. " +
-                "No need to reuse every headline. If a signal is unsuitable for this niche, ignore it. " +
-                "Never describe an idea as verified viral or claim to know TikTok audience analytics. " +
+                "Use the dated public news/search signals and the fresh visible TikTok " +
+                "Creative Center hashtags below as evidence of topical interest. " +
+                "Account historical top-view videos may inform the user's preferred niche; " +
+                "they are NOT proof of current trending popularity. " +
+                "Prioritize verified and niche-relevant topics; clearly separate factual " +
+                "claims from speculation. Never invent facts, promise virality, or describe " +
+                "hashtag captures as audited growth rankings. " +
                 "Return ONLY one complete JSON object without markdown: " +
                 "{\"response_type\":\"zerovideo_ideas_v1\",\"niche\":\"" +
                 niche.Replace("\"", "'") +
                 "\",\"ideas\":[{\"title\":\"Specific curiosity-driven title\", \"hook\":\"Factual opening hook\"}]}. " +
-                "Every title and hook nonempty. Here are public recent signals:\n" +
-                string.Join("\n", signals);
+                "Every title and hook nonempty. Public dated signals:\n" +
+                string.Join("\n", signals) +
+                "\nTikTok Creative Center visible hashtags, with capture dates:\n" +
+                string.Join("\n", tikTokSignals) +
+                "\nUser's historical top-viewed account topics (NOT current trends):\n" +
+                TikTokIdeaAccountEvidence();
             var raw = await _chat.GenerateTextAsync(new ZeroVideo.App.Models.VideoProject
             {
                 Title = "Smart ideas: " + niche,
                 Topic = niche
             }, Settings, prompt, Log, _cts.Token);
             PopulateGeneratedIdeas(raw, niche);
-            IdeaStatus = $"Smart Ideas: {GeneratedIdeas.Count} ideas informed by " +
-                $"{signals.Count} recent public trend/news signals. Relevance and watchability " +
-                "are editorial estimates, not measured TikTok analytics.";
+            IdeaStatus = $"Smart Ideas 2.0: {GeneratedIdeas.Count} ideas informed by " +
+                $"{signals.Count} recent public signals and {tikTokSignals.Count} " +
+                "captured Creative Center hashtags. Watchability is an estimate, not a guarantee.";
         }
         catch (Exception ex)
         {
