@@ -299,23 +299,78 @@ public sealed partial class MainViewModel
             if (!youtube && string.IsNullOrWhiteSpace(TikTokCaptionText))
             { PublishStatus = "Generate or enter the TikTok caption first."; return; }
             var site = youtube ? "YouTube Studio" : "TikTok Studio";
-            if (MessageBox.Show("Open " + site + " for this video? The browser uploader still requires manual review and final submission.",
-                "Prepare browser publishing", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+            var warning = youtube
+                ? "Open YouTube Studio for this video? Final YouTube submission still requires manual review."
+                : "AUTOMATIC TIKTOK SUBMISSION\n\n" +
+                  "ZeroVideo will upload this selected video, set its schedule when requested, then CLICK TikTok's final " +
+                  (SelectedPublishItem?.IsScheduled == true ? "Schedule" : "Post") +
+                  " button automatically, without a second confirmation in TikTok Studio.\n\n" +
+                  (SelectedPublishItem?.IsScheduled == true
+                    ? "Scheduled local time: " + SelectedPublishItem.ScheduleDateText + "\n\n" :
+                      "This video is currently set to post immediately.\n\n") +
+                  "TikTok may warn 'Continue to post?' while its content check is still running. " +
+                  "ZeroVideo will automatically click Post now inside that confirmation once, " +
+                  "continuing submission before TikTok finishes checking.\n\n" +
+                  "Only continue if you authorize this submission. Check the caption, privacy and music rights first.\n" +
+                  "If TikTok's receipt is unclear, ZeroVideo will not retry automatically.";
+            if (MessageBox.Show(warning, youtube ? "Prepare YouTube publishing" : "Confirm automatic TikTok publishing",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
             try
             {
                 var uploader = new StudioUploadService(_browser);
                 PublishStatus = "Preparing " + site + " upload with Playwright...";
+                // The scheduled date shown in the queue editor is authoritative.
+                // Never silently fall back to a stale ScheduledAt value if editing
+                // failed to update the stored model or the typed value is invalid.
+                DateTimeOffset? requestedSlot = null;
+                if (SelectedPublishItem?.IsScheduled == true)
+                {
+                    var typed = SelectedPublishItem.ScheduleDateText.Trim();
+                    if (!DateTime.TryParseExact(typed, "yyyy-MM-dd HH:mm",
+                        CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var chosen)
+                        || chosen <= DateTime.Now)
+                    {
+                        PublishStatus = "Invalid schedule: use a future YYYY-MM-DD HH:MM in the visible video row.";
+                        return;
+                    }
+                    requestedSlot = new DateTimeOffset(chosen);
+                    SelectedPublishItem.ScheduledAt = requestedSlot;
+                    SavePublishingQueue();
+                }
+                else if (DateTime.TryParseExact(PublishSchedule, "yyyy-MM-dd HH:mm",
+                    CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var fallback)
+                    && fallback > DateTime.Now)
+                {
+                    requestedSlot = new DateTimeOffset(fallback);
+                }
+                Log("Browser publishing: exact schedule passed to " + site + ": " +
+                    (requestedSlot?.ToString("yyyy-MM-dd HH:mm zzz") ?? "no scheduled slot") +
+                    "; visible queue input=" + (SelectedPublishItem?.ScheduleDateText ?? "(none)"));
                 var result = await uploader.PrepareAsync(Settings, PublishDestination, PublishFile,
                     YouTubeTitleText, YouTubeDescriptionText, TikTokCaptionText, PublishThumbnail,
-                    SelectedPublishItem?.IsScheduled == true ? SelectedPublishItem.ScheduledAt :
-                    (DateTime.TryParseExact(PublishSchedule, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture,
-                        DateTimeStyles.AssumeLocal, out var chosen) && chosen > DateTime.Now
-                        ? new DateTimeOffset(chosen) : null), message =>
+                    requestedSlot, message =>
                     {
                         Log(message);
                         Application.Current.Dispatcher.Invoke(() => PublishStatus = message);
                     }, _cts.Token);
-                PublishCheckpointStage = "Video selected";
+                if (!youtube && SelectedPublishItem is { } item &&
+                    result.StartsWith("TikTok: SUBMISSION_", StringComparison.Ordinal))
+                {
+                    var confirmed = result.StartsWith("TikTok: SUBMISSION_CONFIRMED",
+                        StringComparison.Ordinal);
+                    item.TikTokStatus = confirmed
+                        ? (requestedSlot.HasValue ? "Scheduled" : "Published")
+                        : "Submission attempted - check Studio";
+                    PublishCheckpointStage = confirmed ? "Platform confirmed" : "Upload accepted";
+                    PublishCheckpointNote = confirmed
+                        ? "TikTok showed explicit confirmation after final submission."
+                        : "Final TikTok action clicked once. Outcome not confirmed. Verify in TikTok Studio Posts before retrying.";
+                    SavePublishingQueue();
+                }
+                else
+                {
+                    PublishCheckpointStage = "Video selected";
+                }
                 SaveSelectedCheckpoint();
                 PublishStatus = result;
             }
