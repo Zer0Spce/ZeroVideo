@@ -64,6 +64,28 @@ public partial class MainWindow : Window
         }
     }
 
+    // Dragging a calendar entry only updates an unsubmitted local queue
+    // date. Actual TikTok Studio posts cannot be moved from this calendar.
+    private void OnCalendarEntryPreviewMouseMove(object sender,
+        System.Windows.Input.MouseEventArgs e)
+    {
+        if(e.LeftButton!=System.Windows.Input.MouseButtonState.Pressed)return;
+        if(e.OriginalSource is not FrameworkElement element ||
+           element.DataContext is not CalendarVideoEntry entry)return;
+        DragDrop.DoDragDrop((DependencyObject)sender,
+            new DataObject(typeof(CalendarVideoEntry),entry),DragDropEffects.Move);
+    }
+
+    private void OnCalendarDayDrop(object sender,DragEventArgs e)
+    {
+        if(sender is not System.Windows.Controls.Border border ||
+           border.DataContext is not CalendarDayEntry day ||
+           e.Data.GetData(typeof(CalendarVideoEntry)) is not CalendarVideoEntry entry)
+            return;
+        _vm.MoveCalendarVideoToDay(entry,day.Date);
+        e.Handled=true;
+    }
+
     // Only controls the embedded local video preview. The TikTok uploader
     // and video rendering/playback engine are untouched.
     private void OnLibraryPlayClicked(object sender, RoutedEventArgs e)
