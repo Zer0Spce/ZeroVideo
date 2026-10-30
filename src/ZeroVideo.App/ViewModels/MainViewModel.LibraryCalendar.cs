@@ -220,9 +220,14 @@ public sealed partial class MainViewModel
             }
             // Search exported videos only; do not enumerate recovery archives.
             var matches=Directory.EnumerateFiles(root,"*.mp4",SearchOption.AllDirectories)
+                // Only final exports or explicit queue entries are finished
+                // videos. Exclude render intermediates to keep the library clean.
                 .Where(x=>Path.GetRelativePath(root,x).Split(
                     Path.DirectorySeparatorChar).All(part=>
                     !part.Equals("_ZeroVideoArchives",StringComparison.OrdinalIgnoreCase)))
+                .Where(x=>Path.GetRelativePath(root,x).Split(Path.DirectorySeparatorChar)
+                    .Any(part=>part.Equals("exports",StringComparison.OrdinalIgnoreCase)) ||
+                    PublishingQueue.Any(q=>q.VideoPath.Equals(x,StringComparison.OrdinalIgnoreCase)))
                 .Where(x=>string.IsNullOrWhiteSpace(LibrarySearch) ||
                     x.Contains(LibrarySearch,StringComparison.OrdinalIgnoreCase))
                 .Take(1200).Select(path=>
@@ -346,6 +351,10 @@ public sealed partial class MainViewModel
                     {
                         _cts.Token.ThrowIfCancellationRequested();
                         if(entry.Length<0)throw new InvalidDataException("Invalid ZIP entry length.");
+                        // Read decompressed bytes to verify each archived file
+                        // is actually accessible, not merely listed in ZIP.
+                        using var stream=entry.Open();
+                        stream.CopyTo(Stream.Null);
                     }
                 }
                 File.Move(temporary,target);
