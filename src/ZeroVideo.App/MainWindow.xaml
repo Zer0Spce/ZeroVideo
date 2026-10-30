@@ -168,20 +168,34 @@
               <Label Content="NUMBER OF IDEAS" Margin="0,10,0,0"/>
               <TextBox Text="{Binding IdeaCount, UpdateSourceTrigger=LostFocus}"/>
               <Button Style="{StaticResource PrimaryButton}" Content="Generate video ideas" Command="{Binding GenerateIdeasCommand}" HorizontalAlignment="Left" Margin="0,14,0,0"/>
+              <Button Style="{StaticResource SecondaryButton}" Content="Smart Ideas — Trending Now" Command="{Binding GenerateSmartIdeasCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"
+                      ToolTip="Use dated Google News/Trends headlines and ChatGPT to suggest niche-relevant original video ideas. Requires internet."/>
               <TextBlock Text="{Binding IdeaStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,14,0,0"/>
               <Separator Margin="0,14"/>
-              <TextBlock Text="Select an idea from the list, then add it to your Shorts queue or copy it into Create." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
-              <Button Style="{StaticResource PrimaryButton}" Content="+ Add selected to Shorts queue" Command="{Binding QueueSelectedIdeaCommand}" HorizontalAlignment="Left" Margin="0,14,0,0"/>
-              <Button Style="{StaticResource SecondaryButton}" Content="Use selected idea in Create" Command="{Binding UseSelectedIdeaCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+              <TextBlock Text="Check several ideas and send them to Automation Shorts in one click. Duplicate titles are skipped." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+              <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                <Button Style="{StaticResource SecondaryButton}" Content="Check All" Command="{Binding CheckAllIdeasCommand}"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Clear Checks" Command="{Binding ClearIdeaChecksCommand}"/>
+              </StackPanel>
+              <Button Style="{StaticResource PrimaryButton}" Content="+ Add Checked to Automation" Command="{Binding QueueSelectedIdeaCommand}" HorizontalAlignment="Left" Margin="0,10,0,0"/>
+              <Button Style="{StaticResource SecondaryButton}" Content="Use highlighted idea in Create" Command="{Binding UseSelectedIdeaCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
             </StackPanel>
           </Border>
           <Border Grid.Column="2" Style="{StaticResource CardBorder}">
             <DockPanel>
               <TextBlock DockPanel.Dock="Top" Text="Generated ideas — title and hook" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,12"/>
-              <DataGrid ItemsSource="{Binding GeneratedIdeas}" SelectedItem="{Binding SelectedIdea, Mode=TwoWay}" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single">
+              <DataGrid ItemsSource="{Binding GeneratedIdeas}" SelectedItem="{Binding SelectedIdea, Mode=TwoWay}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False" SelectionMode="Single">
                 <DataGrid.Columns>
-                  <DataGridTextColumn Header="Video title" Binding="{Binding Title}" Width="2*"/>
-                  <DataGridTextColumn Header="Opening hook" Binding="{Binding Hook}" Width="3*"/>
+                  <DataGridTemplateColumn Header="Use" Width="55">
+                    <DataGridTemplateColumn.CellTemplate>
+                      <DataTemplate>
+                        <CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center" ToolTip="Add this idea to Automation Shorts"/>
+                      </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                  </DataGridTemplateColumn>
+                  <DataGridTextColumn Header="Video title" Binding="{Binding Title}" IsReadOnly="True" Width="2*"/>
+                  <DataGridTextColumn Header="Opening hook" Binding="{Binding Hook}" IsReadOnly="True" Width="3*"/>
                 </DataGrid.Columns>
               </DataGrid>
             </DockPanel>
@@ -253,7 +267,12 @@
               <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <StackPanel Grid.Row="0" Margin="0,0,0,8">
-              <TextBlock Text="Finished Video Queue" FontSize="23" FontWeight="SemiBold" Margin="0,0,0,7"/>
+              <StackPanel Orientation="Horizontal" Margin="0,0,0,7">
+                <CheckBox Content="Select All" IsChecked="{Binding AllPublishItemsChecked, Mode=TwoWay}" VerticalAlignment="Center"
+                          ToolTip="Check or uncheck all finished videos for publishing and smart scheduling."
+                          Margin="0,0,14,0"/>
+                <TextBlock Text="Finished Video Queue" FontSize="23" FontWeight="SemiBold" VerticalAlignment="Center"/>
+              </StackPanel>
               <TextBlock Text="Check the videos you want to publish to TikTok. Checked videos will upload one by one in the order shown. YouTube metadata is saved for later use."
                          Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,8"/>
             </StackPanel>
@@ -362,9 +381,13 @@
                           SelectedItem="{Binding PublishIntervalHours}"/>
                 <TextBlock Text="hours apart" VerticalAlignment="Center" Margin="6,0,0,0"/>
               </StackPanel>
-              <Button Style="{StaticResource SecondaryButton}" Content="Apply Bulk Schedule"
-                      Command="{Binding SchedulePublishQueueCommand}" HorizontalAlignment="Left"
-                      Margin="0,9,0,14"/>
+              <StackPanel Orientation="Horizontal" Margin="0,9,0,14">
+                <Button Style="{StaticResource SecondaryButton}" Content="Apply Bulk Schedule"
+                        Command="{Binding SchedulePublishQueueCommand}"/>
+                <Button Style="{StaticResource PrimaryButton}" Content="AI Smart Schedule"
+                        Command="{Binding SmartSchedulePublishQueueCommand}" Margin="10,0,0,0"
+                        ToolTip="ChatGPT suggests local posting slots for checked videos based on topics and general engagement heuristics. You review before dates are applied; this does not publish."/>
+              </StackPanel>
               <Separator Margin="0,0,0,8"/>
               <StackPanel Orientation="Horizontal">
                 <TextBlock Text="TikTok Only" FontSize="14" FontWeight="SemiBold"
