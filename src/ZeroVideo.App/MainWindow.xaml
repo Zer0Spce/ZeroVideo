@@ -415,11 +415,12 @@
                     <DataTemplate>
                       <Border BorderBrush="{StaticResource Border}" BorderThickness="1"
                               CornerRadius="6" Margin="2" Padding="5" MinHeight="108"
-                              Background="#201F29">
+                              Background="#201F29" AllowDrop="True" Drop="OnCalendarDayDrop">
                         <DockPanel>
                           <TextBlock DockPanel.Dock="Top" Text="{Binding DayLabel}" FontWeight="SemiBold"
                                      HorizontalAlignment="Right" Margin="0,0,0,4"/>
                           <ListBox ItemsSource="{Binding Videos}" BorderThickness="0" Background="Transparent"
+                                   PreviewMouseMove="OnCalendarEntryPreviewMouseMove"
                                    MaxHeight="90" ScrollViewer.VerticalScrollBarVisibility="Auto"
                                    SelectedItem="{Binding DataContext.SelectedCalendarVideo,
                                    RelativeSource={RelativeSource AncestorType=Window}, Mode=TwoWay}">
