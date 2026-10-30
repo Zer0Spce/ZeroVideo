@@ -381,13 +381,22 @@
                           SelectedItem="{Binding PublishIntervalHours}"/>
                 <TextBlock Text="hours apart" VerticalAlignment="Center" Margin="6,0,0,0"/>
               </StackPanel>
-              <StackPanel Orientation="Horizontal" Margin="0,9,0,14">
+              <StackPanel Orientation="Horizontal" Margin="0,9,0,4">
                 <Button Style="{StaticResource SecondaryButton}" Content="Apply Bulk Schedule"
                         Command="{Binding SchedulePublishQueueCommand}"/>
+                <TextBlock Text="AI posts per day:" Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                           Margin="18,0,6,0"/>
+                <ComboBox Width="76" ItemsSource="{Binding SmartPostsPerDayOptions}"
+                          SelectedItem="{Binding SmartPostsPerDay, Mode=TwoWay}"
+                          ToolTip="Select 1x to 10x posts per calendar day."/>
+                <TextBlock Text="× / day" Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                           Margin="6,0,10,0"/>
                 <Button Style="{StaticResource PrimaryButton}" Content="AI Smart Schedule"
-                        Command="{Binding SmartSchedulePublishQueueCommand}" Margin="10,0,0,0"
-                        ToolTip="ChatGPT suggests local posting slots for checked videos based on topics and general engagement heuristics. You review before dates are applied; this does not publish."/>
+                        Command="{Binding SmartSchedulePublishQueueCommand}"
+                        ToolTip="ChatGPT recommends daily posting hours, then ZeroVideo spreads all checked videos across consecutive days at this daily frequency. Review before applying; this does not publish."/>
               </StackPanel>
+              <TextBlock Text="Smart Schedule: select 1–10 posts per day. Checked videos are distributed in order, beginning tomorrow, within a conservative 20-day window. Use Select All to include the whole available queue."
+                         Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,2,0,12"/>
               <Separator Margin="0,0,0,8"/>
               <StackPanel Orientation="Horizontal">
                 <TextBlock Text="TikTok Only" FontSize="14" FontWeight="SemiBold"
