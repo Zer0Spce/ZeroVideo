@@ -94,7 +94,7 @@ public sealed partial class MainViewModel
                     // On startup, a stage left interrupted is resumable.
                     // Never mark it completed unless previously finished.
                     if(row.Status is "Writing" or "Rendering" or "Thumbnail")
-                        row.Status="Interrupted - ready to resume";
+                        row.Status="Interrupted (" + row.Status + ") - ready to resume";
                     ShortQueue.Add(row);
                 }
                 if(ShortQueue.Count==0)ShortQueue.Add(new ShortQueueEntry());
