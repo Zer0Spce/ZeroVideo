@@ -206,6 +206,9 @@ public sealed partial class MainViewModel
             if (args.PropertyName == nameof(PublishQueueItem.IsScheduled) && !item.IsScheduled)
                 item.ScheduledAt = null;
             SavePublishingQueue();
+            if(args.PropertyName==nameof(PublishQueueItem.IsScheduled) ||
+               args.PropertyName==nameof(PublishQueueItem.ScheduleDateText))
+                RefreshPublishingCalendar();
         };
     }
 
@@ -237,6 +240,8 @@ public sealed partial class MainViewModel
         PublishingQueue.Add(item);
         Raise(nameof(AllPublishItemsChecked));
         SavePublishingQueue();
+        RefreshPublishingCalendar();
+        RefreshVideoLibrary();
         Log("Publishing queue: added " + item.Title);
     }
 
