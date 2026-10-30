@@ -171,6 +171,21 @@ public sealed partial class MainViewModel
             "Select a video below to edit its local date/time; no TikTok action occurs.";
     }
 
+    public void MoveCalendarVideoToDay(CalendarVideoEntry entry, DateTime date)
+    {
+        if(!DateTime.TryParseExact(entry.Item.ScheduleDateText,
+            "yyyy-MM-dd HH:mm",CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeLocal,out var previous))
+        {
+            CalendarStatus="The scheduled time could not be read; edit the date manually.";
+            return;
+        }
+        SelectedCalendarVideo=entry;
+        CalendarEditTime=date.Date.Add(previous.TimeOfDay).ToString(
+            "yyyy-MM-dd HH:mm",CultureInfo.InvariantCulture);
+        ApplyCalendarTime();
+    }
+
     private void ApplyCalendarTime()
     {
         if(IsBatchPublishing)
@@ -181,6 +196,14 @@ public sealed partial class MainViewModel
         if(SelectedCalendarVideo?.Item is not { } item)
         {
             CalendarStatus="Select a scheduled calendar entry first.";
+            return;
+        }
+        if(item.TikTokStatus.Equals("Published",StringComparison.OrdinalIgnoreCase) ||
+           item.TikTokStatus.Equals("Scheduled",StringComparison.OrdinalIgnoreCase) ||
+           item.TikTokStatus.StartsWith("Submission attempted",StringComparison.OrdinalIgnoreCase))
+        {
+            CalendarStatus="This video was already submitted or is awaiting verification in TikTok Studio. " +
+                "Calendar edits cannot reschedule a live TikTok post.";
             return;
         }
         if(!DateTime.TryParseExact(CalendarEditTime.Trim(),"yyyy-MM-dd HH:mm",
