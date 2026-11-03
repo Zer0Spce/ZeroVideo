@@ -9,7 +9,7 @@ public sealed partial class MainViewModel
 {
     private string _seriesTheme = "Celebrity Horror Stories";
     private int _seriesEpisodeCount = 10;
-    private string _seriesStatus = "Enter a series theme, generate distinct episodes and add them to Automation Shorts.";
+    private string _seriesStatus = "Enter a series theme, generate distinct episodes, then choose Short Form or Long Form.";
     public string SeriesTheme
     {
         get => _seriesTheme; set => Set(ref _seriesTheme,value);
@@ -25,10 +25,12 @@ public sealed partial class MainViewModel
     public ObservableCollection<VideoIdea> SeriesEpisodes { get; } = [];
     public ICommand GenerateContentSeriesCommand { get; private set; } = null!;
     public ICommand AddContentSeriesToShortsCommand { get; private set; } = null!;
+    public ICommand AddContentSeriesToLongFormCommand { get; private set; } = null!;
 
     private void InitializeContentSeriesCommands()
     {
         GenerateContentSeriesCommand = new AsyncCommand(()=>RunManagedJobAsync("Content Series",GenerateContentSeriesAsync));
+        AddContentSeriesToLongFormCommand = new RelayCommand(QueueCheckedSeriesToLongForm);
         AddContentSeriesToShortsCommand = new RelayCommand(() =>
         {
             var chosen=SeriesEpisodes.Where(x=>x.IsChecked).ToList();
@@ -53,6 +55,19 @@ public sealed partial class MainViewModel
         });
     }
 
+    private void QueueCheckedSeriesToLongForm()
+    {
+        var chosen=SeriesEpisodes.Where(x=>x.IsChecked).ToList();
+        if(chosen.Count==0)
+        {
+            SeriesStatus="Check one or more episodes to add to Long Form Automation.";
+            return;
+        }
+        var added=AddTitlesToLongFormQueue(chosen.Select(x=>x.Title));
+        SeriesStatus=$"Added {added} series episode(s) in order to Long Form Automation "+
+            "(16:9). Existing duplicate titles were skipped. Nothing has published.";
+    }
+
     private async Task GenerateContentSeriesAsync()
     {
         var theme=SeriesTheme.Trim();
@@ -65,7 +80,7 @@ public sealed partial class MainViewModel
         {
             SeriesStatus=$"Planning {SeriesEpisodeCount} distinct episodes about {theme}...";
             var prompt=$"Create a cohesive but NON-repetitive {SeriesEpisodeCount}-episode " +
-                $"short-form video series for the niche '{theme}'. Every episode must " +
+                $"video series suitable for either short or long form for the niche '{theme}'. Every episode must " +
                 "have a unique topic, factual research direction and compelling opening hook. " +
                 "Give the episodes a sensible progression from broad appeal to more specialized " +
                 "stories, but make each one stand alone. Do not manufacture true stories, " +
