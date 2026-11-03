@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Media;
 using Microsoft.Win32;
 using ZeroVideo.App.Infrastructure;
 using ZeroVideo.App.Models;
@@ -22,6 +23,9 @@ public sealed partial class MainViewModel
     private OmniVoiceProfile? _selectedOmniProfile;
     private bool _omniVoiceSampleAuthorized;
     private bool _omniTtsBusy;
+    private string _testedOmniSource="";
+    private string _testedOmniTranscript="";
+    private readonly MediaPlayer _omniPreviewPlayer=new();
 
     public ObservableCollection<string> TextToSpeechEngines { get; } =
         ["Clipchamp","OmniVoice (Local)"];
@@ -78,6 +82,10 @@ public sealed partial class MainViewModel
     public ICommand BrowseOmniReferenceCommand {get;private set;}=null!;
     public ICommand ImportOmniProfileCommand {get;private set;}=null!;
     public ICommand TestOmniVoiceCommand {get;private set;}=null!;
+    public ICommand PreviewNewOmniVoiceCommand {get;private set;}=null!;
+    public ICommand RemoveOmniProfileCommand {get;private set;}=null!;
+    public ICommand UseOmniProfileCommand {get;private set;}=null!;
+    public ICommand StopOmniPreviewCommand {get;private set;}=null!;
     public ICommand PlayOmniPreviewCommand {get;private set;}=null!;
     public ICommand OpenOmniFolderCommand {get;private set;}=null!;
 
@@ -95,6 +103,7 @@ public sealed partial class MainViewModel
             };
             if(file.ShowDialog()!=true)return;
             OmniReferenceSource=file.FileName;
+            _testedOmniSource="";
             LocalTtsStatus="Sample selected. Paste the exact transcript of the audio. "+
                 "3–10 seconds of clean speech gives the best initial results.";
         });
@@ -102,11 +111,28 @@ public sealed partial class MainViewModel
             RunManagedJobAsync("Import approved OmniVoice sample",ImportOmniVoiceProfileAsync));
         TestOmniVoiceCommand=new AsyncCommand(()=>
             RunManagedJobAsync("Test local OmniVoice TTS",TestOmniVoiceAsync));
+        PreviewNewOmniVoiceCommand=new AsyncCommand(()=>
+            RunManagedJobAsync("Preview new voice clone",PreviewNewOmniVoiceAsync));
+        RemoveOmniProfileCommand=new RelayCommand(RemoveSavedOmniProfile);
+        UseOmniProfileCommand=new AsyncCommand(()=>RunManagedJobAsync(
+            "Select OmniVoice profile",UseOmniProfileAsync));
+        StopOmniPreviewCommand=new RelayCommand(()=>
+        {
+            _omniPreviewPlayer.Stop();
+            LocalTtsStatus="Stopped audio preview.";
+        });
         PlayOmniPreviewCommand=new RelayCommand(()=>
         {
-            if(File.Exists(OmniPreviewPath))
-                Process.Start(new ProcessStartInfo(OmniPreviewPath){UseShellExecute=true});
-            else LocalTtsStatus="No test preview exists yet.";
+            if(!File.Exists(OmniPreviewPath))
+            {
+                LocalTtsStatus="Generate a clone preview first.";
+                return;
+            }
+            _omniPreviewPlayer.Stop();
+            _omniPreviewPlayer.Open(new Uri(Path.GetFullPath(OmniPreviewPath)));
+            _omniPreviewPlayer.Volume=0.85;
+            _omniPreviewPlayer.Play();
+            LocalTtsStatus="Playing voice preview inside ZeroVideo.";
         });
         OpenOmniFolderCommand=new RelayCommand(()=>
         {
@@ -201,6 +227,14 @@ public sealed partial class MainViewModel
                 "words of the reference audio.";
             return;
         }
+        if(_testedOmniSource!=OmniReferenceSource ||
+           _testedOmniTranscript!=OmniReferenceTranscript)
+        {
+            LocalTtsStatus="Click Preview New Clone and listen to the voice "+
+                "before saving it. If you change the sample or transcript, "+
+                "test again.";
+            return;
+        }
         OmniTtsBusy=true;
         try
         {
@@ -210,13 +244,107 @@ public sealed partial class MainViewModel
             OmniVoiceProfiles.Add(profile);
             SelectedOmniProfile=profile;
             await _settingsService.SaveAsync(Settings);
-            LocalTtsStatus="Voice sample imported and saved locally: "+profile.Name+
-                ". Choose Generate Test Narration to hear the result.";
+            LocalTtsStatus="Saved cloned voice '"+profile.Name+
+                "' to the local Voice Library, and selected it for OmniVoice. "+
+                "Choose Use in Automation to enable it for Shorts and Long Form. "+
+                "Existing audio files are not overwritten.";
         }
         catch(OperationCanceledException)
         {LocalTtsStatus="Sample import canceled; no profile was saved.";}
         catch(Exception ex){LocalTtsStatus="Voice import failed: "+ex.Message;}
         finally{OmniTtsBusy=false;}
+    }
+
+    private async Task PreviewNewOmniVoiceAsync()
+    {
+        if(OmniTtsBusy)return;
+        try{VerifyOmniVoiceEvaluation();}
+        catch(Exception ex){LocalTtsStatus=ex.Message;return;}
+        if(!OmniVoiceSampleAuthorized)
+        {
+            LocalTtsStatus="Confirm you own or have permission to clone the sample voice.";
+            return;
+        }
+        if(string.IsNullOrWhiteSpace(OmniReferenceSource)||
+           string.IsNullOrWhiteSpace(OmniReferenceTranscript))
+        {
+            LocalTtsStatus="Select a sample and enter the exact words spoken.";
+            return;
+        }
+        if(OmniTestText.Trim().Length<10)
+        {
+            LocalTtsStatus="Enter at least 10 characters of test narration.";
+            return;
+        }
+        OmniTtsBusy=true;
+        try
+        {
+            _testedOmniSource="";
+            _testedOmniTranscript="";
+            _omniPreviewPlayer.Stop();
+            var output=await _omniVoice.PreviewNewSampleAsync(
+                OmniReferenceSource,OmniReferenceTranscript,OmniTestText.Trim(),
+                Settings,OmniProgress,_cts.Token);
+            OmniPreviewPath=output;
+            _testedOmniSource=OmniReferenceSource;
+            _testedOmniTranscript=OmniReferenceTranscript;
+            LocalTtsStatus="New clone preview ready. Play it, then "+
+                "click Save Clone to keep the voice in your library. "+
+                "This preview is for non-commercial evaluation only.";
+        }
+        catch(OperationCanceledException)
+        {
+            LocalTtsStatus="Voice preview stopped. Existing saved profiles remain intact.";
+        }
+        catch(Exception ex)
+        {
+            LocalTtsStatus="Voice preview failed: "+ex.Message;
+            Log(LocalTtsStatus);
+        }
+        finally{OmniTtsBusy=false;}
+    }
+
+    private async Task UseOmniProfileAsync()
+    {
+        if(SelectedOmniProfile is null)
+        {
+            LocalTtsStatus="Select a saved voice in the Voice Library first.";
+            return;
+        }
+        try{VerifyOmniVoiceEvaluation();}
+        catch(Exception ex){LocalTtsStatus=ex.Message;return;}
+        Settings.OmniVoiceProfileId=SelectedOmniProfile.Id;
+        Settings.TextToSpeechEngine="OmniVoice (Local)";
+        await _settingsService.SaveAsync(Settings);
+        Raise(nameof(Settings));
+        LocalTtsStatus="Selected '"+SelectedOmniProfile.Name+
+            "' for new Short Form and Long Form chapter narration. "+
+            "This is NON-COMMERCIAL EVALUATION ONLY. Existing voiceovers "+
+            "are reused and not replaced. Switch back to Clipchamp at any time.";
+    }
+
+    private void RemoveSavedOmniProfile()
+    {
+        if(SelectedOmniProfile is null)
+        {
+            LocalTtsStatus="Select a saved voice to remove.";
+            return;
+        }
+        if(MessageBox.Show(
+            "Remove '"+SelectedOmniProfile.Name+"' from the saved Voice Library?\n\n"+
+            "Only its library entry is removed. The original sample and "+
+            "previously generated narration WAVs remain on disk.",
+            "Remove saved voice",MessageBoxButton.YesNo,
+            MessageBoxImage.Question)!=MessageBoxResult.Yes)return;
+        var profile=SelectedOmniProfile;
+        _omniVoice.RemoveProfileFromLibrary(profile.Id);
+        OmniVoiceProfiles.Remove(profile);
+        SelectedOmniProfile=OmniVoiceProfiles.FirstOrDefault();
+        // The next user action controls which profile is used.
+        Settings.OmniVoiceProfileId=SelectedOmniProfile?.Id??"";
+        LocalTtsStatus="Removed the voice profile from the library. "+
+            "Existing reference and narration files were preserved.";
+        _= _settingsService.SaveAsync(Settings);
     }
 
     private async Task TestOmniVoiceAsync()
