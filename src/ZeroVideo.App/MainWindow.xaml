@@ -50,7 +50,14 @@
               </Grid>
 
               <TextBlock Text="Output options" FontWeight="SemiBold" FontSize="15" Margin="0,6,0,1"/>
-              <CheckBox Content="Generate missing visuals with ChatGPT" IsChecked="{Binding Project.Options.GenerateMissingVisuals}"/>
+              <CheckBox Content="Generate missing scene visuals" IsChecked="{Binding Project.Options.GenerateMissingVisuals}"/>
+              <TextBlock Text="VISUAL IMAGE ENGINE" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,5,0,3"/>
+              <ComboBox Width="280" HorizontalAlignment="Left"
+                        ItemsSource="{Binding ImageGenerationEngines}"
+                        SelectedItem="{Binding Settings.ImageGenerationEngine, Mode=TwoWay}"
+                        ToolTip="ChatGPT = original working image engine; Local ComfyUI = offline GPU; Hybrid = GPU then ChatGPT fallback."/>
+              <TextBlock Text="Default: ChatGPT. Set up offline generation under Local Images."
+                         Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,5"/>
 
               <Border Background="#17151F" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="9" Padding="10" Margin="18,2,0,7">
                 <StackPanel>
@@ -135,7 +142,11 @@
                 <ComboBox ItemsSource="{Binding ClipchampVoices}" SelectedItem="{Binding Project.Voice, Mode=TwoWay}"/>
                 <Separator Margin="0,12"/>
                 <TextBlock Text="Output options" FontSize="16" FontWeight="SemiBold"/>
-                <CheckBox Content="Generate missing visuals with ChatGPT" IsChecked="{Binding Project.Options.GenerateMissingVisuals}" Margin="0,7,0,0"/>
+                <CheckBox Content="Generate missing scene visuals" IsChecked="{Binding Project.Options.GenerateMissingVisuals}" Margin="0,7,0,0"/>
+                <TextBlock Text="IMAGE GENERATION ENGINE" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,7,0,3"/>
+                <ComboBox ItemsSource="{Binding ImageGenerationEngines}"
+                          SelectedItem="{Binding Settings.ImageGenerationEngine, Mode=TwoWay}"
+                          ToolTip="ChatGPT remains default; Local ComfyUI requires installation; Hybrid provides fallback."/>
                 <Label Content="HOW MANY CHAPTERS"/>
                 <TextBox Text="{Binding Project.Options.HowManyChapters, UpdateSourceTrigger=LostFocus}"/>
                 <Label Content="IMAGES PER CHAPTER"/>
@@ -313,6 +324,85 @@
           <Border Style="{StaticResource CardBorder}"><StackPanel><TextBlock Text="Browser sessions" FontSize="21" FontWeight="SemiBold"/><TextBlock Text="Open ChatGPT or Clipchamp to sign in normally in the dedicated ZeroVideo Edge profile. Generation automatically hands that signed-in profile over to automation." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,16"/><WrapPanel><Button Style="{StaticResource PrimaryButton}" Command="{Binding OpenChatGptCommand}" Content="Open ChatGPT"/><Button Style="{StaticResource PrimaryButton}" Command="{Binding OpenClipchampCommand}" Content="Open Clipchamp"/></WrapPanel><Button Style="{StaticResource SecondaryButton}" Command="{Binding RunPreflightCommand}" Content="Run system checks" HorizontalAlignment="Left" Margin="0,14,0,6"/><ListBox ItemsSource="{Binding PreflightLines}" Height="190" FontFamily="Consolas" FontSize="12"/></StackPanel></Border>
           <Border Grid.Column="2" Style="{StaticResource CardBorder}"><StackPanel><TextBlock Text="Automation profile" FontSize="21" FontWeight="SemiBold"/><TextBlock Text="Selectors are stored outside the code so ChatGPT/Clipchamp UI changes can be repaired without rebuilding the entire app." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,10"/><Label Content="PROFILE PATH"/><TextBox Text="{Binding Settings.AutomationProfilePath}"/><Label Content="EDGE PROFILE DIRECTORY" Margin="0,10,0,0"/><TextBox Text="{Binding Settings.EdgeUserDataDirectory}"/><Button Style="{StaticResource SecondaryButton}" Command="{Binding SaveSettingsCommand}" Content="Save automation settings" HorizontalAlignment="Left" Margin="0,14,0,0"/></StackPanel></Border>
         </Grid>
+      </TabItem>
+
+      <TabItem Header="Local Images">
+        <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,12,0,0">
+          <StackPanel MaxWidth="990" HorizontalAlignment="Left" Margin="0,0,12,20">
+            <TextBlock Text="Local Image Generation — ComfyUI" FontSize="24"
+                       FontWeight="SemiBold" Margin="0,0,0,7"/>
+            <TextBlock Text="Run all existing ZeroVideo visual styles locally on an NVIDIA GPU. The original ChatGPT engine remains the default and unchanged. This screen uses core ComfyUI nodes and an SDXL model; specialty LoRAs can be added later."
+                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,13"/>
+            <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+              <StackPanel>
+                <TextBlock Text="1. Choose image generation engine" FontSize="18" FontWeight="SemiBold"/>
+                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                  <ComboBox Width="250" ItemsSource="{Binding ImageGenerationEngines}"
+                            SelectedItem="{Binding Settings.ImageGenerationEngine, Mode=TwoWay}"
+                            ToolTip="Keep ChatGPT for the original mode; Hybrid falls back when local generation fails."/>
+                  <Button Style="{StaticResource SecondaryButton}"
+                          Command="{Binding SaveSettingsCommand}" Content="Save engine choice" Margin="12,0,0,0"/>
+                </StackPanel>
+                <TextBlock Text="ChatGPT: unchanged current behavior. Local ComfyUI: local GPU only. Hybrid: local first, then ChatGPT if an image fails. Engine applies to new scene images; existing generated images are reused."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,9,0,0"/>
+              </StackPanel>
+            </Border>
+            <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+              <StackPanel>
+                <TextBlock Text="2. One-click setup — ComfyUI + SDXL" FontSize="18" FontWeight="SemiBold"/>
+                <TextBlock Text="Downloads official NVIDIA ComfyUI portable (bundled Python/CUDA) and the 6.94 GB SDXL base model. Extracts to your local ZeroVideo data folder. Windows tar or installed 7-Zip is used automatically. Requires internet, available disk space and suitable NVIDIA drivers. Model SHA-256 is checked."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,10"/>
+                <TextBlock Text="{Binding LocalImageAvailability}" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                <WrapPanel>
+                  <Button Style="{StaticResource PrimaryButton}" Content="Install Everything (1 Click)"
+                          Command="{Binding InstallLocalImagesCommand}"
+                          ToolTip="Confirm then download and extract ComfyUI and verified SDXL checkpoint. Partial downloads resume."/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Start Local Engine"
+                          Command="{Binding StartLocalImagesCommand}"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Test Connection"
+                          Command="{Binding TestLocalImagesCommand}"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding LocalImageStatus}" TextWrapping="Wrap" Margin="0,10,0,4"/>
+                <TextBlock Text="{Binding LocalImageInstallFolder}" Foreground="{StaticResource Muted}"
+                           FontSize="11" TextWrapping="Wrap"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Open Local AI Folder"
+                        Command="{Binding OpenLocalImageFolderCommand}" HorizontalAlignment="Left"
+                        Margin="0,10,0,0"/>
+                <TextBlock Text="No system Python installation, separate CUDA toolkit or API key is necessary for the portable package. Download size and setup time depend on your network and drive."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,9,0,0"/>
+              </StackPanel>
+            </Border>
+            <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+              <StackPanel>
+                <TextBlock Text="3. Test your comic and cartoon styles" FontSize="18" FontWeight="SemiBold"/>
+                <TextBlock Text="Create three independent vertical benchmark scenes using the exact existing style rules: Cinematic Comic Explainer, Comic Book Explainer, and Editorial Cartoon Explainer. Inspect the finished PNGs before changing production."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,11"/>
+                <WrapPanel>
+                  <Button Style="{StaticResource PrimaryButton}" Content="Generate 3 Style Samples"
+                          Command="{Binding BenchmarkLocalStylesCommand}"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="View Samples Folder"
+                          Command="{Binding OpenLocalBenchmarkFolderCommand}"/>
+                </WrapPanel>
+                <TextBlock Text="All 13 existing visual presets are supported through ZeroVideo's original style prompts. Results are preliminary SDXL samples; reproducing intricate vintage panel art may benefit from specialist LoRAs, reference conditioning, and further tuning."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
+              </StackPanel>
+            </Border>
+            <Border Style="{StaticResource CardBorder}">
+              <StackPanel>
+                <TextBlock Text="4. Advanced optional model" FontSize="18" FontWeight="SemiBold"/>
+                <TextBlock Text="Checkpoint filename in ComfyUI/models/checkpoints (default SDXL base). Only locally installed files are accepted. Most style presets work with SDXL; custom checkpoints can change results."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,7"/>
+                <TextBox Width="440" HorizontalAlignment="Left"
+                         Text="{Binding Settings.LocalImageCheckpointFile, UpdateSourceTrigger=PropertyChanged}"/>
+                <Button Style="{StaticResource SecondaryButton}"
+                        Command="{Binding SaveSettingsCommand}" Content="Save model choice"
+                        HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                <TextBlock Text="Local ComfyUI listens only on 127.0.0.1:8188. It does not require a TikTok login, cannot publish a video and does not modify caption, audio or browser automation."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+        </ScrollViewer>
       </TabItem>
 
       <TabItem Header="TikTok Intelligence">
