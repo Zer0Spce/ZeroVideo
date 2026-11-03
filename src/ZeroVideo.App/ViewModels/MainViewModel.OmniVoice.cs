@@ -65,18 +65,27 @@ public sealed partial class MainViewModel
     {
         get=>_omniTtsBusy;private set=>Set(ref _omniTtsBusy,value);
     }
+    // Browsing or testing a library voice must not silently switch
+    // the narrator used by automated videos. Use Voice in Automation
+    // is the explicit commit action.
     public OmniVoiceProfile? SelectedOmniProfile
     {
         get=>_selectedOmniProfile;
-        set
-        {
-            if(Set(ref _selectedOmniProfile,value))
-            {
-                Settings.OmniVoiceProfileId=value?.Id??"";
-                Raise(nameof(Settings));
-            }
-        }
+        set=>Set(ref _selectedOmniProfile,value);
     }
+
+    public bool IsCustomVoiceActive =>
+        Settings.TextToSpeechEngine == "OmniVoice (Local)";
+
+    public string ActiveNarrationVoiceName =>
+        IsCustomVoiceActive
+            ? OmniVoiceProfiles.FirstOrDefault(p =>
+                p.Id.Equals(Settings.OmniVoiceProfileId,
+                    StringComparison.OrdinalIgnoreCase))?.Name ??
+                "No active saved voice — select one in Voice Studio"
+            : string.IsNullOrWhiteSpace(Project.Voice)
+                ? "Clipchamp default"
+                : Project.Voice;
 
     public ICommand InstallOmniVoiceCommand {get;private set;}=null!;
     public ICommand BrowseOmniReferenceCommand {get;private set;}=null!;
@@ -149,6 +158,7 @@ public sealed partial class MainViewModel
         foreach(var p in _omniVoice.LoadProfiles())OmniVoiceProfiles.Add(p);
         SelectedOmniProfile=OmniVoiceProfiles.FirstOrDefault(p=>
             p.Id==Settings.OmniVoiceProfileId);
+        RefreshNarrationVoiceDisplay();
         Raise(nameof(OmniVoiceAvailability));
     }
 
@@ -244,6 +254,9 @@ public sealed partial class MainViewModel
                 Settings,OmniProgress,_cts.Token);
             OmniVoiceProfiles.Add(profile);
             SelectedOmniProfile=profile;
+            // Save only the library entry here; activating a voice is an
+            // explicit separate action (Use Voice in Automation).
+            RefreshNarrationVoiceDisplay();
             await _settingsService.SaveAsync(Settings);
             LocalTtsStatus="Saved cloned voice '"+profile.Name+
                 "' to the local Voice Library, and selected it for OmniVoice. "+
@@ -316,6 +329,7 @@ public sealed partial class MainViewModel
         catch(Exception ex){LocalTtsStatus=ex.Message;return;}
         Settings.OmniVoiceProfileId=SelectedOmniProfile.Id;
         Settings.TextToSpeechEngine="OmniVoice (Local)";
+        RefreshNarrationVoiceDisplay();
         await _settingsService.SaveAsync(Settings);
         Raise(nameof(Settings));
         LocalTtsStatus="Selected '"+SelectedOmniProfile.Name+
@@ -341,8 +355,15 @@ public sealed partial class MainViewModel
         _omniVoice.RemoveProfileFromLibrary(profile.Id);
         OmniVoiceProfiles.Remove(profile);
         SelectedOmniProfile=OmniVoiceProfiles.FirstOrDefault();
-        // The next user action controls which profile is used.
-        Settings.OmniVoiceProfileId=SelectedOmniProfile?.Id??"";
+        // Removing the active entry returns to the safe original engine
+        // rather than silently assigning a different cloned voice.
+        if (Settings.OmniVoiceProfileId.Equals(profile.Id,
+            StringComparison.OrdinalIgnoreCase))
+        {
+            Settings.OmniVoiceProfileId="";
+            Settings.TextToSpeechEngine="Clipchamp";
+        }
+        RefreshNarrationVoiceDisplay();
         LocalTtsStatus="Removed the voice profile from the library. "+
             "Existing reference and narration files were preserved.";
         await _settingsService.SaveAsync(Settings);
