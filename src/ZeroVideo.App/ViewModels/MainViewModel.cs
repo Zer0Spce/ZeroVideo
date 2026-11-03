@@ -60,6 +60,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         CancelCommand = new RelayCommand(RequestStopJob);
         InitializeJobControls();
         InitializeShortsCommands();
+        InitializeLongFormCommands();
         InitializeIdeasCommands();
         InitializePublishingCommands();
         InitializeTikTokIntelligenceCommands();
@@ -113,6 +114,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         Settings = await _settingsService.LoadAsync();
         LoadTikTokIntelligence();
         LoadShortsRecovery();
+        LoadLongFormRecovery();
         RefreshPublishingCalendar();
         RefreshVideoLibrary();
         if (string.IsNullOrWhiteSpace(Project.Voice)) Project.Voice = Settings.ClipchampVoice;
@@ -283,7 +285,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 await _ttsContinueGate.Task.WaitAsync(_cts.Token);
                 WaitingForTtsContinue = false;
                 _clip.ConfirmManualVoiceSelection();
-                if (ShortsRunning) _shortsTtsConfirmed = true;
+                if (ShortsRunning || LongFormRunning) _shortsTtsConfirmed = true;
                 Log("Manual Clipchamp voice confirmed. ZeroVideo will paste narration and continue without changing your voice.");
             }
 
@@ -306,8 +308,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 await TryGenerateMetadataForItemAsync(finishedItem, force: false);
                 Status = "Finished";
             }
-            if (ShortsRunning)
-                Log("Shorts automation: video finished and queued for Publishing; continuing to the next video.");
+            if (ShortsRunning || LongFormRunning)
+                Log((LongFormRunning ? "Long Form" : "Shorts") +
+                    " automation: finished video queued for Publishing; continuing to next row.");
             else
             MessageBox.Show($"Video finished:\n{output}", "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Information);
         }
