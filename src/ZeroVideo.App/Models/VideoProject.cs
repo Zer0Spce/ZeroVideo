@@ -37,6 +37,11 @@ public sealed class ProjectOptions
     public bool ContinuousMotion { get; set; } = true;
     public double MotionCycleSeconds { get; set; } = 5.0;
     public string MotionStyle { get; set; } = "Automatic";
+    // A lightweight, GPU-free, periodic image motion for every generated
+    // still. It does not pretend to synthesize AI facial/limb animation.
+    // Short cycles are repeated to match each full narration scene.
+    public bool SubtleImageAnimation { get; set; } = true;
+    public double SubtleImageAnimationSeconds { get; set; } = 4.0;
     public bool SceneTransitions { get; set; } = true;
     public string TransitionStyle { get; set; } = "Automatic";
     public double TransitionDurationSeconds { get; set; } = 0.35;
