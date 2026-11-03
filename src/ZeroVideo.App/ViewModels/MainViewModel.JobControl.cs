@@ -51,7 +51,11 @@ public sealed partial class MainViewModel
         {
             await job();
             if(_cts.IsCancellationRequested)
-                JobControlStatus="Stopped: "+name+
+                JobControlStatus=publishing?
+                    "TikTok batch stopped. Submission outcomes may be UNKNOWN. "+
+                    "Inspect TikTok Studio before any new posting attempt; "+
+                    "ZeroVideo will not resubmit automatically.":
+                    "Stopped: "+name+
                     ". Existing project checkpoints and completed media remain on disk.";
             else
                 JobControlStatus="Finished: "+name+". Ready for another job.";
