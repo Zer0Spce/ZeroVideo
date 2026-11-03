@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Input;
@@ -95,7 +96,32 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public string ProjectDirectory { get => _projectDirectory; set { if (Set(ref _projectDirectory, value)) RefreshCommands(); } }
     public VideoProject Project { get => _project; private set { Set(ref _project, value); Raise(nameof(Chapters)); RefreshCommands(); } }
     public IEnumerable<ProjectChapter> Chapters => Project.Chapters;
-    public ZeroVideoSettings Settings { get => _settings; private set => Set(ref _settings, value); }
+    public ZeroVideoSettings Settings
+    {
+        get => _settings;
+        private set
+        {
+            if (ReferenceEquals(_settings, value)) return;
+            _settings.PropertyChanged -= SettingsPropertyChanged;
+            if (Set(ref _settings, value))
+            {
+                _settings.PropertyChanged += SettingsPropertyChanged;
+                RefreshNarrationVoiceDisplay();
+            }
+        }
+    }
+    private void SettingsPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(ZeroVideoSettings.TextToSpeechEngine)
+            or nameof(ZeroVideoSettings.OmniVoiceProfileId))
+            RefreshNarrationVoiceDisplay();
+    }
+
+    private void RefreshNarrationVoiceDisplay()
+    {
+        Raise(nameof(IsCustomVoiceActive));
+        Raise(nameof(ActiveNarrationVoiceName));
+    }
 
     public ICommand GeneratePlanCommand { get; }
     public ICommand ContinueWritingCommand { get; }
@@ -125,6 +151,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         Log("ZeroVideo initialized.");
         Log("Use Automation > Open ChatGPT / Open Clipchamp to sign in normally. Generation automatically hands that dedicated Edge profile over to automation.");
         Raise(nameof(Settings));
+        RefreshNarrationVoiceDisplay();
         Raise(nameof(LocalImageAvailability));
     }
 
