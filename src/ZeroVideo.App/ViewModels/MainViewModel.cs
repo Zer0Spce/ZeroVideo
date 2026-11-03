@@ -18,7 +18,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly AutomationProfileService _profiles = new();
     private readonly ProcessRunner _runner = new();
     private readonly DependencyService _dependencies = new();
-    private readonly CancellationTokenSource _cts = new();
+    private readonly LocalImageService _localImages = new();
+    private CancellationTokenSource _cts = new();
     private readonly ChatGptBrowserService _chat;
     private readonly ClipchampTtsService _clip;
     private readonly FfmpegService _ffmpeg;
@@ -43,23 +44,30 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         _chat = new ChatGptBrowserService(_browser, _profiles);
         _clip = new ClipchampTtsService(_browser, _profiles);
         _ffmpeg = new FfmpegService(_runner, _dependencies);
-        _pipeline = new PipelineService(_chat, _clip, _ffmpeg, _store);
+        _pipeline = new PipelineService(_chat, _clip, _ffmpeg, _store, _localImages);
         _preflight = new PreflightService(_runner);
-        GeneratePlanCommand = new AsyncCommand(GeneratePlanAsync, () => !string.IsNullOrWhiteSpace(Topic) && Duration > 0);
-        ContinueWritingCommand = new AsyncCommand(ContinueWritingAsync, CanContinueWriting);
-        RunPipelineCommand = new AsyncCommand(RunPipelineAsync, CanBuildVideo);
+        GeneratePlanCommand = new AsyncCommand(()=>RunManagedJobAsync("Create — Outline and Chapters",GeneratePlanAsync), () => !string.IsNullOrWhiteSpace(Topic) && Duration > 0);
+        ContinueWritingCommand = new AsyncCommand(()=>RunManagedJobAsync("Create — Continue Writing",ContinueWritingAsync), CanContinueWriting);
+        RunPipelineCommand = new AsyncCommand(()=>RunManagedJobAsync("Create — Video Pipeline",RunPipelineAsync), CanBuildVideo);
         ContinueTtsCommand = new RelayCommand(ContinueTts);
         OpenChatGptCommand = new AsyncCommand(() => _chat.OpenAsync(Settings));
         OpenClipchampCommand = new AsyncCommand(() => _clip.OpenAsync(Settings));
-        InstallFfmpegCommand = new AsyncCommand(InstallFfmpegAsync);
+        InstallFfmpegCommand = new AsyncCommand(()=>RunManagedJobAsync("Dependency installation",InstallFfmpegAsync));
         SaveSettingsCommand = new AsyncCommand(SaveSettingsAsync);
-        RunPreflightCommand = new AsyncCommand(RunPreflightAsync);
+        RunPreflightCommand = new AsyncCommand(()=>RunManagedJobAsync("System preflight",RunPreflightAsync));
         OpenProjectFolderCommand = new AsyncCommand(OpenProjectFolderAsync, () => Directory.Exists(ProjectDirectory));
         LoadProjectCommand = new AsyncCommand(LoadProjectAsync);
-        CancelCommand = new RelayCommand(() => _cts.Cancel());
+        CancelCommand = new RelayCommand(RequestStopJob);
+        InitializeJobControls();
         InitializeShortsCommands();
+        InitializeLongFormCommands();
         InitializeIdeasCommands();
         InitializePublishingCommands();
+        InitializeTikTokIntelligenceCommands();
+        InitializeLibraryAndCalendarCommands();
+        InitializeContentSeriesCommands();
+        InitializeLocalImageCommands();
+        InitializeCharacterCommands();
         BrowseMusicCommand = new RelayCommand(BrowseMusic);
     }
 
@@ -104,11 +112,17 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public async Task InitializeAsync()
     {
         Settings = await _settingsService.LoadAsync();
+        LoadTikTokIntelligence();
+        LoadShortsRecovery();
+        LoadLongFormRecovery();
+        RefreshPublishingCalendar();
+        RefreshVideoLibrary();
         if (string.IsNullOrWhiteSpace(Project.Voice)) Project.Voice = Settings.ClipchampVoice;
         Raise(nameof(Project));
         Log("ZeroVideo initialized.");
         Log("Use Automation > Open ChatGPT / Open Clipchamp to sign in normally. Generation automatically hands that dedicated Edge profile over to automation.");
         Raise(nameof(Settings));
+        Raise(nameof(LocalImageAvailability));
     }
 
     private async Task GeneratePlanAsync()
@@ -126,7 +140,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 AspectRatio = AspectRatio,
                 Style = Style,
                 Voice = Project.Voice,
-                Options = Project.Options
+                Options = Project.Options,
+                Characters = Project.Characters ?? []
             };
 
             var requestedChapters = Math.Clamp(seed.Options.HowManyChapters, 1, 40);
@@ -145,7 +160,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 outlinePrompt += $"\nCORRECTION: Return EXACTLY {requestedChapters} chapters. Your previous outline had {generated.Chapters.Count}. Do not change the requested count.";
             }
 
-            Project = generated!;
+            generated!.Characters ??= seed.Characters;
+            if(generated.Characters.Count==0) generated.Characters=seed.Characters;
+            Project = generated;
             ProjectDirectory = await _store.SaveAsync(Project, Settings.ProjectsRoot);
             Progress = 5;
             Log($"Outline checkpoint saved to {ProjectDirectory}");
@@ -268,7 +285,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 await _ttsContinueGate.Task.WaitAsync(_cts.Token);
                 WaitingForTtsContinue = false;
                 _clip.ConfirmManualVoiceSelection();
-                if (ShortsRunning) _shortsTtsConfirmed = true;
+                if (ShortsRunning || LongFormRunning) _shortsTtsConfirmed = true;
                 Log("Manual Clipchamp voice confirmed. ZeroVideo will paste narration and continue without changing your voice.");
             }
 
@@ -280,8 +297,20 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             Progress = 100;
             Log($"FINAL VIDEO: {output}");
             QueueCompletedVideo(output);
-            if (ShortsRunning)
-                Log("Shorts automation: video finished and queued for Publishing; continuing to the next video.");
+            // A finished MP4 is immediately queued. Metadata is generated
+            // automatically for BOTH platforms, independent of publishing.
+            // Failures are logged and the finished video stays in the queue.
+            var finishedItem = PublishingQueue.FirstOrDefault(x =>
+                x.VideoPath.Equals(output, StringComparison.OrdinalIgnoreCase));
+            if (finishedItem is not null)
+            {
+                Status = "Finished video; generating YouTube/TikTok SEO metadata...";
+                await TryGenerateMetadataForItemAsync(finishedItem, force: false);
+                Status = "Finished";
+            }
+            if (ShortsRunning || LongFormRunning)
+                Log((LongFormRunning ? "Long Form" : "Shorts") +
+                    " automation: finished video queued for Publishing; continuing to next row.");
             else
             MessageBox.Show($"Video finished:\n{output}", "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Information);
         }
@@ -423,6 +452,13 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         WaitingForTtsContinue = false;
         _ttsContinueGate?.TrySetCanceled();
         _ttsContinueGate = null;
+        if (_cts.IsCancellationRequested || ex is OperationCanceledException)
+        {
+            Status = "Stopped by user. Saved stages and completed files remain intact.";
+            Log(Status);
+            RefreshCommands();
+            return;
+        }
         Status = "Stopped: " + ex.Message;
         Log("ERROR: " + ex);
         MessageBox.Show(ex.Message, "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Warning);
