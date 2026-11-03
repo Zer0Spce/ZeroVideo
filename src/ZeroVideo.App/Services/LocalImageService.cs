@@ -529,6 +529,53 @@ public sealed class LocalImageService
             log?.Invoke("Character Lock "+main.Name+": "+
                 (reference is not null?"reusing saved visual reference":"creating first reference")+
                 ", stable seed family.");
+        if(project.Style=="Comic Book Explainer" &&
+           project.Options.VintageComicPanelComposition)
+        {
+            // Compose a genuine three-panel page from three individual,
+            // close-up/medium/wide images rather than trusting diffusion to
+            // invent reliable page geometry or readable speech bubbles.
+            var panelsDir=Path.Combine(project.ProjectDirectory,"VintageComicPanels",
+                chapter.Number.ToString("00")+"-"+scene.Number.ToString("00"));
+            Directory.CreateDirectory(panelsDir);
+            var panelPaths=new List<string>();
+            var directions=new[]
+            {
+                "SINGLE PRINTED COMIC PANEL, WIDE establishing frame. "+
+                    "Show the recurring character and scene location clearly. ",
+                "SINGLE PRINTED COMIC PANEL, MEDIUM action frame. "+
+                    "Show the important action and expressive character pose. ",
+                "SINGLE PRINTED COMIC PANEL, CLOSE-UP dramatic reaction or "+
+                    "important object detail. Keep consistent character costume. "
+            };
+            for(var i=0;i<3;i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var panel=Path.Combine(panelsDir,"panel"+(i+1)+".png");
+                panelPaths.Add(panel);
+                var panelSeed=seed.HasValue?seed.Value+i*79:
+                    CharacterConsistencyService.StableSeed(
+                        project.Id+"|"+chapter.Number+"|"+scene.Number+"|"+i);
+                if(!File.Exists(panel))
+                {
+                    await GenerateToPathAsync(
+                        project.Title,project.Topic,"Vintage Comic Panel",
+                        project.AspectRatio,chapter.Title,scene.Narration,
+                        directions[i]+scene.ImagePrompt,scene.VisualQuery,
+                        panel,settings,log,ct,panelSeed,reference,descriptions);
+                }
+                if(main is not null && reference is null)
+                    reference=CharacterConsistencyService.CaptureFirstReference(
+                        project,main,panel);
+            }
+            var width=project.AspectRatio=="9:16"?704:1248;
+            var height=project.AspectRatio=="9:16"?1248:704;
+            VintageComicPageService.Compose(panelPaths,target,width,height);
+            scene.MediaPath=target;
+            log?.Invoke("Vintage comic page assembled with exactly 3 "+
+                "separate illustrated panels and thick gutters.");
+            return target;
+        }
         await GenerateToPathAsync(project.Title,project.Topic,project.Style,project.AspectRatio,
             chapter.Title,scene.Narration,scene.ImagePrompt,scene.VisualQuery,
             target,settings,log,ct,seed,reference,descriptions);
@@ -589,6 +636,15 @@ public sealed class LocalImageService
             "inked human characters, sharp hand-drawn black contours, detailed cel-shaded " +
             "faces, dramatic directional rim lighting, deep rich colorful shadows, " +
             "dynamic composition, illustrated not a photograph, no anime or 3D",
+        "Vintage Comic Panel" =>
+            "SINGLE 1960s printed American pulp comic PANEL, expressive inked " +
+            "protagonist in prominent foreground, vintage four-color process " +
+            "yellowed newsprint, flat teal mustard red orange and black inks, " +
+            "bold hand-drawn black contour lines, tiny Ben-Day halftone " +
+            "dots and crosshatch shading, visible aged paper grain, " +
+            "retro comic color registration, NO lettering, NO speech bubbles, " +
+            "no other panels, a single cinematic narrative moment, " +
+            "NEVER a modern digitally painted graphic novel",
         "Comic Book Explainer" =>
             "CLASSIC AMERICAN VINTAGE PRINTED COMIC BOOK PAGE from the 1960s, " +
             "2 to 3 DIFFERENT colorful story panels with very THICK BLACK PANEL GUTTERS, " +
@@ -687,6 +743,9 @@ public sealed class LocalImageService
         if(style=="Comic Book Explainer")
             negative+=", grayscale only, monochrome, black-and-white-only, "+
                 "glossy digital illustration, smooth gradients, photorealism";
+        if(style=="Vintage Comic Panel")
+            negative+=", multiple panels, comic page layout, modern digital "+
+                "painterly gradients, gray monochrome pencil, 3D, photorealism";
         if(style=="Cinematic Comic Explainer"||
            style=="Editorial Cartoon Explainer")
             negative+=", photorealistic, empty still life, subject missing, " +
