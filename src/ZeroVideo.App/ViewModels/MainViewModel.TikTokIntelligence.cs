@@ -83,8 +83,8 @@ public sealed partial class MainViewModel
             }
             catch(Exception ex) { TikTokAnalyticsStatus = "Could not open TikTok Studio: "+ex.Message; }
         });
-        CaptureTikTokAnalyticsCommand = new AsyncCommand(CaptureTikTokAnalyticsAsync);
-        ImportTikTokAnalyticsCsvCommand = new AsyncCommand(ImportTikTokAnalyticsCsvAsync);
+        CaptureTikTokAnalyticsCommand = new AsyncCommand(()=>RunManagedJobAsync("Capture TikTok Analytics",CaptureTikTokAnalyticsAsync));
+        ImportTikTokAnalyticsCsvCommand = new AsyncCommand(()=>RunManagedJobAsync("Import TikTok Analytics",ImportTikTokAnalyticsCsvAsync));
         OpenTikTokCreativeCenterCommand = new AsyncCommand(async () =>
         {
             try
@@ -96,7 +96,7 @@ public sealed partial class MainViewModel
             }
             catch(Exception ex) { TikTokTrendsStatus = "Could not open Creative Center: "+ex.Message; }
         });
-        CaptureTikTokTrendsCommand = new AsyncCommand(CaptureTikTokTrendsAsync);
+        CaptureTikTokTrendsCommand = new AsyncCommand(()=>RunManagedJobAsync("Capture TikTok Trends",CaptureTikTokTrendsAsync));
     }
 
     private void LoadTikTokIntelligence()
