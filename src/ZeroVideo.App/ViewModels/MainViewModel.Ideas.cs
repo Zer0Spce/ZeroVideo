@@ -39,8 +39,8 @@ public sealed partial class MainViewModel
 
     private void InitializeIdeasCommands()
     {
-        GenerateIdeasCommand = new AsyncCommand(GenerateIdeasAsync);
-        GenerateSmartIdeasCommand = new AsyncCommand(GenerateTrendingIdeasAsync);
+        GenerateIdeasCommand = new AsyncCommand(()=>RunManagedJobAsync("Idea Generation",GenerateIdeasAsync));
+        GenerateSmartIdeasCommand = new AsyncCommand(()=>RunManagedJobAsync("Smart Ideas",GenerateTrendingIdeasAsync));
         CheckAllIdeasCommand = new RelayCommand(() =>
         {
             foreach (var idea in GeneratedIdeas) idea.IsChecked = true;
