@@ -31,6 +31,7 @@ public sealed partial class MainViewModel
     public ObservableCollection<VideoIdea> GeneratedIdeas { get; } = [];
     public ICommand GenerateIdeasCommand { get; private set; } = null!;
     public ICommand QueueSelectedIdeaCommand { get; private set; } = null!;
+    public ICommand QueueSelectedIdeasToLongFormCommand { get; private set; } = null!;
     public ICommand UseSelectedIdeaCommand { get; private set; } = null!;
     public ICommand GenerateSmartIdeasCommand { get; private set; } = null!;
     public ICommand CheckAllIdeasCommand { get; private set; } = null!;
@@ -74,6 +75,19 @@ public sealed partial class MainViewModel
             }
             IdeaStatus = $"Added {added} new checked idea(s) to Automation Shorts. " +
                 (chosen.Count - added > 0 ? "Duplicates were skipped." : "");
+        });
+        QueueSelectedIdeasToLongFormCommand = new RelayCommand(() =>
+        {
+            var selected=GeneratedIdeas.Where(x=>x.IsChecked).ToList();
+            if(selected.Count==0)
+            {
+                IdeaStatus="Check one or more ideas before adding to Long Form Automation.";
+                return;
+            }
+            var added=AddTitlesToLongFormQueue(selected.Select(x=>x.Title));
+            IdeaStatus=$"Added {added} checked idea(s) to Long Form Automation (16:9). "+
+                (selected.Count>added?"Duplicate or empty titles were skipped. ":"")+
+                "Generation will begin when you start the Long Form queue.";
         });
         UseSelectedIdeaCommand = new RelayCommand(() =>
         {
@@ -179,7 +193,7 @@ public sealed partial class MainViewModel
             IdeaStatus = $"Smart Ideas 2.0: researching {signals.Count} public " +
                 $"and {tikTokSignals.Count} TikTok signals...";
             var prompt =
-                $"Act as a careful short-form video researcher and creator. Today's local date is " +
+                $"Act as a careful video researcher and creator for both short- and long-form video topics. Today's local date is " +
                 $"{DateTimeOffset.Now:yyyy-MM-dd}. My niche is: {niche}. " +
                 $"Generate exactly {IdeaCount} distinct original curiosity-driven video ideas with specific hooks. " +
                 "Use the dated public news/search signals and the fresh visible TikTok " +
@@ -258,7 +272,7 @@ public sealed partial class MainViewModel
             IdeaStatus = "Generating ideas in ChatGPT...";
             var raw = await _chat.GenerateVideoIdeasAsync(IdeaNiche.Trim(), IdeaCount, Settings, Log, _cts.Token);
             PopulateGeneratedIdeas(raw, IdeaNiche.Trim());
-            IdeaStatus = $"{GeneratedIdeas.Count} ideas ready. Check the ones to add to Automation Shorts.";
+            IdeaStatus = $"{GeneratedIdeas.Count} ideas ready. Check ideas and choose Short Form or Long Form.";
         }
         catch (Exception ex)
         {
