@@ -22,10 +22,22 @@ public sealed class LocalImageService
     public const string SdxlFileName = "sd_xl_base_1.0.safetensors";
     public const string SdxlSha256 =
         "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b";
+    // A fine-tuned illustrated SDXL checkpoint. File and checksum are taken
+    // from the creator's public Hugging Face model file metadata.
+    public const string IllustratedFileName =
+        "DreamShaperXL1.0Alpha2_fixedVae_half_00001_.safetensors";
+    public const string IllustratedUrl =
+        "https://huggingface.co/Lykon/DreamShaper/resolve/3bfe5f4614b38c17975e06a2094c2b99381bda7b/" +
+        IllustratedFileName;
+    public const string IllustratedSha256 =
+        "0f1b80cfe81b9c3bde7fdcbf6898897b2811b27be1df684583c3d85cbc9b1fa4";
+
     public static string Root => Path.Combine(AppPaths.DataDirectory, "LocalAI");
     public static string PortableRoot => Path.Combine(Root,"ComfyUI_windows_portable");
     public static string CheckpointPath => Path.Combine(
         PortableRoot,"ComfyUI","models","checkpoints",SdxlFileName);
+    public static string IllustratedCheckpointPath => Path.Combine(
+        PortableRoot,"ComfyUI","models","checkpoints",IllustratedFileName);
     private static readonly Uri Server = new("http://127.0.0.1:8188/");
     private static readonly HttpClient Http = new(new HttpClientHandler
     {
@@ -135,6 +147,38 @@ public sealed class LocalImageService
         PortablePython.Length>0;
     public bool HasCheckpoint => File.Exists(CheckpointPath) &&
         new FileInfo(CheckpointPath).Length>6_000_000_000;
+    public bool HasIllustratedCheckpoint =>
+        File.Exists(IllustratedCheckpointPath) &&
+        new FileInfo(IllustratedCheckpointPath).Length>6_000_000_000;
+
+    public async Task InstallIllustratedCheckpointAsync(Action<string>? log,CancellationToken ct)
+    {
+        if(!HasComfyUi)
+            throw new InvalidOperationException(
+                "ComfyUI is not installed. Use Install Everything first.");
+        Directory.CreateDirectory(Path.GetDirectoryName(IllustratedCheckpointPath)!);
+        if(!HasIllustratedCheckpoint)
+        {
+            var drive=new DriveInfo(Path.GetPathRoot(IllustratedCheckpointPath)!);
+            if(drive.AvailableFreeSpace<8L*1024*1024*1024)
+                throw new IOException("Need at least 8 GB available for DreamShaper XL.");
+            log?.Invoke("Downloading creator-published DreamShaper XL illustrated checkpoint (6.94 GB).");
+            await DownloadAsync(IllustratedUrl,IllustratedCheckpointPath,
+                IllustratedSha256,log,ct);
+        }
+        else
+        {
+            log?.Invoke("Verifying already downloaded DreamShaper XL image model...");
+            await using var stream=File.OpenRead(IllustratedCheckpointPath);
+            var actual=Convert.ToHexString(await SHA256.HashDataAsync(stream,ct));
+            if(!actual.Equals(IllustratedSha256,StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    "Existing DreamShaper XL checksum mismatch. Do not use the model. " +
+                    "Remove the invalid checkpoint from the local model folder before reinstalling.");
+        }
+        log?.Invoke("DreamShaper XL verified and ready in ComfyUI/checkpoints.");
+    }
+
 
     public async Task InstallEverythingAsync(Action<string>? log,CancellationToken ct)
     {
@@ -272,9 +316,73 @@ public sealed class LocalImageService
         return target;
     }
 
+    private static string CompactLocalText(string? value,int limit=360)
+    {
+        if(string.IsNullOrWhiteSpace(value))return "";
+        var clean=string.Join(' ',value.Split((char[]?)null,
+            StringSplitOptions.RemoveEmptyEntries));
+        return clean[..Math.Min(clean.Length,limit)];
+    }
+
+    // Short, distinct style cues keep the most important artistic instructions
+    // early in SDXL's text encoding rather than burying them after a verbose
+    // project title and hundreds of tokens of metadata.
+    private static string IllustratedStyleCue(string style) => style switch
+    {
+        "Cinematic Comic Explainer" =>
+            "Premium 2D cinematic graphic novel illustration, prominent expressive " +
+            "inked human characters, sharp hand-drawn black contours, detailed cel-shaded " +
+            "faces, dramatic directional rim lighting, deep rich colorful shadows, " +
+            "dynamic composition, illustrated not a photograph, no anime or 3D",
+        "Comic Book Explainer" =>
+            "CLASSIC AMERICAN VINTAGE PRINTED COMIC BOOK PAGE from the 1960s, " +
+            "2 to 3 DIFFERENT colorful story panels with very THICK BLACK PANEL GUTTERS, " +
+            "large dominant hero panel showing the main character, Ben-Day halftone " +
+            "dots, hard black ink, crosshatching, imperfect CMYK print, vibrant " +
+            "red yellow cyan blue and cream flat print colors, aged pulp paper, " +
+            "NOT monochrome, NOT a single black-and-white sketch",
+        "Editorial Cartoon Explainer" =>
+            "Colorful 2D editorial cartoon documentary illustration, prominent " +
+            "expressive human protagonist as the main focal point, slightly " +
+            "exaggerated hand-drawn faces, bold clean ink contours, warm painterly " +
+            "cel shading, recognizable detailed setting, dynamic storytelling, " +
+            "never photorealistic, no empty still-life composition if people appear",
+        "Cartoon explainer" =>
+            "Clean expressive 2D cartoon illustration, clear focal subject, bold " +
+            "contour lines, bright intentional colors, flat cel shading",
+        "Stickman explainer" =>
+            "Strict stick-figure 2D educational cartoon, round white heads, simple " +
+            "black eyes and mouths, stick limbs and minimal flat colors, " +
+            "NO detailed human anatomy",
+        "Whiteboard explainer" =>
+            "Whiteboard marker drawing with uncluttered white background, simple black " +
+            "lines, a few accent colors, readable educational spatial hierarchy",
+        "Hand-drawn explainer" =>
+            "Sketchbook editorial illustration, organic pencil and ink linework, " +
+            "hand-rendered textures, lightly colored paper, not photorealistic",
+        "VOX-inspired paper/editorial explainer" =>
+            "Paper-cut editorial documentary collage, aged newspapers, tactile torn " +
+            "paper layers, archival photos and halftone-print details, clear story subject",
+        "History documentary" =>
+            "Historically plausible period reconstruction, realistic old architecture " +
+            "and clothing, archival photo color treatment, dramatic documentary composition",
+        "Mystery / investigation" =>
+            "Tense investigative documentary illustration, accurate evidence and period " +
+            "clues, cinematic noir lighting, main story subject sharply visible",
+        "Science explainer" =>
+            "Accurate explanatory science visualization, clear simple cause-and-effect " +
+            "composition, realistic scale, no unnecessary readable text",
+        "Documentary explainer with fast visual variety" =>
+            "Detailed documentary illustration with clear subject, evidence, maps " +
+            "and environment as appropriate, editorial lighting, restrained style",
+        _ => "Detailed scene-specific illustration, intentional composition, " +
+            "consistent style, clear subject and recognizable setting"
+    };
+
     public async Task GenerateToPathAsync(string title,string topic,string style,
         string ratio,string chapter,string narration,string direction,string query,
-        string destination,ZeroVideoSettings settings,Action<string>? log,CancellationToken ct)
+        string destination,ZeroVideoSettings settings,Action<string>? log,CancellationToken ct,
+        long? fixedSeed=null)
     {
         if(!await IsOnlineAsync(ct))
             await StartAsync(log,ct);
@@ -287,27 +395,36 @@ public sealed class LocalImageService
             throw new FileNotFoundException("Local checkpoint is not installed: "+checkpoint);
         if(checkpoint==SdxlFileName && !HasCheckpoint)
             throw new FileNotFoundException("SDXL model is missing. Click Install Everything.");
+        if(checkpoint==IllustratedFileName && !HasIllustratedCheckpoint)
+            throw new FileNotFoundException(
+                "DreamShaper XL was not installed. Click Install Illustrated Model.");
         var portrait=ratio=="9:16";
         var width=portrait?704:1248;
         var height=portrait?1248:704;
+        var isComicPage=style=="Comic Book Explainer";
+        var styleCue=IllustratedStyleCue(style);
+        // Most important text first, then the action and props. A previous
+        // verbose prompt buried the main character in hundreds of words.
         var positive=string.Join(". ",new[]{
-            "One standalone finished scene illustration, no frame, no labels",
-            "Video: "+title,"Topic: "+topic,"Chapter: "+chapter,
-            "Current scene: "+narration,
-            "Visual direction: "+direction,
-            "Relevant location and objects: "+query,
-            "Visual style: "+style,
-            VisualStylePresets.GetPrompt(style),
-            "Clean intentional composition, coherent subjects, accurate props and era",
-            portrait?"Vertical 9:16 portrait composition":"Horizontal 16:9 wide composition",
-            "No words, text, lettering, watermark, speech bubbles, UI or logos"
+            styleCue,
+            "MOST IMPORTANT: "+CompactLocalText(narration,420),
+            "SHOW ON SCREEN: "+CompactLocalText(direction,240),
+            "Key props and setting: "+CompactLocalText(query,120),
+            "Video topic: "+CompactLocalText(topic,85),
+            portrait?"vertical 9:16 portrait":"horizontal 16:9 widescreen",
+            isComicPage?"complete multi-panel printed comic PAGE":"one coherent illustrated scene",
+            "no captions, readable text, watermarks, logos or interface"
         }.Where(x=>!string.IsNullOrWhiteSpace(x)));
-        var negative="blurry, bad anatomy, deformed hands, text, words, letters, watermark, " +
-            "unrelated subjects, confusing composition, screenshot, interface, logo, low resolution";
+        var negative="bad anatomy, distorted hands, blurry, low-detail, text, " +
+            "words, lettering, speech bubbles, captions, watermark, logo, "+
+            "interface, screen capture, random extra objects, generic empty room";
         if(style=="Comic Book Explainer")
-            positive+=". Classic hand-inked PRINTED comic page, 2 to 4 thick-gutter " +
-                "panels for distinct beats within ONLY this scene, visible halftone dots, paper grain. "+
-                "The multi-panel layout is intentionally permitted for this style.";
+            negative+=", grayscale only, monochrome, black-and-white-only, "+
+                "glossy digital illustration, smooth gradients, photorealism";
+        if(style=="Cinematic Comic Explainer"||
+           style=="Editorial Cartoon Explainer")
+            negative+=", photorealistic, empty still life, subject missing, " +
+                "stock photo, 3D, plastic faces";
         // Standard core nodes; no extension/custom-node download or dependency.
         static object Ref(string id,int n)=>new object[]{id,n};
         var graph=new Dictionary<string,object>
@@ -318,8 +435,8 @@ public sealed class LocalImageService
             ["5"]=new {class_type="EmptyLatentImage",inputs=new{width,height,batch_size=1}},
             ["3"]=new {class_type="KSampler",inputs=new
             {
-                seed=Random.Shared.NextInt64(1,long.MaxValue),steps=25,cfg=6.5,
-                sampler_name="euler",scheduler="normal",denoise=1.0,
+                seed=fixedSeed??Random.Shared.NextInt64(1,long.MaxValue),steps=30,cfg=6.0,
+                sampler_name="dpmpp_2m",scheduler="karras",denoise=1.0,
                 model=Ref("4",0),positive=Ref("6",0),negative=Ref("7",0),latent_image=Ref("5",0)
             }},
             ["8"]=new {class_type="VAEDecode",inputs=new{samples=Ref("3",0),vae=Ref("4",2)}},
