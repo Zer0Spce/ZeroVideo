@@ -19,6 +19,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly ProcessRunner _runner = new();
     private readonly DependencyService _dependencies = new();
     private readonly LocalImageService _localImages = new();
+    private readonly OmniVoiceService _omniVoice = new();
     private CancellationTokenSource _cts = new();
     private readonly ChatGptBrowserService _chat;
     private readonly ClipchampTtsService _clip;
@@ -44,7 +45,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         _chat = new ChatGptBrowserService(_browser, _profiles);
         _clip = new ClipchampTtsService(_browser, _profiles);
         _ffmpeg = new FfmpegService(_runner, _dependencies);
-        _pipeline = new PipelineService(_chat, _clip, _ffmpeg, _store, _localImages);
+        _pipeline = new PipelineService(_chat, _clip, _ffmpeg, _store, _localImages, _omniVoice);
         _preflight = new PreflightService(_runner);
         GeneratePlanCommand = new AsyncCommand(()=>RunManagedJobAsync("Create — Outline and Chapters",GeneratePlanAsync), () => !string.IsNullOrWhiteSpace(Topic) && Duration > 0);
         ContinueWritingCommand = new AsyncCommand(()=>RunManagedJobAsync("Create — Continue Writing",ContinueWritingAsync), CanContinueWriting);
@@ -68,6 +69,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         InitializeContentSeriesCommands();
         InitializeLocalImageCommands();
         InitializeCharacterCommands();
+        InitializeOmniVoiceCommands();
         BrowseMusicCommand = new RelayCommand(BrowseMusic);
     }
 
@@ -115,6 +117,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         LoadTikTokIntelligence();
         LoadShortsRecovery();
         LoadLongFormRecovery();
+        LoadOmniVoiceProfiles();
         RefreshPublishingCalendar();
         RefreshVideoLibrary();
         if (string.IsNullOrWhiteSpace(Project.Voice)) Project.Voice = Settings.ClipchampVoice;
@@ -275,7 +278,26 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 }
             }
             if (needsTts) await _store.SaveAsync(Project, Settings.ProjectsRoot);
-            if (needsTts && !_shortsTtsConfirmed)
+            if(needsTts && Settings.TextToSpeechEngine=="OmniVoice (Local)")
+            {
+                if(!Settings.OmniVoiceNonCommercialAcknowledged)
+                    throw new InvalidOperationException(
+                        "OmniVoice pretrained model weights are CC BY-NC "+
+                        "(non-commercial). Open Voice Studio and acknowledge "+
+                        "the evaluation-only license before using this engine.");
+                if(!_omniVoice.IsInstalled)
+                    throw new InvalidOperationException(
+                        "OmniVoice is not installed. Open Voice Studio > "+
+                        "Install OmniVoice before generating local narration.");
+                if(!_omniVoice.LoadProfiles().Any(x=>
+                    x.Id==Settings.OmniVoiceProfileId))
+                    throw new InvalidOperationException(
+                        "Select an approved saved voice in Voice Studio first.");
+                Log("OmniVoice local narration selected. "+
+                    "No Clipchamp voice-selection checkpoint is required.");
+            }
+            if (needsTts && !_shortsTtsConfirmed &&
+                Settings.TextToSpeechEngine!="OmniVoice (Local)")
             {
                 _ttsContinueGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 WaitingForTtsContinue = true;
@@ -469,6 +491,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     {
         _cts.Cancel();
         _cts.Dispose();
+        _omniPreviewPlayer.Stop();
+        _omniPreviewPlayer.Close();
+        _omniVoice.StopActiveProcesses();
         await _browser.DisposeAsync();
     }
 
