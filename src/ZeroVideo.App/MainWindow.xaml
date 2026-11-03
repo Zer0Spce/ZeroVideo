@@ -493,6 +493,9 @@
                   <Button Style="{StaticResource PrimaryButton}" Content="Install FLUX.1-schnell Q4 (8GB GPU)"
                           Command="{Binding InstallFluxSchnellCommand}"
                           ToolTip="Optional install of FLUX Q4 + text encoders + VAE and ComfyUI-GGUF; ~12 GB download, high RAM use."/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Repair FLUX GGUF Nodes"
+                          Command="{Binding RepairFluxNodesCommand}"
+                          ToolTip="Check extension files, Python gguf dependency and live UnetLoaderGGUF node; repair missing dependency and restart only ZeroVideo-owned ComfyUI."/>
                 </WrapPanel>
                 <TextBlock Text="SELECT A LOCAL MODEL" FontSize="11" Foreground="{StaticResource Muted}" Margin="0,8,0,5"/>
                 <ComboBox Width="440" HorizontalAlignment="Left"
@@ -507,6 +510,8 @@
                 <Button Style="{StaticResource SecondaryButton}" Content="Restart Local Engine (load new nodes)"
                         Command="{Binding RestartLocalEngineCommand}" HorizontalAlignment="Left" Margin="0,9,0,0"/>
                 <TextBlock Text="FLUX schnell Q4 uses about 12 GB of extra model assets and may need RAM offloading on your RTX 3060 8GB. It is an optional trial, not a guaranteed improvement for every comic style."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                <TextBlock Text="Troubleshooting: if ComfyUI reports missing_node_type UnetLoaderGGUF, choose Repair FLUX GGUF Nodes. The app checks the live node registry before rendering. If a different process started ComfyUI on 127.0.0.1:8188, close that server yourself and click Start Local Engine; ZeroVideo will never terminate a server it did not launch."
                            Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
                 <TextBlock Text="Local ComfyUI listens only on 127.0.0.1:8188. It does not require a TikTok login, cannot publish a video and does not modify caption, audio or browser automation."
                            Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
