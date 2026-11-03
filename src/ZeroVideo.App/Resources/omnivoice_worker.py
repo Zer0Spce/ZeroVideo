@@ -74,7 +74,7 @@ def main():
     import numpy as np
     import soundfile as sf
     import torch
-    from omnivoice import OmniVoice
+    from omnivoice import OmniVoice, VoiceClonePrompt
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     dtype = torch.float16 if device.startswith("cuda") else torch.float32
@@ -85,11 +85,32 @@ def main():
     if rate < 16000 or rate > 96000:
         raise ValueError("Unsupported model sample rate.")
 
+    cache_path = job.get("voice_prompt")
+    if cache_path and Path(cache_path).is_file():
+        info("Loading saved voice-clone prompt from local library.")
+        prompt = VoiceClonePrompt.load(str(Path(cache_path)))
+    else:
+        info("Encoding the authorized sample into a reusable voice-clone prompt.")
+        prompt = model.create_voice_clone_prompt(
+            ref_audio=str(source), ref_text=transcript
+        )
+        if cache_path:
+            cache = Path(cache_path)
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            pending_prompt = cache.with_name(cache.name + ".partial")
+            try:
+                prompt.save(str(pending_prompt))
+                os.replace(str(pending_prompt), str(cache))
+            finally:
+                if pending_prompt.exists():
+                    pending_prompt.unlink()
+            info("Saved reusable cloned-voice prompt.")
+
     output_audio = []
     pause = np.zeros(int(rate * 0.12), dtype=np.float32)
     for index, segment in enumerate(segments):
         audio = model.generate(
-            text=segment, ref_audio=str(source), ref_text=transcript,
+            text=segment, voice_clone_prompt=prompt,
             speed=speed, num_step=24
         )
         if not audio:
