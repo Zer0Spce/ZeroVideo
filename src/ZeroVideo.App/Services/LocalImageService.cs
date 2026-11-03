@@ -436,6 +436,24 @@ public sealed class LocalImageService
         catch(HttpRequestException){return false;}
     }
 
+    public async Task RestartOwnedServerAsync(Action<string>? log,CancellationToken ct)
+    {
+        // Do not kill an external ComfyUI session. Only restart the server
+        // process ZeroVideo created so its newly installed GGUF nodes load.
+        if(_serverProcess is null)
+        {
+            log?.Invoke("If ComfyUI was launched outside ZeroVideo, restart "+
+                "that server manually to load newly installed GGUF nodes.");
+            return;
+        }
+        try { if(!_serverProcess.HasExited)_serverProcess.Kill(entireProcessTree:true); }
+        catch { }
+        try { _serverProcess.Dispose(); } catch { }
+        _serverProcess=null;
+        await Task.Delay(800,ct);
+        await StartAsync(log,ct);
+    }
+
     public async Task StartAsync(Action<string>? log,CancellationToken ct)
     {
         if(await IsOnlineAsync(ct))
@@ -682,8 +700,9 @@ public sealed class LocalImageService
                 inputs=new{width,height,batch_size=1}};
         }
 
-        if(!string.IsNullOrWhiteSpace(characterReferenceImage) &&
-           File.Exists(characterReferenceImage))
+        var hasReference=!string.IsNullOrWhiteSpace(characterReferenceImage) &&
+            File.Exists(characterReferenceImage);
+        if(hasReference)
         {
             var uploaded=await UploadCharacterReferenceAsync(characterReferenceImage,ct);
             graph["14"]=new{class_type="LoadImage",inputs=new{image=uploaded}};
@@ -702,18 +721,19 @@ public sealed class LocalImageService
                 "The master image guides appearance, but exact facial identity "+
                 "cannot be guaranteed across all angles.");
         }
-        graph["3"]=isFlux?
-            new {class_type="KSampler",inputs=new
+        if(isFlux)
+            graph["3"]=new {class_type="KSampler",inputs=new
             {
                 seed,steps=4,cfg=1.0,sampler_name="euler",scheduler="simple",
-                denoise=characterReferenceImage is null?1.0:0.75,
+                denoise=hasReference?0.75:1.0,
                 model=Ref("4",0),positive=Ref("13",0),negative=Ref("12",0),
                 latent_image=latent
-            }}:
-            new {class_type="KSampler",inputs=new
+            }};
+        else
+            graph["3"]=new {class_type="KSampler",inputs=new
             {
                 seed,steps=30,cfg=6.0,sampler_name="dpmpp_2m",scheduler="karras",
-                denoise=characterReferenceImage is null?1.0:0.68,
+                denoise=hasReference?0.68:1.0,
                 model=Ref("4",0),positive=Ref("6",0),negative=Ref("7",0),
                 latent_image=latent
             }};
