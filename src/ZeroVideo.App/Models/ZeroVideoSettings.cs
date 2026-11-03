@@ -11,6 +11,13 @@ public sealed class ZeroVideoSettings
     public string ClipchampLanguage { get; set; } = "English (United States)";
     public string ClipchampVoice { get; set; } = "";
     public double ClipchampPace { get; set; } = 1.0;
+    // Preserve Clipchamp by default; OmniVoice is an opt-in non-commercial
+    // evaluation engine (pretrained model weights are CC BY-NC 4.0).
+    public string TextToSpeechEngine { get; set; } = "Clipchamp";
+    public string OmniVoiceProfileId { get; set; } = "";
+    public double OmniVoiceSpeed { get; set; } = 1.0;
+    public bool OmniVoiceNonCommercialAcknowledged { get; set; }
+
     public string AutomationProfilePath { get; set; } = "";
     public bool KeepBrowserOpen { get; set; } = true;
     // Defaults to the current known-good ChatGPT visual workflow.
