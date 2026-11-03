@@ -2,7 +2,7 @@ using ZeroVideo.App.Models;
 
 namespace ZeroVideo.App.Services;
 
-public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsService clipchamp, FfmpegService ffmpeg, ProjectStore store)
+public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsService clipchamp, FfmpegService ffmpeg, ProjectStore store, LocalImageService localImages)
 {
     public async Task<string> RunAsync(VideoProject project, ZeroVideoSettings settings, Action<string>? log = null, IProgress<double>? progress = null, CancellationToken ct = default)
     {
@@ -77,6 +77,21 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
 
     private async Task GenerateMissingVisualsAsync(VideoProject project, ZeroVideoSettings settings, Action<string>? log, IProgress<double>? progress, CancellationToken ct)
     {
+        // Automatic cast detection runs only for explicitly selected local
+        // image generation. The working ChatGPT image path is unchanged.
+        if(project.Options.EnableCharacterConsistency &&
+           (settings.ImageGenerationEngine=="Local ComfyUI" ||
+            settings.ImageGenerationEngine=="Hybrid"))
+        {
+            var before=project.Characters?.Count??0;
+            CharacterConsistencyService.EnsureProfiles(project);
+            if(project.Characters.Count>before)
+            {
+                log?.Invoke($"Character Lock: detected {project.Characters.Count-before} "+
+                    "recurring characters. References will be saved in CharacterReferences.");
+                await store.SaveAsync(project,settings.ProjectsRoot);
+            }
+        }
         var all = project.Chapters.SelectMany(c => c.Scenes.Select(s => (Chapter: c, Scene: s))).ToList();
 
         if (project.VisualAssetVersion.GetValueOrDefault() < ProjectMedia.CurrentGeneratedAssetVersion)
@@ -203,7 +218,30 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
                 if (attempt > 1)
                     log?.Invoke($"Scene {chapter.Number}.{scene.Number}: retry {attempt}/{maxAttempts}...");
 
-                await chat.GenerateSceneImageAsync(project, chapter, scene, settings, log, attemptCts.Token);
+                var engine = settings.ImageGenerationEngine ?? "ChatGPT";
+                if (engine.Equals("Local ComfyUI", StringComparison.OrdinalIgnoreCase))
+                {
+                    await localImages.GenerateAsync(project, chapter, scene, settings, log, attemptCts.Token);
+                }
+                else if (engine.Equals("Hybrid", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        await localImages.GenerateAsync(project, chapter, scene, settings, log, attemptCts.Token);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception localError)
+                    {
+                        log?.Invoke($"Scene {chapter.Number}.{scene.Number}: local generation " +
+                            $"unavailable ({localError.Message}). Falling back to the existing ChatGPT engine.");
+                        await chat.GenerateSceneImageAsync(project, chapter, scene, settings, log, attemptCts.Token);
+                    }
+                }
+                else
+                {
+                    // Keep the known-good browser generation path exactly as before.
+                    await chat.GenerateSceneImageAsync(project, chapter, scene, settings, log, attemptCts.Token);
+                }
                 return true;
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested && attemptCts.IsCancellationRequested)
