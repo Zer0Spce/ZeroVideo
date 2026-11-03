@@ -28,7 +28,7 @@ public sealed partial class MainViewModel
 
     private void InitializeContentSeriesCommands()
     {
-        GenerateContentSeriesCommand = new AsyncCommand(GenerateContentSeriesAsync);
+        GenerateContentSeriesCommand = new AsyncCommand(()=>RunManagedJobAsync("Content Series",GenerateContentSeriesAsync));
         AddContentSeriesToShortsCommand = new RelayCommand(() =>
         {
             var chosen=SeriesEpisodes.Where(x=>x.IsChecked).ToList();
