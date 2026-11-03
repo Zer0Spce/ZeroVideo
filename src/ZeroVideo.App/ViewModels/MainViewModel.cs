@@ -66,6 +66,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         InitializeLibraryAndCalendarCommands();
         InitializeContentSeriesCommands();
         InitializeLocalImageCommands();
+        InitializeCharacterCommands();
         BrowseMusicCommand = new RelayCommand(BrowseMusic);
     }
 
@@ -137,7 +138,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 AspectRatio = AspectRatio,
                 Style = Style,
                 Voice = Project.Voice,
-                Options = Project.Options
+                Options = Project.Options,
+                Characters = Project.Characters ?? []
             };
 
             var requestedChapters = Math.Clamp(seed.Options.HowManyChapters, 1, 40);
@@ -156,7 +158,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 outlinePrompt += $"\nCORRECTION: Return EXACTLY {requestedChapters} chapters. Your previous outline had {generated.Chapters.Count}. Do not change the requested count.";
             }
 
-            Project = generated!;
+            generated!.Characters ??= seed.Characters;
+            if(generated.Characters.Count==0) generated.Characters=seed.Characters;
+            Project = generated;
             ProjectDirectory = await _store.SaveAsync(Project, Settings.ProjectsRoot);
             Progress = 5;
             Log($"Outline checkpoint saved to {ProjectDirectory}");
