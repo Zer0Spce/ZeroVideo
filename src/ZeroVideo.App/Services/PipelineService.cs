@@ -2,7 +2,7 @@ using ZeroVideo.App.Models;
 
 namespace ZeroVideo.App.Services;
 
-public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsService clipchamp, FfmpegService ffmpeg, ProjectStore store, LocalImageService localImages)
+public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsService clipchamp, FfmpegService ffmpeg, ProjectStore store, LocalImageService localImages, OmniVoiceService omniVoice)
 {
     public async Task<string> RunAsync(VideoProject project, ZeroVideoSettings settings, Action<string>? log = null, IProgress<double>? progress = null, CancellationToken ct = default)
     {
@@ -42,7 +42,10 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
                 {
                     try
                     {
-                        await clipchamp.GenerateChapterAsync(chapter, project, settings, log, ct);
+                        if(settings.TextToSpeechEngine=="OmniVoice (Local)")
+                            await omniVoice.GenerateChapterAsync(chapter,project,settings,log,ct);
+                        else
+                            await clipchamp.GenerateChapterAsync(chapter, project, settings, log, ct);
                         await ffmpeg.ValidateNarrationAudioAsync(chapter.AudioPath, settings, $"Chapter {chapter.Number} generated TTS", chapter.Narration, log, ct);
                         lastTtsError = null;
                         break;
