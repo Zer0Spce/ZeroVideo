@@ -19,7 +19,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly ProcessRunner _runner = new();
     private readonly DependencyService _dependencies = new();
     private readonly LocalImageService _localImages = new();
-    private readonly CancellationTokenSource _cts = new();
+    private CancellationTokenSource _cts = new();
     private readonly ChatGptBrowserService _chat;
     private readonly ClipchampTtsService _clip;
     private readonly FfmpegService _ffmpeg;
@@ -46,18 +46,19 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         _ffmpeg = new FfmpegService(_runner, _dependencies);
         _pipeline = new PipelineService(_chat, _clip, _ffmpeg, _store, _localImages);
         _preflight = new PreflightService(_runner);
-        GeneratePlanCommand = new AsyncCommand(GeneratePlanAsync, () => !string.IsNullOrWhiteSpace(Topic) && Duration > 0);
-        ContinueWritingCommand = new AsyncCommand(ContinueWritingAsync, CanContinueWriting);
-        RunPipelineCommand = new AsyncCommand(RunPipelineAsync, CanBuildVideo);
+        GeneratePlanCommand = new AsyncCommand(()=>RunManagedJobAsync("Create — Outline and Chapters",GeneratePlanAsync), () => !string.IsNullOrWhiteSpace(Topic) && Duration > 0);
+        ContinueWritingCommand = new AsyncCommand(()=>RunManagedJobAsync("Create — Continue Writing",ContinueWritingAsync), CanContinueWriting);
+        RunPipelineCommand = new AsyncCommand(()=>RunManagedJobAsync("Create — Video Pipeline",RunPipelineAsync), CanBuildVideo);
         ContinueTtsCommand = new RelayCommand(ContinueTts);
         OpenChatGptCommand = new AsyncCommand(() => _chat.OpenAsync(Settings));
         OpenClipchampCommand = new AsyncCommand(() => _clip.OpenAsync(Settings));
-        InstallFfmpegCommand = new AsyncCommand(InstallFfmpegAsync);
+        InstallFfmpegCommand = new AsyncCommand(()=>RunManagedJobAsync("Dependency installation",InstallFfmpegAsync));
         SaveSettingsCommand = new AsyncCommand(SaveSettingsAsync);
-        RunPreflightCommand = new AsyncCommand(RunPreflightAsync);
+        RunPreflightCommand = new AsyncCommand(()=>RunManagedJobAsync("System preflight",RunPreflightAsync));
         OpenProjectFolderCommand = new AsyncCommand(OpenProjectFolderAsync, () => Directory.Exists(ProjectDirectory));
         LoadProjectCommand = new AsyncCommand(LoadProjectAsync);
-        CancelCommand = new RelayCommand(() => _cts.Cancel());
+        CancelCommand = new RelayCommand(RequestStopJob);
+        InitializeJobControls();
         InitializeShortsCommands();
         InitializeIdeasCommands();
         InitializePublishingCommands();
@@ -444,6 +445,13 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         WaitingForTtsContinue = false;
         _ttsContinueGate?.TrySetCanceled();
         _ttsContinueGate = null;
+        if (_cts.IsCancellationRequested || ex is OperationCanceledException)
+        {
+            Status = "Stopped by user. Saved stages and completed files remain intact.";
+            Log(Status);
+            RefreshCommands();
+            return;
+        }
         Status = "Stopped: " + ex.Message;
         Log("ERROR: " + ex);
         MessageBox.Show(ex.Message, "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Warning);
