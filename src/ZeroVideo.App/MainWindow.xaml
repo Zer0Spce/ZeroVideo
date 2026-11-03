@@ -472,8 +472,11 @@
                   <Button Style="{StaticResource SecondaryButton}" Content="View Samples Folder"
                           Command="{Binding OpenLocalBenchmarkFolderCommand}"/>
                 </WrapPanel>
-                <TextBlock Text="Compare your actual renders. The new illustrated checkpoint and shorter style instructions may improve subject relevance, but a classic multi-panel comic page may still require a layout-specific workflow."
-                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
+                <CheckBox Content="Comic Book Explainer: generate 3 separate vintage panels and assemble the page"
+                          IsChecked="{Binding Project.Options.VintageComicPanelComposition, Mode=TwoWay}"
+                          Margin="0,10,0,0" ToolTip="Local ComfyUI only. Generates three separate illustrated story beats with thick black gutters. Uses about three times as many model renders per scene."/>
+                <TextBlock Text="Vintage printed comics now use a dedicated three-panel compositor instead of asking one model to invent the entire page. Each local scene requires three renders, with character anchors reused. Other styles are unchanged."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,9,0,0"/>
               </StackPanel>
             </Border>
             <Border Style="{StaticResource CardBorder}">
