@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -31,6 +32,31 @@ public sealed class LocalImageService
         IllustratedFileName;
     public const string IllustratedSha256 =
         "0f1b80cfe81b9c3bde7fdcbf6898897b2811b27be1df684583c3d85cbc9b1fa4";
+    // Optional FLUX.1-schnell GGUF Q4_K_S (~6.78 GB) for 8 GB GPUs.
+    // All four assets have SHA-256 verified by Hugging Face LFS metadata.
+    // FLUX.1-schnell is Apache-2.0; FLUX.1-dev is deliberately excluded.
+    public const string FluxGgufFileName="flux1-schnell-Q4_K_S.gguf";
+    private const string FluxGgufUrl=
+        "https://huggingface.co/city96/FLUX.1-schnell-gguf/resolve/main/"+FluxGgufFileName;
+    private const string FluxGgufHash=
+        "4fd16477b3a5296d0cf722c4b92a9fd7f30d09ac7495826e4465d8de9c9fd973";
+    private const string FluxT5FileName="t5xxl_fp8_e4m3fn.safetensors";
+    private const string FluxT5Url=
+        "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/"+FluxT5FileName;
+    private const string FluxT5Hash=
+        "7d330da4816157540d6bb7838bf63a0f02f573fc48ca4d8de34bb0cbfd514f09";
+    private const string FluxClipFileName="clip_l.safetensors";
+    private const string FluxClipUrl=
+        "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/"+FluxClipFileName;
+    private const string FluxClipHash=
+        "660c6f5b1abae9dc498ac2d21e1347d2abdb0cf6c0c0c8576cd796491d9a6cdd";
+    private const string FluxVaeFileName="ae.safetensors";
+    private const string FluxVaeUrl=
+        "https://huggingface.co/Comfy-Org/Lumina_Image_2.0_Repackaged/resolve/main/split_files/vae/"+FluxVaeFileName;
+    private const string FluxVaeHash=
+        "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38";
+    private const string GgufNodeCommit="6ea2651e7df66d7585f6ffee804b20e92fb38b8a";
+
 
     public static string Root => Path.Combine(AppPaths.DataDirectory, "LocalAI");
     public static string PortableRoot => Path.Combine(Root,"ComfyUI_windows_portable");
@@ -38,6 +64,21 @@ public sealed class LocalImageService
         PortableRoot,"ComfyUI","models","checkpoints",SdxlFileName);
     public static string IllustratedCheckpointPath => Path.Combine(
         PortableRoot,"ComfyUI","models","checkpoints",IllustratedFileName);
+    public static string FluxModelPath =>
+        Path.Combine(PortableRoot,"ComfyUI","models","unet",FluxGgufFileName);
+    public static string FluxT5Path =>
+        Path.Combine(PortableRoot,"ComfyUI","models","text_encoders",FluxT5FileName);
+    public static string FluxClipPath =>
+        Path.Combine(PortableRoot,"ComfyUI","models","text_encoders",FluxClipFileName);
+    public static string FluxVaePath =>
+        Path.Combine(PortableRoot,"ComfyUI","models","vae",FluxVaeFileName);
+    private static string GgufNodeFolder =>
+        Path.Combine(PortableRoot,"ComfyUI","custom_nodes","ComfyUI-GGUF");
+    public bool HasFluxSchnell =>
+        File.Exists(FluxModelPath) && File.Exists(FluxT5Path) &&
+        File.Exists(FluxClipPath) && File.Exists(FluxVaePath) &&
+        Directory.Exists(GgufNodeFolder);
+
     private static readonly Uri Server = new("http://127.0.0.1:8188/");
     private static readonly HttpClient Http = new(new HttpClientHandler
     {
@@ -209,6 +250,98 @@ public sealed class LocalImageService
         log?.Invoke("DreamShaper XL verified and ready in ComfyUI/checkpoints.");
     }
 
+
+    private static async Task EnsureVerifiedModelAsync(
+        string url,string path,string expectedSha,Action<string>? log,CancellationToken ct)
+    {
+        if(File.Exists(path))
+        {
+            await using var existing=File.OpenRead(path);
+            var digest=Convert.ToHexString(await SHA256.HashDataAsync(existing,ct));
+            if(!digest.Equals(expectedSha,StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Existing model checksum does not match published SHA-256: "+
+                    Path.GetFileName(path)+". Please move the invalid file away before retrying.");
+            log?.Invoke("Verified existing file: "+Path.GetFileName(path));
+            return;
+        }
+        await DownloadAsync(url,path,expectedSha,log,ct);
+    }
+
+    private async Task InstallGgufNodesAsync(Action<string>? log,CancellationToken ct)
+    {
+        if(Directory.Exists(GgufNodeFolder))
+        {
+            log?.Invoke("ComfyUI-GGUF nodes already present.");
+            return;
+        }
+        var uri="https://github.com/city96/ComfyUI-GGUF/archive/"+GgufNodeCommit+".zip";
+        var zipPath=Path.Combine(Root,"ComfyUI-GGUF-"+GgufNodeCommit+".zip");
+        if(!File.Exists(zipPath))
+            await DownloadAsync(uri,zipPath,null,log,ct);
+        var temporary=GgufNodeFolder+".installing";
+        if(Directory.Exists(temporary))Directory.Delete(temporary,true);
+        Directory.CreateDirectory(temporary);
+        try
+        {
+            using var archive=ZipFile.OpenRead(zipPath);
+            foreach(var entry in archive.Entries)
+            {
+                ct.ThrowIfCancellationRequested();
+                var parts=entry.FullName.Replace('\\','/').Split('/');
+                if(parts.Length<2)continue;
+                var localParts=parts.Skip(1).Where(x=>x.Length>0).ToList();
+                if(localParts.Any(x=>x=="."||x==".."||x.Contains(':')))
+                    throw new InvalidDataException("Unsafe ComfyUI node archive path.");
+                var finalPath=Path.GetFullPath(Path.Combine(temporary,
+                    Path.Combine(localParts.ToArray())));
+                if(!finalPath.StartsWith(Path.GetFullPath(temporary)+Path.DirectorySeparatorChar,
+                    StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("ComfyUI node ZIP path escaped its install folder.");
+                if(entry.FullName.EndsWith('/'))
+                {
+                    Directory.CreateDirectory(finalPath);
+                    continue;
+                }
+                Directory.CreateDirectory(Path.GetDirectoryName(finalPath)!);
+                entry.ExtractToFile(finalPath,true);
+            }
+            var required=Path.Combine(temporary,"requirements.txt");
+            if(!File.Exists(required))
+                throw new InvalidDataException("ComfyUI-GGUF installer lacks requirements.txt.");
+            log?.Invoke("Installing the GGUF Python dependency in ComfyUI's bundled Python...");
+            await RunToolAsync(PortablePython,
+                new[]{"-s","-m","pip","install","--disable-pip-version-check","-r",required},
+                PortableRoot,ct);
+            Directory.Move(temporary,GgufNodeFolder);
+            log?.Invoke("ComfyUI-GGUF nodes installed. Restart ComfyUI to load them.");
+        }
+        catch
+        {
+            try{if(Directory.Exists(temporary))Directory.Delete(temporary,true);}catch{}
+            throw;
+        }
+    }
+
+    public async Task InstallFluxSchnellAsync(Action<string>? log,CancellationToken ct)
+    {
+        if(!HasComfyUi)
+            throw new InvalidOperationException(
+                "Install the ComfyUI NVIDIA portable runtime first using Install Everything.");
+        var drive=new DriveInfo(Path.GetPathRoot(Path.GetFullPath(Root))!);
+        if(drive.AvailableFreeSpace<14L*1024*1024*1024&&!HasFluxSchnell)
+            throw new IOException("Need approximately 14 GB of free space for quantized FLUX, "+
+                "its text encoders and VAE. Existing SDXL/DreamShaper files are kept.");
+        await InstallGgufNodesAsync(log,ct);
+        log?.Invoke("Downloading FLUX.1-schnell Q4_K_S and required encoders. "+
+            "All downloads resume after interruptions and are SHA-256 verified.");
+        await EnsureVerifiedModelAsync(FluxGgufUrl,FluxModelPath,FluxGgufHash,log,ct);
+        await EnsureVerifiedModelAsync(FluxT5Url,FluxT5Path,FluxT5Hash,log,ct);
+        await EnsureVerifiedModelAsync(FluxClipUrl,FluxClipPath,FluxClipHash,log,ct);
+        await EnsureVerifiedModelAsync(FluxVaeUrl,FluxVaePath,FluxVaeHash,log,ct);
+        log?.Invoke("FLUX.1-schnell Q4 and its three supporting model files verified. "+
+            "Restart any running ComfyUI instance to load the new GGUF nodes. "+
+            "On 8 GB GPUs, CPU/RAM offloading can still make generation slow.");
+    }
 
     public async Task InstallEverythingAsync(Action<string>? log,CancellationToken ct)
     {
