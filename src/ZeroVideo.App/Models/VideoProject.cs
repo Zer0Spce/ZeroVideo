@@ -50,6 +50,8 @@ public sealed class ProjectOptions
     public bool AvoidRepeatedVisuals { get; set; } = true;
     public bool GenerateMissingVisuals { get; set; } = true;
     public bool EnableCharacterConsistency { get; set; } = true;
+    // Local ComfyUI only: render three distinct vintage panels and assemble a comic page.
+    public bool VintageComicPanelComposition { get; set; } = true;
 
 
     /// <summary>
