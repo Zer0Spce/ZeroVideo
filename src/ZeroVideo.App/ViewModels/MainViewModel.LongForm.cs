@@ -42,6 +42,27 @@ public sealed partial class MainViewModel
     }
 
 
+    // Shared by Idea Generation and Content Series. The two automation
+    // queues are completely independent: adding a title here never changes
+    // the existing Shorts list or its checkpoint.
+    private int AddTitlesToLongFormQueue(IEnumerable<string> titles)
+    {
+        var known=new HashSet<string>(
+            LongFormQueue.Select(x=>x.Idea.Trim()),StringComparer.OrdinalIgnoreCase);
+        var added=0;
+        foreach(var candidate in titles)
+        {
+            var title=candidate?.Trim()??"";
+            if(title.Length==0||!known.Add(title))continue;
+            if(LongFormQueue.Count==1 &&
+               string.IsNullOrWhiteSpace(LongFormQueue[0].Idea))
+                LongFormQueue[0].Idea=title;
+            else LongFormQueue.Add(new ShortQueueEntry{Idea=title});
+            added++;
+        }
+        return added;
+    }
+
     private void InitializeLongFormCommands()
     {
         AddLongFormRowCommand = new RelayCommand(() => LongFormQueue.Add(new ShortQueueEntry()));
