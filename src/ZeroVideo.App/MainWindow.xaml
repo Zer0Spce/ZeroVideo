@@ -703,7 +703,7 @@
                 <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
                   <TextBlock Text="SELECTED VOICE" FontSize="11" FontWeight="SemiBold"
                              Foreground="{StaticResource Muted}" Margin="0,0,0,4"/>
-                  <TextBlock Text="{Binding SelectedOmniProfile.Name, FallbackValue=No voice selected, TargetNullValue=No voice selected}"
+                  <TextBlock Text="{Binding SelectedOmniProfile.Name, FallbackValue='No voice selected', TargetNullValue='No voice selected'}"
                              FontSize="15" FontWeight="SemiBold" Margin="0,0,0,11"/>
                   <Button Style="{StaticResource PrimaryButton}" Content="Use Voice in Automation"
                           Command="{Binding UseOmniProfileCommand}"
