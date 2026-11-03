@@ -343,7 +343,7 @@
           <StackPanel MaxWidth="990" HorizontalAlignment="Left" Margin="0,0,12,20">
             <TextBlock Text="Local Image Generation — ComfyUI" FontSize="24"
                        FontWeight="SemiBold" Margin="0,0,0,7"/>
-            <TextBlock Text="Run all existing ZeroVideo visual styles locally on an NVIDIA GPU. The original ChatGPT engine remains the default and unchanged. This screen uses core ComfyUI nodes and an SDXL model; specialty LoRAs can be added later."
+            <TextBlock Text="Run existing styles with ComfyUI on your NVIDIA GPU. Install the optional illustrated DreamShaper XL model and use scene-focused local prompts. The original ChatGPT engine remains available and unchanged."
                        Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,13"/>
             <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
               <StackPanel>
@@ -387,7 +387,7 @@
             <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
               <StackPanel>
                 <TextBlock Text="3. Test your comic and cartoon styles" FontSize="18" FontWeight="SemiBold"/>
-                <TextBlock Text="Create three independent vertical benchmark scenes using the exact existing style rules: Cinematic Comic Explainer, Comic Book Explainer, and Editorial Cartoon Explainer. Inspect the finished PNGs before changing production."
+                <TextBlock Text="Create the same detective scene in Cinematic Comic, Classic Comic Book and Editorial Cartoon styles. Samples use a repeatable seed for easier comparison across SDXL and DreamShaper XL."
                            Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,11"/>
                 <WrapPanel>
                   <Button Style="{StaticResource PrimaryButton}" Content="Generate 3 Style Samples"
@@ -395,20 +395,32 @@
                   <Button Style="{StaticResource SecondaryButton}" Content="View Samples Folder"
                           Command="{Binding OpenLocalBenchmarkFolderCommand}"/>
                 </WrapPanel>
-                <TextBlock Text="All 13 existing visual presets are supported through ZeroVideo's original style prompts. Results are preliminary SDXL samples; reproducing intricate vintage panel art may benefit from specialist LoRAs, reference conditioning, and further tuning."
+                <TextBlock Text="Compare your actual renders. The new illustrated checkpoint and shorter style instructions may improve subject relevance, but a classic multi-panel comic page may still require a layout-specific workflow."
                            Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
               </StackPanel>
             </Border>
             <Border Style="{StaticResource CardBorder}">
               <StackPanel>
-                <TextBlock Text="4. Advanced optional model" FontSize="18" FontWeight="SemiBold"/>
-                <TextBlock Text="Checkpoint filename in ComfyUI/models/checkpoints (default SDXL base). Only locally installed files are accepted. Most style presets work with SDXL; custom checkpoints can change results."
-                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,7"/>
-                <TextBox Width="440" HorizontalAlignment="Left"
-                         Text="{Binding Settings.LocalImageCheckpointFile, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Text="4. Illustrated Model and Checkpoint Selection" FontSize="18" FontWeight="SemiBold"/>
+                <TextBlock Text="DreamShaper XL is an optional illustration-focused alternative to the default SDXL model. Its 6.94 GB download is verified against the creator's published SHA-256. Review the model license before commercial use. Neither model is deleted when switching."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,10"/>
+                <WrapPanel Margin="0,0,0,8">
+                  <Button Style="{StaticResource PrimaryButton}" Content="Install Better Illustrated Model (1 Click)"
+                          Command="{Binding InstallIllustratedModelCommand}"
+                          ToolTip="Download verified DreamShaper XL from its creator and choose it for future local image generation."/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Switch Back to SDXL Base"
+                          Command="{Binding UseBaseModelCommand}"/>
+                </WrapPanel>
+                <TextBlock Text="SELECT A LOCAL MODEL" FontSize="11" Foreground="{StaticResource Muted}" Margin="0,8,0,5"/>
+                <ComboBox Width="440" HorizontalAlignment="Left"
+                          ItemsSource="{Binding LocalImageModelChoices}"
+                          SelectedItem="{Binding Settings.LocalImageCheckpointFile, Mode=TwoWay}"
+                          ToolTip="Only installed checkpoints can generate images."/>
                 <Button Style="{StaticResource SecondaryButton}"
-                        Command="{Binding SaveSettingsCommand}" Content="Save model choice"
+                        Command="{Binding SaveSettingsCommand}" Content="Save Model Choice"
                         HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                <TextBlock Text="Model license: https://huggingface.co/Lykon/DreamShaper"
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
                 <TextBlock Text="Local ComfyUI listens only on 127.0.0.1:8188. It does not require a TikTok login, cannot publish a video and does not modify caption, audio or browser automation."
                            Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
               </StackPanel>
