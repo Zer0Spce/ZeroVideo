@@ -1,4 +1,36 @@
 <Window x:Class="ZeroVideo.App.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="ZeroVideo" Width="1320" Height="900" MinWidth="1100" MinHeight="820" WindowStartupLocation="CenterScreen" Background="{StaticResource Bg}" Foreground="{StaticResource Text}">
+  <Window.Resources>
+    <Style x:Key="ClipchampVoicePanel" TargetType="{x:Type StackPanel}">
+      <Setter Property="Visibility" Value="Visible"/>
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding IsCustomVoiceActive}" Value="True">
+          <Setter Property="Visibility" Value="Collapsed"/>
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+    <Style x:Key="LocalNarratorPanel" TargetType="{x:Type StackPanel}">
+      <Setter Property="Visibility" Value="Collapsed"/>
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding IsCustomVoiceActive}" Value="True">
+          <Setter Property="Visibility" Value="Visible"/>
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+    <Style x:Key="ClipchampSecondaryButton" TargetType="{x:Type Button}" BasedOn="{StaticResource SecondaryButton}">
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding IsCustomVoiceActive}" Value="True">
+          <Setter Property="Visibility" Value="Collapsed"/>
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+    <Style x:Key="ClipchampPrimaryButton" TargetType="{x:Type Button}" BasedOn="{StaticResource PrimaryButton}">
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding IsCustomVoiceActive}" Value="True">
+          <Setter Property="Visibility" Value="Collapsed"/>
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+  </Window.Resources>
   <Grid x:Name="RootShell" Margin="22" Background="{StaticResource Bg}" Opacity="0" RenderTransformOrigin="0.5,0.5">
     <Grid.RenderTransform><TranslateTransform Y="14"/></Grid.RenderTransform>
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -50,8 +82,17 @@
                   <ComboBox ItemsSource="{Binding Styles}" SelectedItem="{Binding Style, Mode=TwoWay}" IsEditable="False" ToolTip="Click to choose a visual/edit style."/>
                 </StackPanel>
                 <StackPanel Grid.Column="2">
-                  <Label Content="CLIPCHAMP VOICE"/>
-                  <ComboBox ItemsSource="{Binding ClipchampVoices}" SelectedItem="{Binding Project.Voice, Mode=TwoWay}" IsEditable="False" ToolTip="Click to choose the Clipchamp TTS voice for this project."/>
+                  <StackPanel Style="{StaticResource ClipchampVoicePanel}">
+                    <Label Content="CLIPCHAMP VOICE"/>
+                    <ComboBox ItemsSource="{Binding ClipchampVoices}" SelectedItem="{Binding Project.Voice, Mode=TwoWay}" IsEditable="False" ToolTip="Click to choose the Clipchamp TTS voice for this project."/>
+                  </StackPanel>
+                <StackPanel Style="{StaticResource LocalNarratorPanel}" Margin="0,8,0,0">
+                  <Label Content="ACTIVE SAVED VOICE"/>
+                  <TextBlock Text="{Binding ActiveNarrationVoiceName}" FontSize="15" FontWeight="SemiBold"
+                             Foreground="{StaticResource AccentHover}" TextWrapping="Wrap" Margin="5,2,0,0"/>
+                  <TextBlock Text="Change the narrator in Voice Studio. Clipchamp is hidden while local narration is selected."
+                             Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="5,5,0,0"/>
+                </StackPanel>
                 </StackPanel>
               </Grid>
 
@@ -175,8 +216,17 @@
                 <TextBlock Text="Format: 9:16 vertical" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
                 <Label Content="STORY / EDIT STYLE" Margin="0,8,0,0"/>
                 <ComboBox ItemsSource="{Binding Styles}" SelectedItem="{Binding Style, Mode=TwoWay}"/>
-                <Label Content="CLIPCHAMP VOICE" Margin="0,8,0,0"/>
-                <ComboBox ItemsSource="{Binding ClipchampVoices}" SelectedItem="{Binding Project.Voice, Mode=TwoWay}"/>
+                <StackPanel Style="{StaticResource ClipchampVoicePanel}">
+                  <Label Content="CLIPCHAMP VOICE" Margin="0,8,0,0"/>
+                  <ComboBox ItemsSource="{Binding ClipchampVoices}" SelectedItem="{Binding Project.Voice, Mode=TwoWay}"/>
+                </StackPanel>
+                <StackPanel Style="{StaticResource LocalNarratorPanel}" Margin="0,8,0,0">
+                  <Label Content="ACTIVE SAVED VOICE"/>
+                  <TextBlock Text="{Binding ActiveNarrationVoiceName}" FontSize="15" FontWeight="SemiBold"
+                             Foreground="{StaticResource AccentHover}" TextWrapping="Wrap" Margin="5,2,0,0"/>
+                  <TextBlock Text="Change the narrator in Voice Studio. Clipchamp is hidden while local narration is selected."
+                             Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="5,5,0,0"/>
+                </StackPanel>
                 <Separator Margin="0,12"/>
                 <TextBlock Text="Output options" FontSize="16" FontWeight="SemiBold"/>
                 <CheckBox Content="Generate missing scene visuals" IsChecked="{Binding Project.Options.GenerateMissingVisuals}" Margin="0,7,0,0"/>
@@ -195,7 +245,7 @@
                 <CheckBox Content="Visual motion" IsChecked="{Binding Project.Options.AddMotion}"/>
                 <CheckBox Content="Music" IsChecked="{Binding Project.Options.AddBackgroundMusic}"/>
                 <CheckBox Content="SFX hooks" IsChecked="{Binding Project.Options.AddSoundEffects}"/>
-                <Button Style="{StaticResource SecondaryButton}" Command="{Binding ContinueTtsCommand}" Content="Continue TTS" IsEnabled="{Binding WaitingForTtsContinue}" HorizontalAlignment="Left" Margin="0,10,0,0"/>
+                <Button Style="{StaticResource ClipchampSecondaryButton}" Command="{Binding ContinueTtsCommand}" Content="Continue TTS" IsEnabled="{Binding WaitingForTtsContinue}" HorizontalAlignment="Left" Margin="0,10,0,0"/>
                 <Separator Margin="0,12"/>
                 <TextBlock Text="Thumbnail" FontWeight="SemiBold"/>
                 <TextBlock Text="Creates a title-specific vertical cover saved as thumbnail.png in each project folder." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
@@ -270,8 +320,17 @@
                 <TextBlock Text="Format: 16:9 widescreen (1920×1080 output)" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
                 <Label Content="STORY / EDIT STYLE" Margin="0,8,0,0"/>
                 <ComboBox ItemsSource="{Binding Styles}" SelectedItem="{Binding Style, Mode=TwoWay}"/>
-                <Label Content="CLIPCHAMP VOICE" Margin="0,8,0,0"/>
-                <ComboBox ItemsSource="{Binding ClipchampVoices}" SelectedItem="{Binding Project.Voice, Mode=TwoWay}"/>
+                <StackPanel Style="{StaticResource ClipchampVoicePanel}">
+                  <Label Content="CLIPCHAMP VOICE" Margin="0,8,0,0"/>
+                  <ComboBox ItemsSource="{Binding ClipchampVoices}" SelectedItem="{Binding Project.Voice, Mode=TwoWay}"/>
+                </StackPanel>
+                <StackPanel Style="{StaticResource LocalNarratorPanel}" Margin="0,8,0,0">
+                  <Label Content="ACTIVE SAVED VOICE"/>
+                  <TextBlock Text="{Binding ActiveNarrationVoiceName}" FontSize="15" FontWeight="SemiBold"
+                             Foreground="{StaticResource AccentHover}" TextWrapping="Wrap" Margin="5,2,0,0"/>
+                  <TextBlock Text="Change the narrator in Voice Studio. Clipchamp is hidden while local narration is selected."
+                             Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="5,5,0,0"/>
+                </StackPanel>
                 <Separator Margin="0,12"/>
                 <TextBlock Text="Output options" FontSize="16" FontWeight="SemiBold"/>
                 <CheckBox Content="Generate missing scene visuals" IsChecked="{Binding Project.Options.GenerateMissingVisuals}" Margin="0,7,0,0"/>
@@ -291,7 +350,7 @@
                 <CheckBox Content="Visual motion" IsChecked="{Binding Project.Options.AddMotion}"/>
                 <CheckBox Content="Music" IsChecked="{Binding Project.Options.AddBackgroundMusic}"/>
                 <CheckBox Content="SFX hooks" IsChecked="{Binding Project.Options.AddSoundEffects}"/>
-                <Button Style="{StaticResource SecondaryButton}" Command="{Binding ContinueTtsCommand}" Content="Continue TTS" IsEnabled="{Binding WaitingForTtsContinue}" HorizontalAlignment="Left" Margin="0,10,0,0"/>
+                <Button Style="{StaticResource ClipchampSecondaryButton}" Command="{Binding ContinueTtsCommand}" Content="Continue TTS" IsEnabled="{Binding WaitingForTtsContinue}" HorizontalAlignment="Left" Margin="0,10,0,0"/>
                 <Separator Margin="0,12"/>
                 <TextBlock Text="Thumbnail" FontWeight="SemiBold"/>
                 <TextBlock Text="Creates a title-specific widescreen 16:9 cover saved as thumbnail.png in each project folder." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
@@ -501,7 +560,7 @@
                        Margin="12,0,0,0" MaxWidth="510" ToolTip="{Binding JobControlStatus}"/>
           </StackPanel>
         <Grid Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-          <Border Style="{StaticResource CardBorder}"><StackPanel><TextBlock Text="Browser sessions" FontSize="21" FontWeight="SemiBold"/><TextBlock Text="Open ChatGPT or Clipchamp to sign in normally in the dedicated ZeroVideo Edge profile. Generation automatically hands that signed-in profile over to automation." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,16"/><WrapPanel><Button Style="{StaticResource PrimaryButton}" Command="{Binding OpenChatGptCommand}" Content="Open ChatGPT"/><Button Style="{StaticResource PrimaryButton}" Command="{Binding OpenClipchampCommand}" Content="Open Clipchamp"/></WrapPanel><Button Style="{StaticResource SecondaryButton}" Command="{Binding RunPreflightCommand}" Content="Run system checks" HorizontalAlignment="Left" Margin="0,14,0,6"/><ListBox ItemsSource="{Binding PreflightLines}" Height="190" FontFamily="Consolas" FontSize="12"/></StackPanel></Border>
+          <Border Style="{StaticResource CardBorder}"><StackPanel><TextBlock Text="Browser sessions" FontSize="21" FontWeight="SemiBold"/><TextBlock Text="Open ChatGPT to sign in. Clipchamp remains available only when selected as your narration engine." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,16"/><WrapPanel><Button Style="{StaticResource PrimaryButton}" Command="{Binding OpenChatGptCommand}" Content="Open ChatGPT"/><Button Style="{StaticResource ClipchampPrimaryButton}" Command="{Binding OpenClipchampCommand}" Content="Open Clipchamp"/></WrapPanel><Button Style="{StaticResource SecondaryButton}" Command="{Binding RunPreflightCommand}" Content="Run system checks" HorizontalAlignment="Left" Margin="0,14,0,6"/><ListBox ItemsSource="{Binding PreflightLines}" Height="190" FontFamily="Consolas" FontSize="12"/></StackPanel></Border>
           <Border Grid.Column="2" Style="{StaticResource CardBorder}"><StackPanel><TextBlock Text="Automation profile" FontSize="21" FontWeight="SemiBold"/><TextBlock Text="Selectors are stored outside the code so ChatGPT/Clipchamp UI changes can be repaired without rebuilding the entire app." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,10"/><Label Content="PROFILE PATH"/><TextBox Text="{Binding Settings.AutomationProfilePath}"/><Label Content="EDGE PROFILE DIRECTORY" Margin="0,10,0,0"/><TextBox Text="{Binding Settings.EdgeUserDataDirectory}"/><Button Style="{StaticResource SecondaryButton}" Command="{Binding SaveSettingsCommand}" Content="Save automation settings" HorizontalAlignment="Left" Margin="0,14,0,0"/></StackPanel></Border>
         </Grid>
         </DockPanel>
@@ -1288,10 +1347,18 @@
             <Label Content="FFMPEG.EXE" Margin="0,10,0,0"/><TextBox Width="740" Text="{Binding Settings.FfmpegPath}"/>
             <Label Content="FFPROBE.EXE" Margin="0,10,0,0"/><TextBox Width="740" Text="{Binding Settings.FfprobePath}"/>
             <Separator Margin="0,18"/>
-            <TextBlock Text="Clipchamp TTS defaults" FontSize="18" FontWeight="SemiBold"/>
-            <Label Content="LANGUAGE LABEL" Margin="0,10,0,0"/><TextBox Width="740" Text="{Binding Settings.ClipchampLanguage}"/>
-            <Label Content="VOICE LABEL" Margin="0,10,0,0"/><TextBox Width="740" Text="{Binding Settings.ClipchampVoice}"/>
-            <TextBlock Text="The Create tab voice overrides this default for the active project. Leave blank to keep Clipchamp's current/default voice." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+            <StackPanel Style="{StaticResource ClipchampVoicePanel}">
+              <TextBlock Text="Clipchamp TTS defaults" FontSize="18" FontWeight="SemiBold"/>
+              <Label Content="LANGUAGE LABEL" Margin="0,10,0,0"/><TextBox Width="740" Text="{Binding Settings.ClipchampLanguage}"/>
+              <Label Content="VOICE LABEL" Margin="0,10,0,0"/><TextBox Width="740" Text="{Binding Settings.ClipchampVoice}"/>
+              <TextBlock Text="The Create tab voice overrides this default for the active project. Leave blank to keep Clipchamp's current/default voice." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+            </StackPanel>
+            <StackPanel Style="{StaticResource LocalNarratorPanel}">
+              <TextBlock Text="Current saved narrator" FontSize="18" FontWeight="SemiBold"/>
+              <TextBlock Text="{Binding ActiveNarrationVoiceName}" FontSize="15" FontWeight="SemiBold" Margin="0,7,0,0" Foreground="{StaticResource AccentHover}"/>
+              <TextBlock Text="Voice Studio manages your saved narrator. Clipchamp settings are hidden while this engine is active."
+                         Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+            </StackPanel>
             <Separator Margin="0,18"/>
             <TextBlock Text="Custom background music" FontSize="18" FontWeight="SemiBold"/>
             <TextBlock Text="Choose a licensed audio file. When Music is checked in Create or Shorts, it loops until the video ends." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
