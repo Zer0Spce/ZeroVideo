@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Net;
@@ -86,6 +87,7 @@ public sealed class LocalImageService
     }) { Timeout=Timeout.InfiniteTimeSpan };
     private Process? _serverProcess;
     private string? _activePromptId;
+    private readonly ConcurrentDictionary<int,Process> _activeInstallTools=new();
 
     /// <summary>
     /// Force-stop only work initiated by ZeroVideo. An unrelated ComfyUI
@@ -95,6 +97,9 @@ public sealed class LocalImageService
     public async Task InterruptOwnedGenerationAsync()
     {
         var active=_activePromptId;
+        foreach(var child in _activeInstallTools.Values)
+            try { if(!child.HasExited)child.Kill(entireProcessTree:true); }
+            catch { /* The child may have already completed. */ }
         if(active is not null)
         {
             try
@@ -107,7 +112,10 @@ public sealed class LocalImageService
             finally { _activePromptId=null; }
         }
         var process=_serverProcess;
-        if(process is not null)
+        // Never kill an idle ComfyUI instance simply because a TikTok or
+        // ChatGPT job was force-stopped. Only a managed active image prompt
+        // justifies terminating the engine.
+        if(active is not null && process is not null)
         {
             try { if(!process.HasExited)process.Kill(entireProcessTree:true); }
             catch(InvalidOperationException) { }
@@ -186,9 +194,10 @@ public sealed class LocalImageService
             .FirstOrDefault(File.Exists);
     }
 
-    private static async Task<string> RunToolAsync(string program,
+    private async Task<string> RunToolAsync(string program,
         IEnumerable<string> arguments,string workingDirectory,CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         using var process=new Process();
         process.StartInfo=new ProcessStartInfo(program)
         {
@@ -198,14 +207,30 @@ public sealed class LocalImageService
         };
         foreach(var arg in arguments)process.StartInfo.ArgumentList.Add(arg);
         if(!process.Start())throw new IOException("Could not start "+program);
-        var stdout=process.StandardOutput.ReadToEndAsync(ct);
-        var stderr=process.StandardError.ReadToEndAsync(ct);
-        await process.WaitForExitAsync(ct);
-        var (o,e)=(await stdout,await stderr);
-        if(process.ExitCode!=0)
-            throw new IOException(Path.GetFileName(program)+" exited "+process.ExitCode+
-                ": "+e[..Math.Min(700,e.Length)]);
-        return o;
+        _activeInstallTools[process.Id]=process;
+        using var registration=ct.Register(()=>
+        {
+            try { if(!process.HasExited)process.Kill(entireProcessTree:true); }
+            catch { }
+        });
+        try
+        {
+            var stdout=process.StandardOutput.ReadToEndAsync(ct);
+            var stderr=process.StandardError.ReadToEndAsync(ct);
+            await process.WaitForExitAsync(ct);
+            var (o,e)=(await stdout,await stderr);
+            if(process.ExitCode!=0)
+                throw new IOException(Path.GetFileName(program)+" exited "+process.ExitCode+
+                    ": "+e[..Math.Min(700,e.Length)]);
+            return o;
+        }
+        finally
+        {
+            _activeInstallTools.TryRemove(process.Id,out _);
+            if(ct.IsCancellationRequested)
+                try { if(!process.HasExited)process.Kill(entireProcessTree:true); }
+                catch { }
+        }
     }
 
     private static string PortablePython =>
