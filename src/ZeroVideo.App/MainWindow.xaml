@@ -673,6 +673,185 @@
         </DockPanel>
       </TabItem>
 
+      <TabItem Header="Voice Studio">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
+            <Button Style="{StaticResource SecondaryButton}" Content="Stop"
+                    Command="{Binding StopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Cancel an ongoing OmniVoice installation or narration test without deleting saved profiles."/>
+            <Button Style="{StaticResource SecondaryButton}" Content="Force Stop"
+                    Command="{Binding ForceStopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Terminate ZeroVideo-owned OmniVoice synthesis or setup processes if they are stuck."/>
+            <TextBlock Text="{Binding JobControlStatus}" Foreground="{StaticResource Muted}"
+                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                       Margin="12,0,0,0" MaxWidth="580"/>
+          </StackPanel>
+          <Grid Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="335"/>
+              <ColumnDefinition Width="14"/>
+              <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource CardBorder}">
+              <DockPanel>
+                <StackPanel DockPanel.Dock="Top">
+                  <TextBlock Text="My Voice Library" FontSize="21" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                  <TextBlock Text="Saved clones stay on this PC, separate from your video projects."
+                             Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,13"/>
+                </StackPanel>
+                <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+                  <TextBlock Text="SELECTED VOICE" FontSize="11" FontWeight="SemiBold"
+                             Foreground="{StaticResource Muted}" Margin="0,0,0,4"/>
+                  <TextBlock Text="{Binding SelectedOmniProfile.Name, FallbackValue=No voice selected, TargetNullValue=No voice selected}"
+                             FontSize="15" FontWeight="SemiBold" Margin="0,0,0,11"/>
+                  <Button Style="{StaticResource PrimaryButton}" Content="Use Voice in Automation"
+                          Command="{Binding UseOmniProfileCommand}"
+                          ToolTip="Use this saved clone for future Shorts and Long Form chapter audio. Non-commercial model evaluation only."/>
+                  <WrapPanel Margin="0,7,0,0">
+                    <Button Style="{StaticResource SecondaryButton}" Content="Test Saved Voice"
+                            Command="{Binding TestOmniVoiceCommand}"/>
+                    <Button Style="{StaticResource SecondaryButton}" Content="Remove from Library"
+                            Command="{Binding RemoveOmniProfileCommand}"
+                            ToolTip="Remove only its library entry, without deleting source recordings or generated WAVs."/>
+                  </WrapPanel>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Open Voice Files Folder"
+                          Command="{Binding OpenOmniFolderCommand}" Margin="0,10,0,0"
+                          HorizontalAlignment="Left"/>
+                  <TextBlock Text="Original Clipchamp voices remain available; selecting a clone does not change any completed video."
+                             Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+                </StackPanel>
+                <ListBox ItemsSource="{Binding OmniVoiceProfiles}"
+                         SelectedItem="{Binding SelectedOmniProfile, Mode=TwoWay}"
+                         Margin="0,0,0,2" MinHeight="180">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate>
+                      <StackPanel Margin="3,8">
+                        <TextBlock Text="{Binding Name}" FontSize="15" FontWeight="SemiBold"
+                                   TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Text="{Binding CreatedUtc, StringFormat='Saved {0:MMM d, yyyy}'}"
+                                   Foreground="{StaticResource Muted}" FontSize="11" Margin="0,3,0,0"/>
+                      </StackPanel>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+              </DockPanel>
+            </Border>
+
+            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
+              <StackPanel Margin="0,0,12,20">
+                <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+                  <StackPanel>
+                    <TextBlock Text="OmniVoice — Voice Clone Studio" FontSize="22"
+                               FontWeight="SemiBold" Margin="0,0,0,6"/>
+                    <TextBlock Text="Import a short voice recording, test its cloned narration, listen inside ZeroVideo, and save the approved voice to your library."
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                    <TextBlock Text="{Binding OmniVoiceAvailability}" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                    <WrapPanel>
+                      <Button Style="{StaticResource PrimaryButton}"
+                              Content="Install OmniVoice (1 Click)"
+                              Command="{Binding InstallOmniVoiceCommand}"/>
+                    </WrapPanel>
+                    <TextBlock Text="LICENSE: Official OmniVoice pretrained weights are CC BY-NC 4.0. Commercial or monetized video use requires separate authorization. This integrated engine is for non-commercial evaluation only."
+                               Foreground="#FBC9A7" TextWrapping="Wrap" Margin="0,11,0,8"/>
+                    <CheckBox Content="I understand: OmniVoice model weights are non-commercial evaluation only"
+                              IsChecked="{Binding Settings.OmniVoiceNonCommercialAcknowledged, Mode=TwoWay}"
+                              Margin="0,0,0,9"/>
+                    <TextBlock Text="NARRATION ENGINE" FontSize="11" FontWeight="SemiBold"
+                               Foreground="{StaticResource Muted}" Margin="0,3,0,4"/>
+                    <ComboBox ItemsSource="{Binding TextToSpeechEngines}"
+                              SelectedItem="{Binding Settings.TextToSpeechEngine, Mode=TwoWay}"
+                              Width="240" HorizontalAlignment="Left"/>
+                    <Button Style="{StaticResource SecondaryButton}" Content="Save TTS Settings"
+                            Command="{Binding SaveSettingsCommand}" HorizontalAlignment="Left"
+                            Margin="0,9,0,0"/>
+                  </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+                  <StackPanel>
+                    <TextBlock Text="1. Create a Voice Clone" FontSize="18" FontWeight="SemiBold"/>
+                    <TextBlock Text="For best results, use 3–10 seconds of clear, single-speaker audio. Enter a transcript that matches the first 10 seconds of the sample."
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,10"/>
+                    <TextBlock Text="VOICE NAME" FontSize="11" Foreground="{StaticResource Muted}" Margin="0,0,0,4"/>
+                    <TextBox Text="{Binding OmniProfileName, UpdateSourceTrigger=PropertyChanged}"
+                             Margin="0,0,0,9"/>
+                    <TextBlock Text="REFERENCE AUDIO" FontSize="11" Foreground="{StaticResource Muted}" Margin="0,0,0,4"/>
+                    <DockPanel Margin="0,0,0,10">
+                      <Button DockPanel.Dock="Right" Style="{StaticResource SecondaryButton}"
+                              Content="Browse Audio..." Command="{Binding BrowseOmniReferenceCommand}"/>
+                      <TextBox Text="{Binding OmniReferenceSource, UpdateSourceTrigger=PropertyChanged}"
+                               IsReadOnly="True" Margin="0,0,8,0"/>
+                    </DockPanel>
+                    <TextBlock Text="WORDS SPOKEN IN REFERENCE AUDIO" FontSize="11"
+                               Foreground="{StaticResource Muted}" Margin="0,0,0,4"/>
+                    <TextBox Text="{Binding OmniReferenceTranscript, UpdateSourceTrigger=PropertyChanged}"
+                             TextWrapping="Wrap" AcceptsReturn="True" MinHeight="70" MaxHeight="120"
+                             VerticalScrollBarVisibility="Auto" Margin="0,0,0,10"/>
+                    <CheckBox Content="I own this voice or have the speaker's permission to clone it"
+                              IsChecked="{Binding OmniVoiceSampleAuthorized, Mode=TwoWay}"
+                              Margin="0,0,0,5"/>
+                    <TextBlock Text="Reference audio and transcripts are saved locally under ZeroVideo/LocalTTS. They are not sent to Clipchamp or ChatGPT."
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,0"/>
+                  </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+                  <StackPanel>
+                    <TextBlock Text="2. Test the Voice" FontSize="18" FontWeight="SemiBold"/>
+                    <TextBlock Text="Write a short narration sample. You can test your new, unsaved voice or any voice already in the library."
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,10"/>
+                    <TextBox Text="{Binding OmniTestText, UpdateSourceTrigger=PropertyChanged}"
+                             TextWrapping="Wrap" AcceptsReturn="True" MinHeight="90"
+                             MaxHeight="180" VerticalScrollBarVisibility="Auto"/>
+                    <TextBlock Text="VOICE SPEED" FontSize="11" Foreground="{StaticResource Muted}"
+                               Margin="0,12,0,4"/>
+                    <Slider Minimum="0.7" Maximum="1.3" TickFrequency="0.05"
+                            IsSnapToTickEnabled="True" Width="280"
+                            HorizontalAlignment="Left"
+                            Value="{Binding Settings.OmniVoiceSpeed, Mode=TwoWay}"/>
+                    <WrapPanel Margin="0,12,0,0">
+                      <Button Style="{StaticResource PrimaryButton}" Content="Generate Clone Preview"
+                              Command="{Binding PreviewNewOmniVoiceCommand}"/>
+                      <Button Style="{StaticResource SecondaryButton}" Content="Test Saved Voice"
+                              Command="{Binding TestOmniVoiceCommand}"/>
+                    </WrapPanel>
+                    <TextBlock Text="The first voice test loads the model into GPU memory; local FLUX image generation should not run at the same time on an 8GB GPU."
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,9,0,0"/>
+                  </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+                  <StackPanel>
+                    <TextBlock Text="3. Listen &amp; Save Your Clone" FontSize="18" FontWeight="SemiBold"/>
+                    <TextBlock Text="Preview the result before saving a new clone. Your named voice can then be reused for future Shorts and Long Form narration."
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,10"/>
+                    <WrapPanel>
+                      <Button Style="{StaticResource PrimaryButton}" Content="Play Preview"
+                              Command="{Binding PlayOmniPreviewCommand}"/>
+                      <Button Style="{StaticResource SecondaryButton}" Content="Stop Playback"
+                              Command="{Binding StopOmniPreviewCommand}"/>
+                      <Button Style="{StaticResource SecondaryButton}" Content="Save Clone to Library"
+                              Command="{Binding ImportOmniProfileCommand}"
+                              ToolTip="Save the current approved audio reference after a successful voice test."/>
+                    </WrapPanel>
+                    <TextBlock Text="{Binding OmniPreviewPath}" Foreground="{StaticResource Muted}"
+                               FontSize="11" TextWrapping="Wrap" Margin="0,11,0,0"/>
+                  </StackPanel>
+                </Border>
+                <Border Style="{StaticResource CardBorder}">
+                  <StackPanel>
+                    <TextBlock Text="Studio Status" FontSize="16" FontWeight="SemiBold"/>
+                    <TextBlock Text="{Binding LocalTtsStatus}" TextWrapping="Wrap"
+                               Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+            </ScrollViewer>
+          </Grid>
+        </DockPanel>
+      </TabItem>
+
       <TabItem Header="TikTok Intelligence" Visibility="Collapsed">
         <DockPanel>
           <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
