@@ -17,6 +17,12 @@ public sealed class VideoProject
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
     public List<ProjectChapter> Chapters { get; set; } = [];
+    /// <summary>
+    /// Optional local-image character identities. No cloud service receives
+    /// anchor images. References are copied into the project on approval.
+    /// </summary>
+    public List<ProjectCharacter> Characters { get; set; } = [];
+
     public List<string> Sources { get; set; } = [];
     public ProjectOptions Options { get; set; } = new();
     [JsonIgnore] public string ProjectDirectory { get; set; } = "";
@@ -43,6 +49,8 @@ public sealed class ProjectOptions
     public bool AddSoundEffects { get; set; }
     public bool AvoidRepeatedVisuals { get; set; } = true;
     public bool GenerateMissingVisuals { get; set; } = true;
+    public bool EnableCharacterConsistency { get; set; } = true;
+
 
     /// <summary>
     /// Exact chapter count requested from ChatGPT for the master outline.
@@ -96,4 +104,13 @@ public sealed class ProjectScene
     public string? MediaPath { get; set; }
     public List<string> MediaPaths { get; set; } = [];
     public string? SoundEffectPath { get; set; }
+}
+
+public sealed class ProjectCharacter
+{
+    public string Name { get; set; } = "";
+    public string Appearance { get; set; } = "";
+    public string ReferenceImagePath { get; set; } = "";
+    public bool Enabled { get; set; } = true;
+    public long Seed { get; set; } = 0;
 }
