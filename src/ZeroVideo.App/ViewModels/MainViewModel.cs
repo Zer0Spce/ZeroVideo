@@ -18,6 +18,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly AutomationProfileService _profiles = new();
     private readonly ProcessRunner _runner = new();
     private readonly DependencyService _dependencies = new();
+    private readonly LocalImageService _localImages = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly ChatGptBrowserService _chat;
     private readonly ClipchampTtsService _clip;
@@ -43,7 +44,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         _chat = new ChatGptBrowserService(_browser, _profiles);
         _clip = new ClipchampTtsService(_browser, _profiles);
         _ffmpeg = new FfmpegService(_runner, _dependencies);
-        _pipeline = new PipelineService(_chat, _clip, _ffmpeg, _store);
+        _pipeline = new PipelineService(_chat, _clip, _ffmpeg, _store, _localImages);
         _preflight = new PreflightService(_runner);
         GeneratePlanCommand = new AsyncCommand(GeneratePlanAsync, () => !string.IsNullOrWhiteSpace(Topic) && Duration > 0);
         ContinueWritingCommand = new AsyncCommand(ContinueWritingAsync, CanContinueWriting);
@@ -63,6 +64,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         InitializeTikTokIntelligenceCommands();
         InitializeLibraryAndCalendarCommands();
         InitializeContentSeriesCommands();
+        InitializeLocalImageCommands();
         BrowseMusicCommand = new RelayCommand(BrowseMusic);
     }
 
@@ -116,6 +118,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         Log("ZeroVideo initialized.");
         Log("Use Automation > Open ChatGPT / Open Clipchamp to sign in normally. Generation automatically hands that dedicated Edge profile over to automation.");
         Raise(nameof(Settings));
+        Raise(nameof(LocalImageAvailability));
     }
 
     private async Task GeneratePlanAsync()
