@@ -134,7 +134,8 @@ def main():
     for index, segment in enumerate(segments):
         audio = model.generate(
             text=segment, voice_clone_prompt=prompt,
-            speed=speed, num_step=32,\n            language=job.get("language", "English"), postprocess_output=True
+            speed=speed, num_step=32,
+            language=job.get("language", "English"), postprocess_output=True
         )
         if not audio:
             raise RuntimeError("OmniVoice returned no speech for segment " + str(index + 1))
