@@ -500,6 +500,34 @@ public sealed class LocalImageService
         return target;
     }
 
+    private static async Task<string> UploadCharacterReferenceAsync(
+        string localFile,CancellationToken ct)
+    {
+        if(!File.Exists(localFile))throw new FileNotFoundException(
+            "Character reference image missing",localFile);
+        if(new FileInfo(localFile).Length>25*1024*1024)
+            throw new InvalidDataException("Character reference exceeds 25 MB.");
+        using var form=new MultipartFormDataContent();
+        await using var from=File.OpenRead(localFile);
+        using var image=new StreamContent(from);
+        image.Headers.ContentType=new MediaTypeHeaderValue(
+            Path.GetExtension(localFile).ToLowerInvariant()==".png"?
+                "image/png":"image/jpeg");
+        form.Add(image,"image",Path.GetFileName(localFile));
+        form.Add(new StringContent("input"),"type");
+        form.Add(new StringContent("true"),"overwrite");
+        using var response=await Http.PostAsync(new Uri(Server,"upload/image"),form,ct);
+        var body=await response.Content.ReadAsStringAsync(ct);
+        if(!response.IsSuccessStatusCode)
+            throw new IOException("ComfyUI could not load character reference: "+
+                body[..Math.Min(body.Length,350)]);
+        using var doc=JsonDocument.Parse(body);
+        var name=doc.RootElement.GetProperty("name").GetString()??"";
+        if(name.Length==0)throw new InvalidDataException(
+            "ComfyUI returned an empty reference filename.");
+        return name;
+    }
+
     private static string CompactLocalText(string? value,int limit=360)
     {
         if(string.IsNullOrWhiteSpace(value))return "";
@@ -620,25 +648,84 @@ public sealed class LocalImageService
            style=="Editorial Cartoon Explainer")
             negative+=", photorealistic, empty still life, subject missing, " +
                 "stock photo, 3D, plastic faces";
-        // Standard core nodes; no extension/custom-node download or dependency.
         static object Ref(string id,int n)=>new object[]{id,n};
-        var graph=new Dictionary<string,object>
+        var graph=new Dictionary<string,object>();
+        var seed=fixedSeed??Random.Shared.NextInt64(1,long.MaxValue);
+        object latent=Ref("5",0);
+        if(isFlux)
         {
-            ["4"]=new {class_type="CheckpointLoaderSimple",inputs=new{ckpt_name=checkpoint}},
-            ["6"]=new {class_type="CLIPTextEncode",inputs=new{clip=Ref("4",1),text=positive}},
-            ["7"]=new {class_type="CLIPTextEncode",inputs=new{clip=Ref("4",1),text=negative}},
-            ["5"]=new {class_type="EmptyLatentImage",inputs=new{width,height,batch_size=1}},
-            ["3"]=new {class_type="KSampler",inputs=new
+            // Flux Schnell uses GGUF UNET, dual text encoders, FluxGuidance,
+            // an SD3-shaped empty latent and FOUR sampling steps.
+            graph["4"]=new {class_type="UnetLoaderGGUF",inputs=new {unet_name=FluxGgufFileName}};
+            graph["11"]=new {class_type="DualCLIPLoader",inputs=new
             {
-                seed=fixedSeed??Random.Shared.NextInt64(1,long.MaxValue),steps=30,cfg=6.0,
-                sampler_name="dpmpp_2m",scheduler="karras",denoise=1.0,
-                model=Ref("4",0),positive=Ref("6",0),negative=Ref("7",0),latent_image=Ref("5",0)
-            }},
-            ["8"]=new {class_type="VAEDecode",inputs=new{samples=Ref("3",0),vae=Ref("4",2)}},
-            ["9"]=new {class_type="SaveImage",inputs=new
-            {filename_prefix="ZeroVideoLocal",images=Ref("8",0)}}
-        };
-        log?.Invoke("ComfyUI generating "+width+"x"+height+" "+style+" image...");
+                clip_name1=FluxClipFileName,clip_name2=FluxT5FileName,
+                type="flux",device="default"
+            }};
+            graph["12"]=new {class_type="CLIPTextEncode",inputs=new
+                {clip=Ref("11",0),text=positive}};
+            graph["13"]=new {class_type="FluxGuidance",inputs=new
+                {conditioning=Ref("12",0),guidance=3.5}};
+            graph["20"]=new {class_type="VAELoader",inputs=new{vae_name=FluxVaeFileName}};
+            graph["5"]=new {class_type="EmptySD3LatentImage",inputs=new
+                {width,height,batch_size=1}};
+        }
+        else
+        {
+            graph["4"]=new {class_type="CheckpointLoaderSimple",
+                inputs=new{ckpt_name=checkpoint}};
+            graph["6"]=new {class_type="CLIPTextEncode",
+                inputs=new{clip=Ref("4",1),text=positive}};
+            graph["7"]=new {class_type="CLIPTextEncode",
+                inputs=new{clip=Ref("4",1),text=negative}};
+            graph["5"]=new {class_type="EmptyLatentImage",
+                inputs=new{width,height,batch_size=1}};
+        }
+
+        if(!string.IsNullOrWhiteSpace(characterReferenceImage) &&
+           File.Exists(characterReferenceImage))
+        {
+            var uploaded=await UploadCharacterReferenceAsync(characterReferenceImage,ct);
+            graph["14"]=new{class_type="LoadImage",inputs=new{image=uploaded}};
+            graph["15"]=new{class_type="ImageScale",inputs=new
+            {
+                image=Ref("14",0),upscale_method="lanczos",
+                width,height,crop="center"
+            }};
+            graph["16"]=new{class_type="VAEEncode",inputs=new
+            {
+                pixels=Ref("15",0),
+                vae=isFlux?Ref("20",0):Ref("4",2)
+            }};
+            latent=Ref("16",0);
+            log?.Invoke("Character Lock: image-to-image identity reference loaded. "+
+                "The master image guides appearance, but exact facial identity "+
+                "cannot be guaranteed across all angles.");
+        }
+        graph["3"]=isFlux?
+            new {class_type="KSampler",inputs=new
+            {
+                seed,steps=4,cfg=1.0,sampler_name="euler",scheduler="simple",
+                denoise=characterReferenceImage is null?1.0:0.75,
+                model=Ref("4",0),positive=Ref("13",0),negative=Ref("12",0),
+                latent_image=latent
+            }}:
+            new {class_type="KSampler",inputs=new
+            {
+                seed,steps=30,cfg=6.0,sampler_name="dpmpp_2m",scheduler="karras",
+                denoise=characterReferenceImage is null?1.0:0.68,
+                model=Ref("4",0),positive=Ref("6",0),negative=Ref("7",0),
+                latent_image=latent
+            }};
+        graph["8"]=new{class_type="VAEDecode",inputs=new
+        {
+            samples=Ref("3",0),
+            vae=isFlux?Ref("20",0):Ref("4",2)
+        }};
+        graph["9"]=new{class_type="SaveImage",
+            inputs=new{filename_prefix="ZeroVideoLocal",images=Ref("8",0)}};
+        log?.Invoke("ComfyUI generating "+width+"x"+height+" "+style+" image with "+
+            (isFlux?"FLUX.1-schnell Q4":"SDXL illustrated checkpoint")+"...");
         using var req=new HttpRequestMessage(HttpMethod.Post,new Uri(Server,"prompt"))
         {
             Content=JsonContent.Create(new{prompt=graph,client_id="zerovideo-"+Guid.NewGuid().ToString("N")})
