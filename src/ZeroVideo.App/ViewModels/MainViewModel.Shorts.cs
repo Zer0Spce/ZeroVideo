@@ -61,8 +61,8 @@ public sealed partial class MainViewModel
         {
             if (!ShortsRunning && ShortQueue.Count > 1) ShortQueue.RemoveAt(ShortQueue.Count - 1);
         });
-        StartShortsCommand = new AsyncCommand(RunShortsQueueAsync, () => !ShortsRunning);
-        ResumeShortsCommand = new AsyncCommand(RunShortsQueueAsync, () => !ShortsRunning);
+        StartShortsCommand = new AsyncCommand(()=>RunManagedJobAsync("Automation Shorts",RunShortsQueueAsync), () => !ShortsRunning);
+        ResumeShortsCommand = new AsyncCommand(()=>RunManagedJobAsync("Automation Shorts — Resume",RunShortsQueueAsync), () => !ShortsRunning);
         CheckAllShortsCommand = new RelayCommand(() =>
         {
             if (ShortsRunning) { ShortsRecoveryStatus="Cannot change selection while automation is running."; return; }
