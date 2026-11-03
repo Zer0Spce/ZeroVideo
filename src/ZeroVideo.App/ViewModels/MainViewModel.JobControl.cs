@@ -98,6 +98,7 @@ public sealed partial class MainViewModel
         // FFmpeg's process is stopped as part of cooperative cancellation;
         // partially rendered output is not marked as finished.
         _runner.StopActiveProcesses();
+        _omniVoice.StopActiveProcesses();
         Log(JobControlStatus);
     }
 
@@ -128,6 +129,7 @@ public sealed partial class MainViewModel
         try { _cts.Cancel(); } catch(ObjectDisposedException) { }
         _ttsContinueGate?.TrySetCanceled();
         _runner.StopActiveProcesses();
+        _omniVoice.StopActiveProcesses();
         try { await _localImages.InterruptOwnedGenerationAsync(); }
         catch(Exception ex) { Log("Local generation interrupt: "+ex.Message); }
         try { await _browser.ForceStopAutomationAsync(); }
