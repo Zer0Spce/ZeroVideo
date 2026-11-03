@@ -7,6 +7,7 @@ namespace ZeroVideo.App.Services;
 
 public sealed class FfmpegService(ProcessRunner runner, DependencyService dependencies)
 {
+    private readonly FramePackAnimationService _framePack = new(runner);
     public async Task ValidateAsync(ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
         await EnsureToolsAsync(settings, log, ct);
@@ -219,13 +220,40 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
                 string args;
                 string motion;
 
-                if (IsVideo(media))
+                // Opt-in true AI image-to-video through local FramePack.
+                // The original image remains untouched; FFmpeg micro-motion
+                // handles missing server, GPU failures, and capacity limits.
+                string? aiClip = null;
+                if (!IsVideo(media) &&
+                    settings.AiImageAnimationEngine == "FramePack (Local)" &&
+                    effects.AiGeneratedClipCount < Math.Clamp(settings.FramePackMaxClipsPerVideo, 0, 30))
                 {
-                    motion = "source video";
+                    aiClip = await _framePack.TryAnimateAsync(media, project, scene, settings, log, ct);
+                    if (aiClip is not null)
+                    {
+                        try
+                        {
+                            if (await ProbeDurationAsync(aiClip, settings, ct) < 1.0)
+                                throw new InvalidDataException("FramePack video was too short.");
+                            effects.AiGeneratedClipCount++;
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception ex)
+                        {
+                            log?.Invoke("FramePack clip validation failed; using original image: " + ex.Message);
+                            try { File.Delete(aiClip); } catch { }
+                            aiClip = null;
+                        }
+                    }
+                }
+                var renderMedia = aiClip ?? media;
+                if (IsVideo(renderMedia))
+                {
+                    motion = aiClip is null ? "source video" : "AI subtle motion (FramePack)";
                     var vf = $"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h},fps=30";
                     var styleFx = BuildStyleEffectFilter(project);
                     if (!string.IsNullOrWhiteSpace(styleFx)) vf += "," + styleFx;
-                    args = $"-y -stream_loop -1 -i \"{media}\" -t {duration} -vf \"{vf}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
+                    args = $"-y -stream_loop -1 -i \"{renderMedia}\" -t {duration} -vf \"{vf}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
                 }
                 else
                 {
@@ -235,6 +263,15 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
 
                 log?.Invoke($"Scene {chapter.Number}.{scene.Number}: effect {motion}; transition {transition}; {renderSeconds:0.0}s render segment.");
                 var result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
+                if (result.ExitCode != 0 && aiClip is not null)
+                {
+                    // An AI clip may decode but still be incompatible with
+                    // the main renderer. Retry against the source still.
+                    log?.Invoke("FramePack video render failed; falling back to original illustrated image.");
+                    motion = ChooseMotionPreset(project, scene, effects);
+                    args = BuildStillRenderArgs(media, output, renderSeconds, w, h, motion, project);
+                    result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
+                }
                 if (result.ExitCode != 0)
                     throw new InvalidOperationException($"Scene render failed ({chapter.Number}.{scene.Number}, visual {mediaIndex + 1}): {result.StdErr}");
 
@@ -401,6 +438,8 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         if (!project.Options.StyleAwareEffects)
             return $"eq=contrast={F(1.015 + 0.012 * strength)}:saturation={F(1.0 + 0.01 * strength)},vignette={vignette}";
 
+        if (style.Contains("neo-noir"))
+            return $"eq=contrast={F(1.055 + 0.012 * strength)}:saturation={F(0.96 + 0.015 * strength)},vignette={F(0.28 + 0.04 * strength)}";
         if (style.Contains("mystery") || style.Contains("conspiracy"))
             return $"eq=contrast={F(1.035 + 0.015 * strength)}:brightness={F(-0.006 * strength)}:saturation={F(0.95 - 0.025 * strength)},vignette={F(0.32 + 0.08 * strength)},noise=alls={noise}:allf=t+u";
         if (style.Contains("history") || style.Contains("archival"))
@@ -868,5 +907,6 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         public Queue<string> RecentTransitions { get; } = new();
         public int MotionCursor;
         public int TransitionCursor;
+        public int AiGeneratedClipCount;
     }
 }
