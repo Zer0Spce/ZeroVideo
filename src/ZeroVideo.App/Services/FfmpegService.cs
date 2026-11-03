@@ -354,6 +354,20 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         var dynamicStep = F(step * 2.5);
         string Smooth(string expr) => expr + $",scale={w}:{h}:flags=lanczos,fps=30";
 
+        if (motion == "subtle-life")
+        {
+            // Periodic 3–5-second micro-pan, micro-zoom, and ambient light
+            // breathing. Every cycle returns to the initial pose without
+            // changing the illustrated subject or adding fabricated details.
+            var loop = Math.Clamp(options.SubtleImageAnimationSeconds, 3.0, 5.0);
+            var phase = F(2.0 * Math.PI / (loop * 30.0));
+            return Smooth($"zoompan=z='1.044+0.004*sin(on*{phase})':" +
+                $"x='(iw-iw/zoom)*(0.5+0.08*sin(on*{phase}))':" +
+                $"y='(ih-ih/zoom)*(0.5+0.06*(1-cos(on*{phase})))':" +
+                $"d={frames}:s={sw}x{sh}:fps=30") +
+                $",eq=brightness='0.002*sin(n*{phase})':eval=frame";
+        }
+
         if (!options.ContinuousMotion)
         {
             return motion switch
@@ -409,6 +423,8 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
     {
         if (!project.Options.AddMotion || project.Options.MotionStyle.Equals("None", StringComparison.OrdinalIgnoreCase))
             return "static";
+        if (project.Options.SubtleImageAnimation)
+            return "subtle-life";
 
         var style = (project.Style ?? "").ToLowerInvariant();
         var requested = project.Options.MotionStyle ?? "Automatic";
