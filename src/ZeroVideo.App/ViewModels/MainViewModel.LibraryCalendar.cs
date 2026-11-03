@@ -128,7 +128,7 @@ public sealed partial class MainViewModel
                 Process.Start(new ProcessStartInfo("explorer.exe",v.ProjectDirectory){UseShellExecute=true});
         });
         PreviewArchiveCommand = new RelayCommand(PreviewLibraryArchive);
-        ArchiveLibraryProjectCommand = new AsyncCommand(ArchiveLibraryProjectAsync);
+        ArchiveLibraryProjectCommand = new AsyncCommand(()=>RunManagedJobAsync("Project archive",ArchiveLibraryProjectAsync));
     }
 
     private void RefreshPublishingCalendar()
