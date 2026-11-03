@@ -18,25 +18,48 @@ def info(message):
 
 
 def chunks_from(text, max_characters=280):
-    text = re.sub(r"\s+", " ", text).strip()
+    """Split on sentence boundaries first, without duplicating any words.
+
+    Only a sentence that exceeds the configured limit is broken on words.
+    Keep terminal punctuation; losing it can make OmniVoice repeat speech.
+    """
+    text = re.sub(r"\\s+", " ", text).strip()
     if not text:
         raise ValueError("Narration text is empty.")
-    sentences = re.split(r"(?<=[.!?])\s+", text)
+    # These Unicode sentence stops are important for multilingual narration.
+    sentences = re.split(r"(?<=[.!?。！？])\\s+", text)
+    pieces = []
+    for sentence in sentences:
+        if len(sentence) <= max_characters:
+            pieces.append(sentence)
+            continue
+        # Prefer clauses when a single long sentence does not fit.
+        clauses = re.split(r"(?<=[,;:，；：])\\s+", sentence)
+        for clause in clauses:
+            if len(clause) <= max_characters:
+                pieces.append(clause)
+                continue
+            words = clause.split(" ")
+            chunk = ""
+            for word in words:
+                if len(word) > max_characters:
+                    raise ValueError("A narration token exceeds the allowed chunk length.")
+                if chunk and len(chunk) + len(word) + 1 > max_characters:
+                    pieces.append(chunk)
+                    chunk = ""
+                chunk = (chunk + " " + word).strip()
+            if chunk:
+                pieces.append(chunk)
     groups = []
     current = ""
-    for sentence in sentences:
-        tokens = sentence.split(" ")
-        for token in tokens:
-            if not token:
-                continue
-            if len(token) > max_characters:
-                raise ValueError("A narration token exceeds the allowed chunk length.")
-            if current and len(current) + len(token) + 1 > max_characters:
-                groups.append(current)
-                current = ""
-            current = (current + " " + token).strip()
+    for piece in pieces:
+        if current and len(current) + len(piece) + 1 > max_characters:
+            groups.append(current)
+            current = ""
+        current = (current + " " + piece).strip()
     if current:
         groups.append(current)
+    assert " ".join(groups) == text, "Narration chunking changed the spoken text."
     return groups
 
 
@@ -111,7 +134,7 @@ def main():
     for index, segment in enumerate(segments):
         audio = model.generate(
             text=segment, voice_clone_prompt=prompt,
-            speed=speed, num_step=24
+            speed=speed, num_step=32,\n            language=job.get("language", "English"), postprocess_output=True
         )
         if not audio:
             raise RuntimeError("OmniVoice returned no speech for segment " + str(index + 1))
