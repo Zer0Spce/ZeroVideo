@@ -309,20 +309,34 @@ public sealed class LocalImageService
         try
         {
             using var archive=ZipFile.OpenRead(zipPath);
+            var expectedRoot="ComfyUI-GGUF-"+GgufNodeCommit;
+            var extractionRoot=Path.GetFullPath(temporary)
+                .TrimEnd(Path.DirectorySeparatorChar,Path.AltDirectorySeparatorChar)+
+                Path.DirectorySeparatorChar;
             foreach(var entry in archive.Entries)
             {
                 ct.ThrowIfCancellationRequested();
-                var parts=entry.FullName.Replace('\\','/').Split('/');
-                if(parts.Length<2)continue;
-                var localParts=parts.Skip(1).Where(x=>x.Length>0).ToList();
-                if(localParts.Any(x=>x=="."||x==".."||x.Contains(':')))
+                var archiveName=entry.FullName.Replace('\\','/');
+                // GitHub ZIPs contain a harmless top-level directory entry:
+                // "ComfyUI-GGUF-<commit>/". It resolves to the extraction
+                // root itself, so skip it instead of calling it a traversal.
+                if(archiveName.Equals(expectedRoot+"/",StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var prefix=expectedRoot+"/";
+                if(!archiveName.StartsWith(prefix,StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Unexpected ComfyUI-GGUF archive root.");
+                var relative=archiveName[prefix.Length..];
+                if(relative.Length==0)continue;
+                var segments=relative.Split('/',StringSplitOptions.RemoveEmptyEntries);
+                if(relative.StartsWith('/') ||
+                   segments.Any(x=>x=="."||x==".."||x.Contains(':')) ||
+                   segments.Length==0)
                     throw new InvalidDataException("Unsafe ComfyUI node archive path.");
                 var finalPath=Path.GetFullPath(Path.Combine(temporary,
-                    Path.Combine(localParts.ToArray())));
-                if(!finalPath.StartsWith(Path.GetFullPath(temporary)+Path.DirectorySeparatorChar,
-                    StringComparison.OrdinalIgnoreCase))
+                    Path.Combine(segments)));
+                if(!finalPath.StartsWith(extractionRoot,StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException("ComfyUI node ZIP path escaped its install folder.");
-                if(entry.FullName.EndsWith('/'))
+                if(archiveName.EndsWith('/'))
                 {
                     Directory.CreateDirectory(finalPath);
                     continue;
