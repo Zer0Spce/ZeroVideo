@@ -26,13 +26,19 @@ public sealed partial class MainViewModel
         (_localImages.HasComfyUi?"ComfyUI installed":"ComfyUI not installed")+
         " · "+(_localImages.HasCheckpoint?"SDXL downloaded":"SDXL model missing")+
         " · "+(_localImages.HasIllustratedCheckpoint?
-            "DreamShaper XL installed":"DreamShaper XL not installed");
+            "DreamShaper XL installed":"DreamShaper XL not installed")+
+        " · "+(_localImages.HasFluxSchnell?
+            "FLUX schnell Q4 installed":"FLUX schnell Q4 not installed");
     public IReadOnlyList<string> LocalImageModelChoices { get; } =
-        [LocalImageService.SdxlFileName, LocalImageService.IllustratedFileName];
+        [LocalImageService.SdxlFileName, LocalImageService.IllustratedFileName,
+         LocalImageService.FluxGgufFileName];
     public IReadOnlyList<string> ImageGenerationEngines { get; } =
         ["ChatGPT","Local ComfyUI","Hybrid"];
     public ICommand InstallLocalImagesCommand { get; private set; } = null!;
     public ICommand InstallIllustratedModelCommand { get; private set; } = null!;
+    public ICommand InstallFluxSchnellCommand { get; private set; } = null!;
+    public ICommand RestartLocalEngineCommand { get; private set; } = null!;
+
     public ICommand UseBaseModelCommand { get; private set; } = null!;
     public ICommand StartLocalImagesCommand { get; private set; } = null!;
     public ICommand TestLocalImagesCommand { get; private set; } = null!;
@@ -44,6 +50,15 @@ public sealed partial class MainViewModel
     {
         InstallLocalImagesCommand=new AsyncCommand(()=>RunManagedJobAsync("Local ComfyUI installation",InstallLocalImagesAsync));
         InstallIllustratedModelCommand=new AsyncCommand(()=>RunManagedJobAsync("Illustrated model installation",InstallIllustratedModelAsync));
+        InstallFluxSchnellCommand=new AsyncCommand(()=>RunManagedJobAsync(
+            "FLUX schnell Q4 setup",InstallFluxSchnellAsync));
+        RestartLocalEngineCommand=new AsyncCommand(()=>RunManagedJobAsync(
+            "Restart ComfyUI",async ()=>
+        {
+            await _localImages.RestartOwnedServerAsync(LocalProgress,_cts.Token);
+            LocalImageStatus="Engine restart requested. Test connection before generation.";
+        }));
+
         UseBaseModelCommand=new RelayCommand(() =>
         {
             Settings.LocalImageCheckpointFile=LocalImageService.SdxlFileName;
@@ -162,6 +177,53 @@ public sealed partial class MainViewModel
         finally {LocalImageBusy=false;}
     }
 
+    private async Task InstallFluxSchnellAsync()
+    {
+        if(LocalImageBusy)return;
+        var consent=MessageBox.Show(
+            "INSTALL FLUX.1-SCHNELL Q4 (OPTIONAL)?\n\n"+
+            "This is an Apache-2.0-licensed text-to-image model, quantized by "+
+            "city96 for 8 GB GPUs. Installing it downloads approximately "+
+            "12 GB of model assets (Q4 GGUF, T5 text encoder, CLIP and VAE), "+
+            "plus a pinned ComfyUI-GGUF node extension and its Python dependency. "+
+            "You need roughly 14 GB free disk space in the ZeroVideo LocalAI folder.\n\n"+
+            "On an RTX 3060 8GB, it may offload model weights to system RAM and "+
+            "can be much slower than DreamShaper XL. "+
+            "It does not replace, remove or overwrite SDXL, DreamShaper, "+
+            "ChatGPT, video output, TikTok settings or existing files.\n\n"+
+            "All model assets have published SHA-256 hashes and will be "+
+            "verified after download. You may need to restart ComfyUI after "+
+            "installing the GGUF extension.\n\n"+
+            "Approve download and optional ComfyUI plugin installation?",
+            "ZeroVideo — Optional FLUX.1-schnell",
+            MessageBoxButton.YesNo,MessageBoxImage.Question);
+        if(consent!=MessageBoxResult.Yes)return;
+        LocalImageBusy=true;
+        try
+        {
+            await _localImages.InstallFluxSchnellAsync(LocalProgress,_cts.Token);
+            Settings.LocalImageCheckpointFile=LocalImageService.FluxGgufFileName;
+            await _settingsService.SaveAsync(Settings);
+            Raise(nameof(Settings));
+            Raise(nameof(LocalImageAvailability));
+            await _localImages.RestartOwnedServerAsync(LocalProgress,_cts.Token);
+            LocalImageStatus="FLUX.1-schnell Q4 verified and selected. "+
+                "Restart any external ComfyUI server if necessary, "+
+                "then run a style benchmark before generating full videos.";
+        }
+        catch(OperationCanceledException)
+        {
+            LocalImageStatus="FLUX setup canceled. Finished downloads are retained; "+
+                "partial model downloads can resume.";
+        }
+        catch(Exception ex)
+        {
+            LocalImageStatus="FLUX setup failed: "+ex.Message;
+            Log("FLUX installer: "+ex);
+        }
+        finally { LocalImageBusy=false; }
+    }
+
     private async Task StartLocalImagesAsync()
     {
         if(LocalImageBusy)return;
@@ -195,9 +257,10 @@ public sealed partial class MainViewModel
         if(LocalImageBusy)return;
         var selected=string.IsNullOrWhiteSpace(Settings.LocalImageCheckpointFile)?
             LocalImageService.SdxlFileName:Settings.LocalImageCheckpointFile;
-        var checkpointPath=Path.Combine(
-            LocalImageService.PortableRoot,"ComfyUI","models","checkpoints",
-            Path.GetFileName(selected));
+        var checkpointPath=selected==LocalImageService.FluxGgufFileName?
+            LocalImageService.FluxModelPath:
+            Path.Combine(LocalImageService.PortableRoot,"ComfyUI","models",
+                "checkpoints",Path.GetFileName(selected));
         if(!File.Exists(checkpointPath))
         {
             LocalImageStatus="Install the selected local model before benchmarking: "+selected;
@@ -206,7 +269,8 @@ public sealed partial class MainViewModel
         LocalImageBusy=true;
         var folder=Path.Combine(LocalImageService.Root,"Benchmarks",
             DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" +
-                (selected==LocalImageService.IllustratedFileName?"DreamShaperXL":"SDXLBase"));
+                (selected==LocalImageService.IllustratedFileName?"DreamShaperXL":
+                 selected==LocalImageService.FluxGgufFileName?"FluxSchnellQ4":"SDXLBase"));
         Directory.CreateDirectory(folder);
         var styles=new[]
         {
