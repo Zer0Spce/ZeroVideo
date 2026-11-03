@@ -16,6 +16,14 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: OmniVoice worker smoke tests (offline)
+        shell: pwsh
+        run: |
+          python -m py_compile src/ZeroVideo.App/Resources/omnivoice_worker.py
+          python tools/test-omnivoice-worker.py
       - name: Restore
         run: dotnet restore ZeroVideo.sln
       - name: Publish portable x64
