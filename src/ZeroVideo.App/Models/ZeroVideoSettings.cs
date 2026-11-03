@@ -48,6 +48,15 @@ public sealed class ZeroVideoSettings : INotifyPropertyChanged
     // "Local ComfyUI" and "Hybrid" opt in to a separate local backend.
     public string ImageGenerationEngine { get; set; } = "ChatGPT";
     public string LocalImageCheckpointFile { get; set; } = "sd_xl_base_1.0.safetensors";
+    // Independent optional AI image-to-video backend. The zero-install
+    // lightweight FFmpeg motion remains the safe default.
+    public string AiImageAnimationEngine { get; set; } = "Camera Motion (FFmpeg)";
+    public string FramePackPythonPath { get; set; } = "";
+    public string FramePackServerUrl { get; set; } = "http://127.0.0.1:7860";
+    public double FramePackClipSeconds { get; set; } = 4.0;
+    // Limit expensive video diffusion on 8 GB GPUs; other scenes keep motion.
+    public int FramePackMaxClipsPerVideo { get; set; } = 3;
+
 
     public string BackgroundMusicPath { get; set; } = "";
     public double BackgroundMusicDb { get; set; } = 0;
