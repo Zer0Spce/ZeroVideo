@@ -472,10 +472,31 @@ public sealed class LocalImageService
         ProjectScene scene,ZeroVideoSettings settings,Action<string>? log,CancellationToken ct)
     {
         var target=ProjectMedia.GeneratedImagePath(project,chapter,scene);
+        var cast=CharacterConsistencyService.Match(project,scene);
+        var main=cast.FirstOrDefault();
+        var descriptions=cast.Count==0?"":string.Join("; ",cast.Select(character=>
+            character.Name+": "+character.Appearance));
+        var reference=main is null?null:
+            CharacterConsistencyService.GetExistingReference(project,main);
+        var seed=main is null?(long?)null:
+            1+(long)((unchecked((ulong)main.Seed)+
+                (ulong)chapter.Number*113+(ulong)scene.Number*997)%
+                ((ulong)long.MaxValue-1));
+        if(main is not null)
+            log?.Invoke("Character Lock "+main.Name+": "+
+                (reference is not null?"reusing saved visual reference":"creating first reference")+
+                ", stable seed family.");
         await GenerateToPathAsync(project.Title,project.Topic,project.Style,project.AspectRatio,
             chapter.Title,scene.Narration,scene.ImagePrompt,scene.VisualQuery,
-            target,settings,log,ct);
+            target,settings,log,ct,seed,reference,descriptions);
         scene.MediaPath=target;
+        if(main is not null&&reference is null)
+        {
+            var anchor=CharacterConsistencyService.CaptureFirstReference(
+                project,main,target);
+            log?.Invoke("Character Lock: saved reference for "+main.Name+
+                " at "+anchor);
+        }
         return target;
     }
 
@@ -545,31 +566,42 @@ public sealed class LocalImageService
     public async Task GenerateToPathAsync(string title,string topic,string style,
         string ratio,string chapter,string narration,string direction,string query,
         string destination,ZeroVideoSettings settings,Action<string>? log,CancellationToken ct,
-        long? fixedSeed=null)
+        long? fixedSeed=null,string? characterReferenceImage=null,
+        string? characterDescription=null)
     {
         if(!await IsOnlineAsync(ct))
             await StartAsync(log,ct);
         var checkpoint=string.IsNullOrWhiteSpace(settings.LocalImageCheckpointFile)?
             SdxlFileName:Path.GetFileName(settings.LocalImageCheckpointFile);
+        var isFlux=checkpoint==FluxGgufFileName;
         // Exact file name only. Never accept arbitrary local/network paths in
         // the ComfyUI checkpoint loader.
-        if(checkpoint != SdxlFileName &&
+        if(isFlux)
+        {
+            if(!HasFluxSchnell)
+                throw new FileNotFoundException("FLUX.1-schnell Q4 is incomplete. "+
+                    "Use the Install FLUX (8GB GPU) button first.");
+        }
+        else if(checkpoint != SdxlFileName &&
            !File.Exists(Path.Combine(PortableRoot,"ComfyUI","models","checkpoints",checkpoint)))
             throw new FileNotFoundException("Local checkpoint is not installed: "+checkpoint);
         if(checkpoint==SdxlFileName && !HasCheckpoint)
             throw new FileNotFoundException("SDXL model is missing. Click Install Everything.");
         if(checkpoint==IllustratedFileName && !HasIllustratedCheckpoint)
-            throw new FileNotFoundException(
-                "DreamShaper XL was not installed. Click Install Illustrated Model.");
+            throw new FileNotFoundException("DreamShaper XL not installed.");
         var portrait=ratio=="9:16";
-        var width=portrait?704:1248;
-        var height=portrait?1248:704;
+        // Reduce FLUX's working resolution to help an 8 GB GPU; default SDXL
+        // dimensions and all other existing generation settings remain intact.
+        var width=portrait?(isFlux?576:704):(isFlux?1024:1248);
+        var height=portrait?(isFlux?1024:1248):(isFlux?576:704);
         var isComicPage=style=="Comic Book Explainer";
         var styleCue=IllustratedStyleCue(style);
         // Most important text first, then the action and props. A previous
         // verbose prompt buried the main character in hundreds of words.
         var positive=string.Join(". ",new[]{
             styleCue,
+            !string.IsNullOrWhiteSpace(characterDescription)?
+                "LOCKED RECURRING CHARACTERS: "+CompactLocalText(characterDescription,460):"",
             "MOST IMPORTANT: "+CompactLocalText(narration,420),
             "SHOW ON SCREEN: "+CompactLocalText(direction,240),
             "Key props and setting: "+CompactLocalText(query,120),
