@@ -24,10 +24,16 @@ public sealed partial class MainViewModel
     public string LocalImageCheckpointFolder => Path.GetDirectoryName(LocalImageService.CheckpointPath)!;
     public string LocalImageAvailability =>
         (_localImages.HasComfyUi?"ComfyUI installed":"ComfyUI not installed")+
-        " · "+(_localImages.HasCheckpoint?"SDXL downloaded":"SDXL model missing");
+        " · "+(_localImages.HasCheckpoint?"SDXL downloaded":"SDXL model missing")+
+        " · "+(_localImages.HasIllustratedCheckpoint?
+            "DreamShaper XL installed":"DreamShaper XL not installed");
+    public IReadOnlyList<string> LocalImageModelChoices { get; } =
+        [LocalImageService.SdxlFileName, LocalImageService.IllustratedFileName];
     public IReadOnlyList<string> ImageGenerationEngines { get; } =
         ["ChatGPT","Local ComfyUI","Hybrid"];
     public ICommand InstallLocalImagesCommand { get; private set; } = null!;
+    public ICommand InstallIllustratedModelCommand { get; private set; } = null!;
+    public ICommand UseBaseModelCommand { get; private set; } = null!;
     public ICommand StartLocalImagesCommand { get; private set; } = null!;
     public ICommand TestLocalImagesCommand { get; private set; } = null!;
     public ICommand BenchmarkLocalStylesCommand { get; private set; } = null!;
@@ -37,6 +43,13 @@ public sealed partial class MainViewModel
     private void InitializeLocalImageCommands()
     {
         InstallLocalImagesCommand=new AsyncCommand(InstallLocalImagesAsync);
+        InstallIllustratedModelCommand=new AsyncCommand(InstallIllustratedModelAsync);
+        UseBaseModelCommand=new RelayCommand(() =>
+        {
+            Settings.LocalImageCheckpointFile=LocalImageService.SdxlFileName;
+            Raise(nameof(Settings));
+            LocalImageStatus="SDXL base selected; save your model choice before rendering.";
+        });
         StartLocalImagesCommand=new AsyncCommand(StartLocalImagesAsync);
         TestLocalImagesCommand=new AsyncCommand(TestLocalConnectionAsync);
         BenchmarkLocalStylesCommand=new AsyncCommand(BenchmarkLocalStylesAsync);
@@ -104,6 +117,51 @@ public sealed partial class MainViewModel
         finally { LocalImageBusy=false; }
     }
 
+    private async Task InstallIllustratedModelAsync()
+    {
+        if(LocalImageBusy)return;
+        var answer=MessageBox.Show(
+            "INSTALL AN OPTIONAL ILLUSTRATED CHECKPOINT?\n\n"+
+            "ZeroVideo will download DreamShaper XL (approximately 6.94 GB) "+
+            "from the creator's Hugging Face model repository and verify its "+
+            "published SHA-256. It can produce stronger artistic/cartoon "+
+            "results than generic SDXL base, but is not guaranteed to recreate "+
+            "ChatGPT's visual quality or accurate classic-comic panels. "+
+            "Review the model creator's license and usage terms before "+
+            "commercial publishing:\n\n"+
+            "https://huggingface.co/Lykon/DreamShaper\n\n"+
+            "ComfyUI will be installed first if missing. No existing models, "+
+            "projects, PNGs or MP4s are deleted. If installation succeeds "+
+            "ZeroVideo selects DreamShaper XL for future local images only. "+
+            "You can switch back to SDXL base or ChatGPT at any time.\n\n"+
+            "Continue?",
+            "ZeroVideo — Install Illustrated Model",
+            MessageBoxButton.YesNo,MessageBoxImage.Question);
+        if(answer!=MessageBoxResult.Yes)return;
+        LocalImageBusy=true;
+        try
+        {
+            if(!_localImages.HasComfyUi)
+                await _localImages.InstallEverythingAsync(LocalProgress,_cts.Token);
+            await _localImages.InstallIllustratedCheckpointAsync(
+                LocalProgress,_cts.Token);
+            Settings.LocalImageCheckpointFile=LocalImageService.IllustratedFileName;
+            await _settingsService.SaveAsync(Settings);
+            Raise(nameof(Settings));
+            Raise(nameof(LocalImageAvailability));
+            LocalImageStatus="DreamShaper XL installed, SHA-256 verified and selected. "+
+                "Test the same three styles again to evaluate their actual quality.";
+        }
+        catch(OperationCanceledException)
+        { LocalImageStatus="Illustrated model download canceled. Partial data is resumable."; }
+        catch(Exception ex)
+        {
+            LocalImageStatus="Illustrated model setup failed: "+ex.Message;
+            Log("Local illustrated model: "+ex);
+        }
+        finally {LocalImageBusy=false;}
+    }
+
     private async Task StartLocalImagesAsync()
     {
         if(LocalImageBusy)return;
@@ -135,14 +193,20 @@ public sealed partial class MainViewModel
     private async Task BenchmarkLocalStylesAsync()
     {
         if(LocalImageBusy)return;
-        if(!_localImages.HasCheckpoint)
+        var selected=string.IsNullOrWhiteSpace(Settings.LocalImageCheckpointFile)?
+            LocalImageService.SdxlFileName:Settings.LocalImageCheckpointFile;
+        var checkpointPath=Path.Combine(
+            LocalImageService.PortableRoot,"ComfyUI","models","checkpoints",
+            Path.GetFileName(selected));
+        if(!File.Exists(checkpointPath))
         {
-            LocalImageStatus="Install Everything first; SDXL model not found.";
+            LocalImageStatus="Install the selected local model before benchmarking: "+selected;
             return;
         }
         LocalImageBusy=true;
         var folder=Path.Combine(LocalImageService.Root,"Benchmarks",
-            DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+            DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" +
+                (selected==LocalImageService.IllustratedFileName?"DreamShaperXL":"SDXLBase"));
         Directory.CreateDirectory(folder);
         var styles=new[]
         {
@@ -166,10 +230,12 @@ public sealed partial class MainViewModel
                     "Medium shot of a detective's hand holding a brass key above an aged newspaper, "+
                     "dark vintage office and glowing desk lamp",
                     "Brass key, old newspaper, rainy window",
-                    destination,Settings,LocalProgress,_cts.Token);
+                    destination,Settings,LocalProgress,_cts.Token,
+                    fixedSeed:45128901);
             }
-            LocalImageStatus="Three style benchmarks saved to "+folder+
-                ". Compare the results before enabling local generation for a full video.";
+            LocalImageStatus="Three style benchmarks generated with "+
+                Path.GetFileName(selected)+" using a repeatable fixed seed. Saved to "+
+                folder+". Compare all three before enabling full-video local generation.";
         }
         catch(OperationCanceledException)
         { LocalImageStatus="Benchmark canceled; completed sample images were kept."; }
