@@ -42,17 +42,17 @@ public sealed partial class MainViewModel
 
     private void InitializeLocalImageCommands()
     {
-        InstallLocalImagesCommand=new AsyncCommand(InstallLocalImagesAsync);
-        InstallIllustratedModelCommand=new AsyncCommand(InstallIllustratedModelAsync);
+        InstallLocalImagesCommand=new AsyncCommand(()=>RunManagedJobAsync("Local ComfyUI installation",InstallLocalImagesAsync));
+        InstallIllustratedModelCommand=new AsyncCommand(()=>RunManagedJobAsync("Illustrated model installation",InstallIllustratedModelAsync));
         UseBaseModelCommand=new RelayCommand(() =>
         {
             Settings.LocalImageCheckpointFile=LocalImageService.SdxlFileName;
             Raise(nameof(Settings));
             LocalImageStatus="SDXL base selected; save your model choice before rendering.";
         });
-        StartLocalImagesCommand=new AsyncCommand(StartLocalImagesAsync);
-        TestLocalImagesCommand=new AsyncCommand(TestLocalConnectionAsync);
-        BenchmarkLocalStylesCommand=new AsyncCommand(BenchmarkLocalStylesAsync);
+        StartLocalImagesCommand=new AsyncCommand(()=>RunManagedJobAsync("Start local engine",StartLocalImagesAsync));
+        TestLocalImagesCommand=new AsyncCommand(()=>RunManagedJobAsync("Local image connection check",TestLocalConnectionAsync));
+        BenchmarkLocalStylesCommand=new AsyncCommand(()=>RunManagedJobAsync("Local style benchmarks",BenchmarkLocalStylesAsync));
         OpenLocalImageFolderCommand=new RelayCommand(()=>
         {
             if(!Directory.Exists(LocalImageService.Root))
