@@ -92,6 +92,14 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
                 await store.SaveAsync(project,settings.ProjectsRoot);
             }
         }
+        if(settings.ImageGenerationEngine=="Local ComfyUI" &&
+           settings.LocalImageCheckpointFile==LocalImageService.FluxGgufFileName)
+        {
+            // Setup failure cannot be resolved by three attempts at each
+            // scene. Check the live custom-node registry before the first
+            // scene, preserving all already generated media on failure.
+            await localImages.EnsureFluxLoaderReadyAsync(log,ct);
+        }
         var all = project.Chapters.SelectMany(c => c.Scenes.Select(s => (Chapter: c, Scene: s))).ToList();
 
         if (project.VisualAssetVersion.GetValueOrDefault() < ProjectMedia.CurrentGeneratedAssetVersion)
@@ -243,6 +251,13 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
                     await chat.GenerateSceneImageAsync(project, chapter, scene, settings, log, attemptCts.Token);
                 }
                 return true;
+            }
+            catch (LocalImageSetupException)
+            {
+                // This is not a transient image error. Do not retry three
+                // times or proceed to additional scenes with a broken
+                // ComfyUI workflow.
+                throw;
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested && attemptCts.IsCancellationRequested)
             {
