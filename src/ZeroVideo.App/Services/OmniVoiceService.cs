@@ -225,6 +225,58 @@ public sealed class OmniVoiceService
         catch{return [];}
     }
 
+    public void RemoveProfileFromLibrary(string id)
+    {
+        if(string.IsNullOrWhiteSpace(id))return;
+        var remaining=LoadProfiles().Where(p=>
+            !p.Id.Equals(id,StringComparison.OrdinalIgnoreCase)).ToList();
+        // Remove only the entry from the library, not the audio reference on
+        // disk. Deleting recordings should be an explicit separate action.
+        SaveProfiles(remaining);
+    }
+
+    /// <summary>
+    /// Test a new reference before adding anything to the saved voice library.
+    /// The temporary converted reference is deleted after each test.
+    /// </summary>
+    public async Task<string> PreviewNewSampleAsync(
+        string sample,string transcript,string testText,
+        ZeroVideoSettings settings,Action<string>? log,CancellationToken ct)
+    {
+        if(!IsInstalled)throw new InvalidOperationException(
+            "OmniVoice must be installed before voice preview.");
+        if(string.IsNullOrWhiteSpace(transcript))
+            throw new ArgumentException("Enter the exact reference transcript.");
+        if(!File.Exists(sample))throw new FileNotFoundException("Voice sample not found.",sample);
+        var folder=Path.Combine(Root,"Previews");
+        Directory.CreateDirectory(folder);
+        var token=Guid.NewGuid().ToString("N");
+        var wav=Path.Combine(folder,token+"-reference.wav");
+        var preview=Path.Combine(folder,token+"-voice.wav");
+        var ffmpeg=SettingsService.ResolveTool(settings.FfmpegPath,"ffmpeg.exe");
+        if(string.IsNullOrWhiteSpace(ffmpeg)||!File.Exists(ffmpeg))
+            throw new FileNotFoundException("Install FFmpeg before testing voice cloning.");
+        try
+        {
+            // A short sample is the officially recommended voice-cloning
+            // reference. Use the first ten seconds only for this preview.
+            await RunAsync(ffmpeg,["-hide_banner","-loglevel","error","-nostdin",
+                "-y","-i",sample,"-t","10","-vn","-ac","1","-ar",
+                "24000","-c:a","pcm_s16le",wav],log,ct);
+            var profile=new OmniVoiceProfile
+            {
+                Name="Unsaved voice preview",ReferenceWavPath=wav,
+                ReferenceTranscript=transcript.Trim()
+            };
+            await GenerateAsync(testText,preview,profile,settings.OmniVoiceSpeed,log,ct);
+            return preview;
+        }
+        finally
+        {
+            try{File.Delete(wav);}catch{}
+        }
+    }
+
     private static void SaveProfiles(IEnumerable<OmniVoiceProfile> profiles)
     {
         Directory.CreateDirectory(VoiceDirectory);
@@ -262,7 +314,7 @@ public sealed class OmniVoiceService
         try
         {
             await RunAsync(ffmpeg,["-hide_banner","-loglevel","error","-nostdin",
-                "-y","-i",reference,"-vn","-ac","1","-ar","24000",
+                "-y","-i",reference,"-t","10","-vn","-ac","1","-ar","24000",
                 "-c:a","pcm_s16le",tmp],log,ct);
             if(!File.Exists(tmp)||new FileInfo(tmp).Length<4096)
                 throw new InvalidDataException("Converted voice sample is empty.");
