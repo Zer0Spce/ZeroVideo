@@ -502,7 +502,7 @@ public sealed partial class MainViewModel
             catch (Exception ex) { PublishStatus = "Resume browser: " + ex.Message; }
         });
 
-        BrowserPublishCommand = new AsyncCommand(RunTikTokBatchAsync);
+        BrowserPublishCommand = new AsyncCommand(()=>RunManagedJobAsync("TikTok batch publishing",RunTikTokBatchAsync,publishing:true));
 
         // YouTube publishing is disabled until explicitly re-enabled.
         OpenYouTubeStudioCommand = new RelayCommand(() =>
@@ -512,10 +512,10 @@ public sealed partial class MainViewModel
             try { await _browser.OpenManualAsync(Settings, "https://www.tiktok.com/tiktokstudio/upload"); PublishStatus = "TikTok Studio opened. Sign in and review cover and scheduling controls."; }
             catch (Exception ex) { PublishStatus = "TikTok Studio: " + ex.Message; }
         });
-        GeneratePublishMetadataCommand = new AsyncCommand(RetryCheckedMetadataAsync);
+        GeneratePublishMetadataCommand = new AsyncCommand(()=>RunManagedJobAsync("Publishing metadata retry",RetryCheckedMetadataAsync));
 
         SchedulePublishQueueCommand = new RelayCommand(SchedulePublishingQueue);
-        SmartSchedulePublishQueueCommand = new AsyncCommand(SmartSchedulePublishingQueueAsync);
+        SmartSchedulePublishQueueCommand = new AsyncCommand(()=>RunManagedJobAsync("AI Smart Scheduling",SmartSchedulePublishingQueueAsync));
         SelectAllPublishQueueCommand = new RelayCommand(() =>
         {
             AllPublishItemsChecked = true;
