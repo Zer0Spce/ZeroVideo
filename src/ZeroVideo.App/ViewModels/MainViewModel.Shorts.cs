@@ -13,9 +13,11 @@ public sealed class ShortQueueEntry : ObservableObject
     private string _idea = "";
     private string _status = "Pending";
     private string _projectFile = "";
+    private bool _isChecked;
     public string Idea { get => _idea; set => Set(ref _idea, value); }
     public string Status { get => _status; set => Set(ref _status, value); }
     public string ProjectFile { get => _projectFile; set => Set(ref _projectFile, value); }
+    public bool IsChecked { get => _isChecked; set => Set(ref _isChecked, value); }
 }
 
 public sealed partial class MainViewModel
@@ -30,6 +32,18 @@ public sealed partial class MainViewModel
     public ICommand RemoveShortRowCommand { get; private set; } = null!;
     public ICommand StartShortsCommand { get; private set; } = null!;
     public ICommand ResumeShortsCommand { get; private set; } = null!;
+    public ICommand CheckAllShortsCommand { get; private set; } = null!;
+    public ICommand DeleteCheckedShortsCommand { get; private set; } = null!;
+    public bool AllShortsChecked
+    {
+        get => ShortQueue.Count > 0 && ShortQueue.All(x => x.IsChecked);
+        set
+        {
+            if (ShortsRunning) return;
+            foreach (var row in ShortQueue) row.IsChecked=value;
+            Raise(nameof(AllShortsChecked));
+        }
+    }
     private static readonly string ShortsCheckpointFile =
         Path.Combine(AppPaths.DataDirectory,"shorts-recovery.json");
     private bool _loadingShortsCheckpoint;
@@ -49,11 +63,49 @@ public sealed partial class MainViewModel
         });
         StartShortsCommand = new AsyncCommand(RunShortsQueueAsync, () => !ShortsRunning);
         ResumeShortsCommand = new AsyncCommand(RunShortsQueueAsync, () => !ShortsRunning);
+        CheckAllShortsCommand = new RelayCommand(() =>
+        {
+            if (ShortsRunning) { ShortsRecoveryStatus="Cannot change selection while automation is running."; return; }
+            AllShortsChecked=true;
+            ShortsRecoveryStatus=$"Checked all {ShortQueue.Count} Automation Shorts rows.";
+        });
+        DeleteCheckedShortsCommand = new RelayCommand(() =>
+        {
+            if (ShortsRunning)
+            {
+                ShortsRecoveryStatus="Stop Automation Shorts before deleting queue entries.";
+                return;
+            }
+            var selected=ShortQueue.Where(x=>x.IsChecked).ToList();
+            if(selected.Count==0)
+            {
+                ShortsRecoveryStatus="Check one or more rows to delete.";
+                return;
+            }
+            if(System.Windows.MessageBox.Show(
+                $"Remove {selected.Count} checked row(s) from Automation Shorts?\n\n"+
+                "Only queue rows are removed. Existing project folders, rendered MP4s, "+
+                "PNGs, audio and saved files will NOT be deleted.",
+                "Delete checked queue rows",
+                System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Question)!=
+                System.Windows.MessageBoxResult.Yes)return;
+            foreach(var row in selected)ShortQueue.Remove(row);
+            if(ShortQueue.Count==0)ShortQueue.Add(new ShortQueueEntry());
+            Raise(nameof(AllShortsChecked));
+            SaveShortsRecovery();
+            ShortsRecoveryStatus=$"Removed {selected.Count} queue row(s). "+
+                "Completed video files and project data were preserved.";
+        });
         ShortQueue.CollectionChanged += (_,args) =>
         {
+            if(args.OldItems is not null)
+                foreach(ShortQueueEntry entry in args.OldItems)
+                    entry.PropertyChanged -= OnShortRecoveryEntryChanged;
             if(args.NewItems is not null)
                 foreach(ShortQueueEntry entry in args.NewItems)
                     entry.PropertyChanged += OnShortRecoveryEntryChanged;
+            Raise(nameof(AllShortsChecked));
             SaveShortsRecovery();
         };
         foreach(var entry in ShortQueue)
@@ -61,7 +113,11 @@ public sealed partial class MainViewModel
     }
 
     private void OnShortRecoveryEntryChanged(object? sender, PropertyChangedEventArgs e)
-        => SaveShortsRecovery();
+    {
+        if(e.PropertyName==nameof(ShortQueueEntry.IsChecked))
+            Raise(nameof(AllShortsChecked));
+        SaveShortsRecovery();
+    }
 
     private void SaveShortsRecovery()
     {
