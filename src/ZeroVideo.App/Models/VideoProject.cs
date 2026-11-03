@@ -25,6 +25,8 @@ public sealed class VideoProject
 public sealed class ProjectOptions
 {
     public bool GenerateCaptions { get; set; } = true;
+    // Burn large outlined uppercase captions into vertical MP4s. Separate from SRT export.
+    public bool BurnInBoldCaptions { get; set; } = true;
     public bool AddMotion { get; set; } = true;
     public bool ContinuousMotion { get; set; } = true;
     public double MotionCycleSeconds { get; set; } = 5.0;
