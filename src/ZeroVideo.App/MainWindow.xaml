@@ -487,6 +487,9 @@
                           ToolTip="Download verified DreamShaper XL from its creator and choose it for future local image generation."/>
                   <Button Style="{StaticResource SecondaryButton}" Content="Switch Back to SDXL Base"
                           Command="{Binding UseBaseModelCommand}"/>
+                  <Button Style="{StaticResource PrimaryButton}" Content="Install FLUX.1-schnell Q4 (8GB GPU)"
+                          Command="{Binding InstallFluxSchnellCommand}"
+                          ToolTip="Optional install of FLUX Q4 + text encoders + VAE and ComfyUI-GGUF; ~12 GB download, high RAM use."/>
                 </WrapPanel>
                 <TextBlock Text="SELECT A LOCAL MODEL" FontSize="11" Foreground="{StaticResource Muted}" Margin="0,8,0,5"/>
                 <ComboBox Width="440" HorizontalAlignment="Left"
@@ -498,8 +501,59 @@
                         HorizontalAlignment="Left" Margin="0,8,0,0"/>
                 <TextBlock Text="Model license: https://huggingface.co/Lykon/DreamShaper"
                            Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Restart Local Engine (load new nodes)"
+                        Command="{Binding RestartLocalEngineCommand}" HorizontalAlignment="Left" Margin="0,9,0,0"/>
+                <TextBlock Text="FLUX schnell Q4 uses about 12 GB of extra model assets and may need RAM offloading on your RTX 3060 8GB. It is an optional trial, not a guaranteed improvement for every comic style."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
                 <TextBlock Text="Local ComfyUI listens only on 127.0.0.1:8188. It does not require a TikTok login, cannot publish a video and does not modify caption, audio or browser automation."
                            Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
+              </StackPanel>
+            </Border>
+            <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+              <StackPanel>
+                <TextBlock Text="5. Character Bible — Consistent recurring cast" FontSize="18" FontWeight="SemiBold"/>
+                <TextBlock Text="Automatically detect recurring people from your written script, or define characters and choose a master image. For LOCAL generation, later scenes reuse each character's appearance description, stable seed family and reference image. This is guidance, not a perfect facial-identity guarantee. ChatGPT image generation is unchanged."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,10"/>
+                <CheckBox Content="Enable character reference guidance for this project"
+                          IsChecked="{Binding Project.Options.EnableCharacterConsistency, Mode=TwoWay}"
+                          Margin="0,0,0,9"/>
+                <WrapPanel Margin="0,0,0,8">
+                  <Button Style="{StaticResource SecondaryButton}" Content="Detect Recurring Characters from Script"
+                          Command="{Binding DetectCharactersCommand}"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Save Character Bible"
+                          Command="{Binding SaveCharactersCommand}"/>
+                </WrapPanel>
+                <DataGrid ItemsSource="{Binding Project.Characters}" SelectedItem="{Binding SelectedCharacter, Mode=TwoWay}"
+                          AutoGenerateColumns="False" CanUserAddRows="False"
+                          CanUserDeleteRows="False" Height="165" MinWidth="600">
+                  <DataGrid.Columns>
+                    <DataGridCheckBoxColumn Header="Lock" Binding="{Binding Enabled, Mode=TwoWay}" Width="55"/>
+                    <DataGridTextColumn Header="Name" Binding="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Width="125"/>
+                    <DataGridTextColumn Header="Character appearance / outfit"
+                                        Binding="{Binding Appearance, UpdateSourceTrigger=PropertyChanged}" Width="2*"/>
+                    <DataGridTextColumn Header="Master reference image"
+                                        Binding="{Binding ReferenceImagePath}" IsReadOnly="True" Width="2*"/>
+                  </DataGrid.Columns>
+                </DataGrid>
+                <Label Content="NEW CHARACTER NAME" Margin="0,10,0,0"/>
+                <TextBox Width="300" HorizontalAlignment="Left"
+                         Text="{Binding NewCharacterName, UpdateSourceTrigger=PropertyChanged}"/>
+                <Label Content="APPEARANCE / OUTFIT DETAILS" Margin="0,7,0,0"/>
+                <TextBox Text="{Binding NewCharacterAppearance, UpdateSourceTrigger=PropertyChanged}"
+                         MinHeight="50" TextWrapping="Wrap" AcceptsReturn="True"/>
+                <WrapPanel Margin="0,10,0,0">
+                  <Button Style="{StaticResource PrimaryButton}" Content="Add Character"
+                          Command="{Binding AddCharacterCommand}"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Import Approved Reference Image"
+                          Command="{Binding ImportCharacterImageCommand}"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Remove Selected Character Profile"
+                          Command="{Binding DeleteCharacterCommand}"
+                          ToolTip="Remove only the cast entry, never any PNG or existing project image."/>
+                </WrapPanel>
+                <TextBlock Text="{Binding CharacterStatus}" Foreground="{StaticResource Muted}"
+                           TextWrapping="Wrap" Margin="0,9,0,0"/>
+                <TextBlock Text="After writing the script, click Detect Recurring Characters. Without an imported reference, ZeroVideo saves the first generated local scene as the character's visual anchor. Later scenes reuse that image for guidance. Use single-character references where possible."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
               </StackPanel>
             </Border>
           </StackPanel>
