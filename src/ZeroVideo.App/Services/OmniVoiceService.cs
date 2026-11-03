@@ -343,7 +343,7 @@ public sealed class OmniVoiceService
 
     public async Task<string> GenerateAsync(
         string narration,string output,OmniVoiceProfile profile,double speed,
-        Action<string>? log,CancellationToken ct)
+        Action<string>? log,CancellationToken ct,string language="English")
     {
         if(!IsInstalled)
             throw new InvalidOperationException(
@@ -363,6 +363,7 @@ public sealed class OmniVoiceService
             ["text"]=narration,["ref_audio"]=profile.ReferenceWavPath,
             ["ref_text"]=profile.ReferenceTranscript,
             ["output"]=output,["speed"]=Math.Clamp(speed,0.7,1.3),
+            ["language"]=string.IsNullOrWhiteSpace(language)?"English":language,
             // Save/load the encoded voice identity for named library profiles.
             // Unsaved previews have no profile ID, so no prompt is retained.
             ["voice_prompt"]=string.IsNullOrWhiteSpace(profile.Id)?"":Path.Combine(
@@ -400,7 +401,7 @@ public sealed class OmniVoiceService
         var filename=Path.Combine(project.ProjectDirectory,"audio",
             $"chapter-{chapter.Number:00}-omnivoice.wav");
         await GenerateAsync(chapter.Narration,filename,profile,
-            settings.OmniVoiceSpeed,log,ct);
+            settings.OmniVoiceSpeed,log,ct,project.Language);
         chapter.AudioPath=filename;
         return filename;
     }
