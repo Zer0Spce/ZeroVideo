@@ -135,6 +135,14 @@
                 <CheckBox Content="Visual motion" IsChecked="{Binding Project.Options.AddMotion}" Margin="0,4,15,4"/>
               <CheckBox Content="Subtle image animation (4-second gentle loops)" IsChecked="{Binding Project.Options.SubtleImageAnimation}" Margin="0,4,15,4"
                         ToolTip="Smooth micro-pans, subtle breathing-like scale and gentle illumination. Lightweight FFmpeg processing, not generative AI facial animation."/>
+              <StackPanel Margin="0,6,0,4">
+                <TextBlock Text="IMAGE ANIMATION ENGINE" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,0,0,4"/>
+                <ComboBox ItemsSource="{Binding AiImageAnimationEngines}"
+                          SelectedItem="{Binding Settings.AiImageAnimationEngine, Mode=TwoWay}"
+                          ToolTip="Default FFmpeg camera motion; optional FramePack AI generates subtle character or environment movement on your local GPU."/>
+                <TextBlock Text="FramePack is optional and requires its separate local installation; Configure it in Settings."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="10.5" Margin="0,5,0,0"/>
+              </StackPanel>
                 <CheckBox Content="Music" IsChecked="{Binding Project.Options.AddBackgroundMusic}" Margin="0,4,15,4"/>
                 <CheckBox Content="SFX hooks" IsChecked="{Binding Project.Options.AddSoundEffects}" Margin="0,4,0,4"/>
               </WrapPanel>
@@ -247,6 +255,10 @@
                 <CheckBox Content="Visual motion" IsChecked="{Binding Project.Options.AddMotion}"/>
                 <CheckBox Content="Subtle image animation (4-second gentle loops)" IsChecked="{Binding Project.Options.SubtleImageAnimation}"
                           ToolTip="4-second seamless gentle zoom/drift and light movement, automatically repeated for full narration length. No GPU model downloads."/>
+                <TextBlock Text="ANIMATION ENGINE" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,7,0,3"/>
+                <ComboBox ItemsSource="{Binding AiImageAnimationEngines}"
+                          SelectedItem="{Binding Settings.AiImageAnimationEngine, Mode=TwoWay}"
+                          ToolTip="FFmpeg = subtle camera motion; FramePack = optional local AI animation with automatic camera fallback."/>
                 <CheckBox Content="Music" IsChecked="{Binding Project.Options.AddBackgroundMusic}"/>
                 <CheckBox Content="SFX hooks" IsChecked="{Binding Project.Options.AddSoundEffects}"/>
                 <Button Style="{StaticResource ClipchampSecondaryButton}" Command="{Binding ContinueTtsCommand}" Content="Continue TTS" IsEnabled="{Binding WaitingForTtsContinue}" HorizontalAlignment="Left" Margin="0,10,0,0"/>
@@ -354,6 +366,10 @@
                 <CheckBox Content="Visual motion" IsChecked="{Binding Project.Options.AddMotion}"/>
                 <CheckBox Content="Subtle image animation (4-second gentle loops)" IsChecked="{Binding Project.Options.SubtleImageAnimation}"
                           ToolTip="4-second seamless gentle zoom/drift and light movement, automatically repeated for full narration length. No GPU model downloads."/>
+                <TextBlock Text="ANIMATION ENGINE" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,7,0,3"/>
+                <ComboBox ItemsSource="{Binding AiImageAnimationEngines}"
+                          SelectedItem="{Binding Settings.AiImageAnimationEngine, Mode=TwoWay}"
+                          ToolTip="FFmpeg = subtle camera motion; FramePack = optional local AI animation with automatic camera fallback."/>
                 <CheckBox Content="Music" IsChecked="{Binding Project.Options.AddBackgroundMusic}"/>
                 <CheckBox Content="SFX hooks" IsChecked="{Binding Project.Options.AddSoundEffects}"/>
                 <Button Style="{StaticResource ClipchampSecondaryButton}" Command="{Binding ContinueTtsCommand}" Content="Continue TTS" IsEnabled="{Binding WaitingForTtsContinue}" HorizontalAlignment="Left" Margin="0,10,0,0"/>
@@ -1365,6 +1381,24 @@
               <TextBlock Text="Voice Studio manages your saved narrator. Clipchamp settings are hidden while this engine is active."
                          Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
             </StackPanel>
+            <Separator Margin="0,18"/>
+            <TextBlock Text="Local AI Image Animation (FramePack)" FontSize="18" FontWeight="SemiBold"/>
+            <TextBlock Text="ZeroVideo preserves original images. Camera motion works without any new download. AI mode requires separately installing the official FramePack Windows package, running its demo_gradio.py server on 127.0.0.1, and selecting its bundled Python EXE here."
+                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,8"/>
+            <TextBlock Text="Official: https://github.com/lllyasviel/FramePack" Foreground="{StaticResource AccentHover}" Margin="0,3,0,7"/>
+            <Label Content="ANIMATION ENGINE"/>
+            <ComboBox Width="280" HorizontalAlignment="Left" ItemsSource="{Binding AiImageAnimationEngines}"
+                      SelectedItem="{Binding Settings.AiImageAnimationEngine, Mode=TwoWay}"/>
+            <Label Content="FRAMEPACK PYTHON.EXE (FROM ITS OWN INSTALLATION)" Margin="0,8,0,0"/>
+            <TextBox Width="740" Text="{Binding Settings.FramePackPythonPath, UpdateSourceTrigger=PropertyChanged}"/>
+            <Label Content="FRAMEPACK SERVER URL (LOCAL ONLY)" Margin="0,8,0,0"/>
+            <TextBox Width="740" Text="{Binding Settings.FramePackServerUrl, UpdateSourceTrigger=PropertyChanged}"/>
+            <Label Content="AI CLIP LENGTH (3-5 SECONDS)" Margin="0,8,0,0"/>
+            <TextBox Width="120" Text="{Binding Settings.FramePackClipSeconds, UpdateSourceTrigger=LostFocus}"/>
+            <Label Content="MAX AI CLIPS PER VIDEO (0-30; OTHERS USE CAMERA MOTION)" Margin="0,8,0,0"/>
+            <TextBox Width="120" Text="{Binding Settings.FramePackMaxClipsPerVideo, UpdateSourceTrigger=LostFocus}"/>
+            <TextBlock Text="FramePack first run downloads more than 30 GB of model weights. On RTX 3060 8 GB generation is slow. FramePack failure does not stop video rendering; Stop/Force Stop cancels ZeroVideo-owned adapters. Click Save settings after changing these options."
+                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
             <Separator Margin="0,18"/>
             <TextBlock Text="Custom background music" FontSize="18" FontWeight="SemiBold"/>
             <TextBlock Text="Choose a licensed audio file. When Music is checked in Create or Shorts, it loops until the video ends." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
