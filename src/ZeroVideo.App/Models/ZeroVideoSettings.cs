@@ -1,7 +1,11 @@
+using System.ComponentModel;
+
 namespace ZeroVideo.App.Models;
 
-public sealed class ZeroVideoSettings
+public sealed class ZeroVideoSettings : INotifyPropertyChanged
 {
+    public event PropertyChangedEventHandler? PropertyChanged;
+    private void Notify(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     public string ProjectsRoot { get; set; } = "";
     public string FfmpegPath { get; set; } = "";
     public string FfprobePath { get; set; } = "";
@@ -13,8 +17,28 @@ public sealed class ZeroVideoSettings
     public double ClipchampPace { get; set; } = 1.0;
     // Preserve Clipchamp by default; OmniVoice is an opt-in non-commercial
     // evaluation engine (pretrained model weights are CC BY-NC 4.0).
-    public string TextToSpeechEngine { get; set; } = "Clipchamp";
-    public string OmniVoiceProfileId { get; set; } = "";
+    private string _textToSpeechEngine = "Clipchamp";
+    public string TextToSpeechEngine
+    {
+        get => _textToSpeechEngine;
+        set
+        {
+            if (_textToSpeechEngine == value) return;
+            _textToSpeechEngine = value;
+            Notify(nameof(TextToSpeechEngine));
+        }
+    }
+    private string _omniVoiceProfileId = "";
+    public string OmniVoiceProfileId
+    {
+        get => _omniVoiceProfileId;
+        set
+        {
+            if (_omniVoiceProfileId == value) return;
+            _omniVoiceProfileId = value;
+            Notify(nameof(OmniVoiceProfileId));
+        }
+    }
     public double OmniVoiceSpeed { get; set; } = 1.0;
     public bool OmniVoiceNonCommercialAcknowledged { get; set; }
 
