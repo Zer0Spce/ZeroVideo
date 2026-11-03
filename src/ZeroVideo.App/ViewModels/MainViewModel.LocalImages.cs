@@ -37,6 +37,7 @@ public sealed partial class MainViewModel
     public ICommand InstallLocalImagesCommand { get; private set; } = null!;
     public ICommand InstallIllustratedModelCommand { get; private set; } = null!;
     public ICommand InstallFluxSchnellCommand { get; private set; } = null!;
+    public ICommand RepairFluxNodesCommand { get; private set; } = null!;
     public ICommand RestartLocalEngineCommand { get; private set; } = null!;
 
     public ICommand UseBaseModelCommand { get; private set; } = null!;
@@ -52,6 +53,8 @@ public sealed partial class MainViewModel
         InstallIllustratedModelCommand=new AsyncCommand(()=>RunManagedJobAsync("Illustrated model installation",InstallIllustratedModelAsync));
         InstallFluxSchnellCommand=new AsyncCommand(()=>RunManagedJobAsync(
             "FLUX schnell Q4 setup",InstallFluxSchnellAsync));
+        RepairFluxNodesCommand=new AsyncCommand(()=>RunManagedJobAsync(
+            "Repair FLUX GGUF nodes",RepairFluxNodesAsync));
         RestartLocalEngineCommand=new AsyncCommand(()=>RunManagedJobAsync(
             "Restart ComfyUI",async ()=>
         {
@@ -177,6 +180,30 @@ public sealed partial class MainViewModel
         finally {LocalImageBusy=false;}
     }
 
+    private async Task RepairFluxNodesAsync()
+    {
+        if(LocalImageBusy)return;
+        LocalImageBusy=true;
+        try
+        {
+            LocalImageStatus="Checking the installed GGUF extension and live ComfyUI node registry...";
+            await _localImages.RepairGgufNodesAsync(LocalProgress,_cts.Token);
+            LocalImageStatus="FLUX GGUF loader is loaded and registered. " +
+                "You can retry the missing images using Resume/Build. " +
+                "Previously completed video assets are preserved.";
+        }
+        catch(OperationCanceledException)
+        {
+            LocalImageStatus="FLUX node repair canceled. Existing files were not deleted.";
+        }
+        catch(Exception ex)
+        {
+            LocalImageStatus="GGUF diagnostic: "+ex.Message;
+            Log("GGUF repair: "+ex.Message);
+        }
+        finally{LocalImageBusy=false;}
+    }
+
     private async Task InstallFluxSchnellAsync()
     {
         if(LocalImageBusy)return;
@@ -207,9 +234,17 @@ public sealed partial class MainViewModel
             Raise(nameof(Settings));
             Raise(nameof(LocalImageAvailability));
             await _localImages.RestartOwnedServerAsync(LocalProgress,_cts.Token);
-            LocalImageStatus="FLUX.1-schnell Q4 verified and selected. "+
-                "Restart any external ComfyUI server if necessary, "+
-                "then run a style benchmark before generating full videos.";
+            if(await _localImages.IsOnlineAsync(_cts.Token))
+            {
+                LocalImageStatus=await _localImages.IsGgufLoaderRegisteredAsync(_cts.Token)?
+                    "FLUX installed and GGUF loader verified. Test a sample image first.":
+                    "FLUX model files are installed, but the running ComfyUI "+
+                    "server has NOT registered UnetLoaderGGUF. Click Repair FLUX GGUF Nodes "+
+                    "and follow any restart instructions before generating scenes.";
+            }
+            else
+                LocalImageStatus="FLUX model files installed. Click Start Local Engine, "+
+                    "then Repair FLUX GGUF Nodes to verify node registration.";
         }
         catch(OperationCanceledException)
         {
@@ -243,11 +278,16 @@ public sealed partial class MainViewModel
         try
         {
             var online=await _localImages.IsOnlineAsync(_cts.Token);
-            LocalImageStatus=online?
-                "ComfyUI responds at 127.0.0.1:8188. "+
-                LocalImageAvailability:
-                "ComfyUI is not responding. Install Everything and Start ComfyUI, "+
-                "or run your own ComfyUI instance on 127.0.0.1:8188.";
+            if(!online)
+                LocalImageStatus="ComfyUI is not responding. Click Start Local Engine.";
+            else if(Settings.LocalImageCheckpointFile==LocalImageService.FluxGgufFileName)
+                LocalImageStatus=await _localImages.IsGgufLoaderRegisteredAsync(_cts.Token)?
+                    "ComfyUI online; FLUX GGUF UnetLoaderGGUF is registered. "+LocalImageAvailability:
+                    "ComfyUI online but FLUX GGUF loader is MISSING. "+
+                    "Click Repair FLUX GGUF Nodes; a running external "+
+                    "ComfyUI server may require a manual restart.";
+            else
+                LocalImageStatus="ComfyUI responds at 127.0.0.1:8188. "+LocalImageAvailability;
         }
         catch(Exception ex) { LocalImageStatus="Connection test: "+ex.Message; }
     }
