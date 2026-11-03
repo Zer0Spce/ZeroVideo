@@ -77,6 +77,21 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
 
     private async Task GenerateMissingVisualsAsync(VideoProject project, ZeroVideoSettings settings, Action<string>? log, IProgress<double>? progress, CancellationToken ct)
     {
+        // Automatic cast detection runs only for explicitly selected local
+        // image generation. The working ChatGPT image path is unchanged.
+        if(project.Options.EnableCharacterConsistency &&
+           (settings.ImageGenerationEngine=="Local ComfyUI" ||
+            settings.ImageGenerationEngine=="Hybrid"))
+        {
+            var before=project.Characters?.Count??0;
+            CharacterConsistencyService.EnsureProfiles(project);
+            if(project.Characters.Count>before)
+            {
+                log?.Invoke($"Character Lock: detected {project.Characters.Count-before} "+
+                    "recurring characters. References will be saved in CharacterReferences.");
+                await store.SaveAsync(project,settings.ProjectsRoot);
+            }
+        }
         var all = project.Chapters.SelectMany(c => c.Scenes.Select(s => (Chapter: c, Scene: s))).ToList();
 
         if (project.VisualAssetVersion.GetValueOrDefault() < ProjectMedia.CurrentGeneratedAssetVersion)
