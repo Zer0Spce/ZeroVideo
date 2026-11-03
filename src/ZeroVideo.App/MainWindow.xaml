@@ -21,6 +21,18 @@
 
     <TabControl Grid.Row="1">
       <TabItem Header="Create">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
+            <Button Style="{StaticResource SecondaryButton}" Content="Stop"
+                    Command="{Binding StopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Cancel the active operation; saved work is retained and can be resumed."/>
+            <Button Style="{StaticResource SecondaryButton}" Content="Force Stop"
+                    Command="{Binding ForceStopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Emergency stop: cancel the job, interrupt local generation and terminate only ZeroVideo-owned automation processes."/>
+            <TextBlock Text="{Binding JobControlStatus}" Foreground="{StaticResource Muted}"
+                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                       Margin="12,0,0,0" MaxWidth="510" ToolTip="{Binding JobControlStatus}"/>
+          </StackPanel>
         <Grid Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="430"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
           <Border Style="{StaticResource CardBorder}">
             <StackPanel>
@@ -99,9 +111,22 @@
             </Grid>
           </Border>
         </Grid>
+        </DockPanel>
       </TabItem>
 
       <TabItem Header="Automation Shorts">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
+            <Button Style="{StaticResource SecondaryButton}" Content="Stop"
+                    Command="{Binding StopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Cancel the active operation; saved work is retained and can be resumed."/>
+            <Button Style="{StaticResource SecondaryButton}" Content="Force Stop"
+                    Command="{Binding ForceStopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Emergency stop: cancel the job, interrupt local generation and terminate only ZeroVideo-owned automation processes."/>
+            <TextBlock Text="{Binding JobControlStatus}" Foreground="{StaticResource Muted}"
+                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                       Margin="12,0,0,0" MaxWidth="510" ToolTip="{Binding JobControlStatus}"/>
+          </StackPanel>
         <Grid Margin="0,12,0,0">
           <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="330"/></Grid.ColumnDefinitions>
           <Border Style="{StaticResource CardBorder}">
@@ -181,9 +206,22 @@
             </ScrollViewer>
           </Border>
         </Grid>
+        </DockPanel>
       </TabItem>
 
       <TabItem Header="Idea Generation">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
+            <Button Style="{StaticResource SecondaryButton}" Content="Stop"
+                    Command="{Binding StopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Cancel the active operation; saved work is retained and can be resumed."/>
+            <Button Style="{StaticResource SecondaryButton}" Content="Force Stop"
+                    Command="{Binding ForceStopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Emergency stop: cancel the job, interrupt local generation and terminate only ZeroVideo-owned automation processes."/>
+            <TextBlock Text="{Binding JobControlStatus}" Foreground="{StaticResource Muted}"
+                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                       Margin="12,0,0,0" MaxWidth="510" ToolTip="{Binding JobControlStatus}"/>
+          </StackPanel>
         <Grid Margin="0,12,0,0">
           <Grid.ColumnDefinitions><ColumnDefinition Width="340"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
           <Border Style="{StaticResource CardBorder}">
@@ -228,9 +266,22 @@
             </DockPanel>
           </Border>
         </Grid>
+        </DockPanel>
       </TabItem>
 
       <TabItem Header="Content Series">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
+            <Button Style="{StaticResource SecondaryButton}" Content="Stop"
+                    Command="{Binding StopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Cancel the active operation; saved work is retained and can be resumed."/>
+            <Button Style="{StaticResource SecondaryButton}" Content="Force Stop"
+                    Command="{Binding ForceStopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Emergency stop: cancel the job, interrupt local generation and terminate only ZeroVideo-owned automation processes."/>
+            <TextBlock Text="{Binding JobControlStatus}" Foreground="{StaticResource Muted}"
+                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                       Margin="12,0,0,0" MaxWidth="510" ToolTip="{Binding JobControlStatus}"/>
+          </StackPanel>
         <Grid Margin="0,12,0,0">
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="350"/>
@@ -281,6 +332,7 @@
             </DockPanel>
           </Border>
         </Grid>
+        </DockPanel>
       </TabItem>
 
       <TabItem Header="Effects">
@@ -332,13 +384,38 @@
       </TabItem>
 
       <TabItem Header="Automation">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
+            <Button Style="{StaticResource SecondaryButton}" Content="Stop"
+                    Command="{Binding StopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Cancel the active operation; saved work is retained and can be resumed."/>
+            <Button Style="{StaticResource SecondaryButton}" Content="Force Stop"
+                    Command="{Binding ForceStopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Emergency stop: cancel the job, interrupt local generation and terminate only ZeroVideo-owned automation processes."/>
+            <TextBlock Text="{Binding JobControlStatus}" Foreground="{StaticResource Muted}"
+                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                       Margin="12,0,0,0" MaxWidth="510" ToolTip="{Binding JobControlStatus}"/>
+          </StackPanel>
         <Grid Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
           <Border Style="{StaticResource CardBorder}"><StackPanel><TextBlock Text="Browser sessions" FontSize="21" FontWeight="SemiBold"/><TextBlock Text="Open ChatGPT or Clipchamp to sign in normally in the dedicated ZeroVideo Edge profile. Generation automatically hands that signed-in profile over to automation." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,16"/><WrapPanel><Button Style="{StaticResource PrimaryButton}" Command="{Binding OpenChatGptCommand}" Content="Open ChatGPT"/><Button Style="{StaticResource PrimaryButton}" Command="{Binding OpenClipchampCommand}" Content="Open Clipchamp"/></WrapPanel><Button Style="{StaticResource SecondaryButton}" Command="{Binding RunPreflightCommand}" Content="Run system checks" HorizontalAlignment="Left" Margin="0,14,0,6"/><ListBox ItemsSource="{Binding PreflightLines}" Height="190" FontFamily="Consolas" FontSize="12"/></StackPanel></Border>
           <Border Grid.Column="2" Style="{StaticResource CardBorder}"><StackPanel><TextBlock Text="Automation profile" FontSize="21" FontWeight="SemiBold"/><TextBlock Text="Selectors are stored outside the code so ChatGPT/Clipchamp UI changes can be repaired without rebuilding the entire app." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,10"/><Label Content="PROFILE PATH"/><TextBox Text="{Binding Settings.AutomationProfilePath}"/><Label Content="EDGE PROFILE DIRECTORY" Margin="0,10,0,0"/><TextBox Text="{Binding Settings.EdgeUserDataDirectory}"/><Button Style="{StaticResource SecondaryButton}" Command="{Binding SaveSettingsCommand}" Content="Save automation settings" HorizontalAlignment="Left" Margin="0,14,0,0"/></StackPanel></Border>
         </Grid>
+        </DockPanel>
       </TabItem>
 
       <TabItem Header="Local Images">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
+            <Button Style="{StaticResource SecondaryButton}" Content="Stop"
+                    Command="{Binding StopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Cancel the active operation; saved work is retained and can be resumed."/>
+            <Button Style="{StaticResource SecondaryButton}" Content="Force Stop"
+                    Command="{Binding ForceStopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Emergency stop: cancel the job, interrupt local generation and terminate only ZeroVideo-owned automation processes."/>
+            <TextBlock Text="{Binding JobControlStatus}" Foreground="{StaticResource Muted}"
+                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                       Margin="12,0,0,0" MaxWidth="510" ToolTip="{Binding JobControlStatus}"/>
+          </StackPanel>
         <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,12,0,0">
           <StackPanel MaxWidth="990" HorizontalAlignment="Left" Margin="0,0,12,20">
             <TextBlock Text="Local Image Generation — ComfyUI" FontSize="24"
@@ -427,9 +504,22 @@
             </Border>
           </StackPanel>
         </ScrollViewer>
+        </DockPanel>
       </TabItem>
 
       <TabItem Header="TikTok Intelligence">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
+            <Button Style="{StaticResource SecondaryButton}" Content="Stop"
+                    Command="{Binding StopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Cancel the active operation; saved work is retained and can be resumed."/>
+            <Button Style="{StaticResource SecondaryButton}" Content="Force Stop"
+                    Command="{Binding ForceStopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Emergency stop: cancel the job, interrupt local generation and terminate only ZeroVideo-owned automation processes."/>
+            <TextBlock Text="{Binding JobControlStatus}" Foreground="{StaticResource Muted}"
+                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                       Margin="12,0,0,0" MaxWidth="510" ToolTip="{Binding JobControlStatus}"/>
+          </StackPanel>
         <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,12,0,0">
           <StackPanel Margin="0,0,12,12">
             <TextBlock Text="TikTok Intelligence" FontSize="24" FontWeight="SemiBold" Margin="0,0,0,6"/>
@@ -476,6 +566,7 @@
             </Border>
           </StackPanel>
         </ScrollViewer>
+        </DockPanel>
       </TabItem>
 
       <TabItem Header="Calendar">
@@ -633,6 +724,18 @@
       </TabItem>
 
       <TabItem Header="File Manager">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
+            <Button Style="{StaticResource SecondaryButton}" Content="Stop"
+                    Command="{Binding StopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Cancel the active operation; saved work is retained and can be resumed."/>
+            <Button Style="{StaticResource SecondaryButton}" Content="Force Stop"
+                    Command="{Binding ForceStopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Emergency stop: cancel the job, interrupt local generation and terminate only ZeroVideo-owned automation processes."/>
+            <TextBlock Text="{Binding JobControlStatus}" Foreground="{StaticResource Muted}"
+                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                       Margin="12,0,0,0" MaxWidth="510" ToolTip="{Binding JobControlStatus}"/>
+          </StackPanel>
         <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
           <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel MaxWidth="850" HorizontalAlignment="Left">
@@ -660,9 +763,22 @@
             </StackPanel>
           </ScrollViewer>
         </Border>
+        </DockPanel>
       </TabItem>
 
       <TabItem Header="Publishing">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
+            <Button Style="{StaticResource SecondaryButton}" Content="Stop"
+                    Command="{Binding StopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Cancel the active operation; saved work is retained and can be resumed."/>
+            <Button Style="{StaticResource SecondaryButton}" Content="Force Stop"
+                    Command="{Binding ForceStopJobCommand}" IsEnabled="{Binding JobRunning}"
+                    ToolTip="Emergency stop: cancel the job, interrupt local generation and terminate only ZeroVideo-owned automation processes."/>
+            <TextBlock Text="{Binding JobControlStatus}" Foreground="{StaticResource Muted}"
+                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                       Margin="12,0,0,0" MaxWidth="510" ToolTip="{Binding JobControlStatus}"/>
+          </StackPanel>
         <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
           <Grid Margin="4">
             <Grid.RowDefinitions>
@@ -817,6 +933,7 @@
             </StackPanel>
           </Grid>
         </Border>
+        </DockPanel>
       </TabItem>
 
       <TabItem Header="Settings">
