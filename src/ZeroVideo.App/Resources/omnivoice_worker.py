@@ -23,18 +23,18 @@ def chunks_from(text, max_characters=280):
     Only a sentence that exceeds the configured limit is broken on words.
     Keep terminal punctuation; losing it can make OmniVoice repeat speech.
     """
-    text = re.sub(r"\\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
     if not text:
         raise ValueError("Narration text is empty.")
     # These Unicode sentence stops are important for multilingual narration.
-    sentences = re.split(r"(?<=[.!?。！？])\\s+", text)
+    sentences = re.split(r"(?<=[.!?。！？])\s+", text)
     pieces = []
     for sentence in sentences:
         if len(sentence) <= max_characters:
             pieces.append(sentence)
             continue
         # Prefer clauses when a single long sentence does not fit.
-        clauses = re.split(r"(?<=[,;:，；：])\\s+", sentence)
+        clauses = re.split(r"(?<=[,;:，；：])\s+", sentence)
         for clause in clauses:
             if len(clause) <= max_characters:
                 pieces.append(clause)
