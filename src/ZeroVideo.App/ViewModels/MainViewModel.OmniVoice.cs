@@ -113,7 +113,8 @@ public sealed partial class MainViewModel
             RunManagedJobAsync("Test local OmniVoice TTS",TestOmniVoiceAsync));
         PreviewNewOmniVoiceCommand=new AsyncCommand(()=>
             RunManagedJobAsync("Preview new voice clone",PreviewNewOmniVoiceAsync));
-        RemoveOmniProfileCommand=new RelayCommand(RemoveSavedOmniProfile);
+        RemoveOmniProfileCommand=new AsyncCommand(()=>RunManagedJobAsync(
+            "Remove saved voice entry",RemoveSavedOmniProfileAsync));
         UseOmniProfileCommand=new AsyncCommand(()=>RunManagedJobAsync(
             "Select OmniVoice profile",UseOmniProfileAsync));
         StopOmniPreviewCommand=new RelayCommand(()=>
@@ -323,7 +324,7 @@ public sealed partial class MainViewModel
             "are reused and not replaced. Switch back to Clipchamp at any time.";
     }
 
-    private void RemoveSavedOmniProfile()
+    private async Task RemoveSavedOmniProfileAsync()
     {
         if(SelectedOmniProfile is null)
         {
@@ -344,7 +345,7 @@ public sealed partial class MainViewModel
         Settings.OmniVoiceProfileId=SelectedOmniProfile?.Id??"";
         LocalTtsStatus="Removed the voice profile from the library. "+
             "Existing reference and narration files were preserved.";
-        _= _settingsService.SaveAsync(Settings);
+        await _settingsService.SaveAsync(Settings);
     }
 
     private async Task TestOmniVoiceAsync()
