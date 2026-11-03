@@ -44,6 +44,36 @@ public sealed class LocalImageService
         AllowAutoRedirect = true, AutomaticDecompression = DecompressionMethods.All
     }) { Timeout=Timeout.InfiniteTimeSpan };
     private Process? _serverProcess;
+    private string? _activePromptId;
+
+    /// <summary>
+    /// Force-stop only work initiated by ZeroVideo. An unrelated ComfyUI
+    /// server is never terminated; if we launched ComfyUI, its process tree
+    /// can be stopped. A pending job is interrupted before process shutdown.
+    /// </summary>
+    public async Task InterruptOwnedGenerationAsync()
+    {
+        var active=_activePromptId;
+        if(active is not null)
+        {
+            try
+            {
+                using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                using var request=await Http.PostAsync(new Uri(Server,"interrupt"),
+                    new StringContent("{}"),timeout.Token);
+            }
+            catch { /* The engine may already have exited. */ }
+            finally { _activePromptId=null; }
+        }
+        var process=_serverProcess;
+        if(process is not null)
+        {
+            try { if(!process.HasExited)process.Kill(entireProcessTree:true); }
+            catch(InvalidOperationException) { }
+            catch(System.ComponentModel.Win32Exception) { }
+            _serverProcess=null;
+        }
+    }
 
     static LocalImageService()
     {
@@ -459,6 +489,9 @@ public sealed class LocalImageService
         var promptId=token.GetString()??"";
         if(!Guid.TryParse(promptId,out _))
             throw new InvalidDataException("ComfyUI returned an invalid prompt ID.");
+        _activePromptId=promptId;
+        try
+        {
         for(var i=0;i<420;i++)
         {
             ct.ThrowIfCancellationRequested();
@@ -505,5 +538,7 @@ public sealed class LocalImageService
             return;
         }
         throw new TimeoutException("ComfyUI generation exceeded 14 minutes.");
+        }
+        finally { if(_activePromptId==promptId)_activePromptId=null; }
     }
 }
