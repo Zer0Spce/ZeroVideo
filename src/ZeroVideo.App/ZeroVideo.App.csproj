@@ -15,6 +15,7 @@
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Resources\omnivoice_worker.py" />
+    <EmbeddedResource Include="Resources\framepack_bridge.py" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\profiles\automation.default.json" Link="profiles\automation.default.json" CopyToOutputDirectory="PreserveNewest" />
