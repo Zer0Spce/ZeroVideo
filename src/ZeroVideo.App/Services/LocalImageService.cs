@@ -15,6 +15,9 @@ namespace ZeroVideo.App.Services;
 /// untouched and stays the default in settings. Only communicates with
 /// loopback, and downloads solely from official ComfyUI / Stability AI URLs.
 /// </summary>
+/// <summary>Configuration or startup error that cannot be fixed by rerunning a scene.</summary>
+public sealed class LocalImageSetupException(string message) : InvalidOperationException(message);
+
 public sealed class LocalImageService
 {
     public const string ComfyUiArchiveUrl =
@@ -296,7 +299,8 @@ public sealed class LocalImageService
     {
         if(Directory.Exists(GgufNodeFolder))
         {
-            log?.Invoke("ComfyUI-GGUF nodes already present.");
+            log?.Invoke("ComfyUI-GGUF files already present. "+
+                "The Repair button verifies Python dependencies and the live node registry.");
             return;
         }
         var uri="https://github.com/city96/ComfyUI-GGUF/archive/"+GgufNodeCommit+".zip";
@@ -460,6 +464,121 @@ public sealed class LocalImageService
                 throw new InvalidDataException("Installed SDXL model checksum differs from official SHA-256.");
         }
         log?.Invoke("Local image engine fully installed. No additional Python, CUDA or model downloads needed.");
+    }
+
+    /// <summary>
+    /// ComfyUI being online does NOT mean an optional GGUF custom node loaded.
+    /// Query the live node registry before submitting any FLUX workflow.
+    /// </summary>
+    public async Task<bool> IsGgufLoaderRegisteredAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(7));
+            using var response=await Http.GetAsync(
+                new Uri(Server,"object_info/UnetLoaderGGUF"),timeout.Token);
+            if(!response.IsSuccessStatusCode)return false;
+            using var doc=JsonDocument.Parse(
+                await response.Content.ReadAsStringAsync(timeout.Token));
+            return doc.RootElement.ValueKind==JsonValueKind.Object &&
+                doc.RootElement.TryGetProperty("UnetLoaderGGUF",out var definition) &&
+                definition.ValueKind==JsonValueKind.Object;
+        }
+        catch(OperationCanceledException) when(!ct.IsCancellationRequested){return false;}
+        catch(HttpRequestException){return false;}
+        catch(JsonException){return false;}
+    }
+
+    public async Task EnsureFluxLoaderReadyAsync(
+        Action<string>? log,CancellationToken ct)
+    {
+        if(!HasFluxSchnell)
+            throw new LocalImageSetupException(
+                "FLUX model files or ComfyUI-GGUF extension are incomplete. " +
+                "Open Local Images and click Install FLUX.1-schnell Q4 again.");
+        if(!await IsOnlineAsync(ct))
+            await StartAsync(log,ct);
+        if(!await IsGgufLoaderRegisteredAsync(ct))
+            throw new LocalImageSetupException(
+                "ComfyUI is running but does not recognize UnetLoaderGGUF. " +
+                "Go to Local Images > Repair FLUX GGUF Nodes. " +
+                "If ComfyUI was started outside ZeroVideo, close that ComfyUI " +
+                "server first, then start it again after repair. " +
+                "ZeroVideo will not retry this same invalid workflow.");
+    }
+
+    public async Task RepairGgufNodesAsync(Action<string>? log,CancellationToken ct)
+    {
+        if(!HasComfyUi)
+            throw new LocalImageSetupException(
+                "Install ComfyUI using Install Everything before repairing GGUF.");
+        log?.Invoke("Checking ComfyUI-GGUF custom node files and Python module...");
+        await InstallGgufNodesAsync(log,ct);
+        var init=Path.Combine(GgufNodeFolder,"__init__.py");
+        var nodes=Path.Combine(GgufNodeFolder,"nodes.py");
+        var requirements=Path.Combine(GgufNodeFolder,"requirements.txt");
+        if(!File.Exists(init)||!File.Exists(nodes)||!File.Exists(requirements))
+            throw new LocalImageSetupException(
+                "ComfyUI-GGUF folder exists but is incomplete. " +
+                "Preserve the folder and repair its contents manually before retrying.");
+        try
+        {
+            await RunToolAsync(PortablePython,
+                new[]{"-s","-c","import gguf; print('GGUF Python module OK')"},
+                PortableRoot,ct);
+            log?.Invoke("GGUF Python dependency loads successfully.");
+        }
+        catch(OperationCanceledException){throw;}
+        catch(Exception ex)
+        {
+            log?.Invoke("GGUF Python import failed ("+ex.Message+
+                "). Reinstalling the extension's required Python dependencies...");
+            await RunToolAsync(PortablePython,
+                new[]{"-s","-m","pip","install","--disable-pip-version-check",
+                      "-r",requirements},PortableRoot,ct);
+            // Fail visibly if pip reported success but the module still cannot import.
+            await RunToolAsync(PortablePython,
+                new[]{"-s","-c","import gguf; print('GGUF Python module OK')"},
+                PortableRoot,ct);
+        }
+        // If we own the running server, restart it. A ComfyUI instance
+        // launched by another process may have active work: never kill it.
+        if(await IsOnlineAsync(ct))
+        {
+            if(_serverProcess is not null && !_serverProcess.HasExited)
+            {
+                log?.Invoke("Restarting ZeroVideo-owned ComfyUI so the custom "+
+                    "GGUF node can register...");
+                await RestartOwnedServerAsync(log,ct);
+            }
+            else
+            {
+                if(await IsGgufLoaderRegisteredAsync(ct))
+                {
+                    log?.Invoke("GGUF node is already registered by the running ComfyUI server.");
+                    return;
+                }
+                throw new LocalImageSetupException(
+                    "GGUF dependency and files are installed, but an already " +
+                    "running ComfyUI server on 127.0.0.1:8188 has not loaded " +
+                    "the node. Close that external ComfyUI server manually, " +
+                    "then click Start Local Engine in ZeroVideo. Do not delete " +
+                    "models or re-download anything.");
+            }
+        }
+        else
+            await StartAsync(log,ct);
+
+        if(!await IsGgufLoaderRegisteredAsync(ct))
+            throw new LocalImageSetupException(
+                "ComfyUI restarted but UnetLoaderGGUF is still not registered. " +
+                "The extension may have failed to import or your ComfyUI version " +
+                "may be incompatible. Check ComfyUI startup logs for the " +
+                "ComfyUI-GGUF import traceback; do not retry scene generation yet.");
+
+        log?.Invoke("GGUF loader verified in ComfyUI's live node registry. "+
+            "FLUX is ready for a test image.");
     }
 
     public async Task<bool> IsOnlineAsync(CancellationToken ct)
@@ -719,9 +838,9 @@ public sealed class LocalImageService
         // the ComfyUI checkpoint loader.
         if(isFlux)
         {
-            if(!HasFluxSchnell)
-                throw new FileNotFoundException("FLUX.1-schnell Q4 is incomplete. "+
-                    "Use the Install FLUX (8GB GPU) button first.");
+            // This is a setup error, not a transient image failure. Check
+            // once before building/submitting an invalid FLUX workflow.
+            await EnsureFluxLoaderReadyAsync(log,ct);
         }
         else if(checkpoint != SdxlFileName &&
            !File.Exists(Path.Combine(PortableRoot,"ComfyUI","models","checkpoints",checkpoint)))
