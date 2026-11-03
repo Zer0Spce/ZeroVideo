@@ -36,7 +36,7 @@ public sealed class OmniVoiceService
     private static string WorkerPath => Path.Combine(Root,"omnivoice_worker.py");
     private static string ReadyMarker => Path.Combine(Root,"installed-0.2.1.txt");
     private const string UvUrl =
-        "https://releases.astral.sh/github/uv/releases/download/0.12.3/uv-x86_64-pc-windows-msvc.zip";
+        "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-pc-windows-msvc.zip";
     private const string UvSha256 =
         "b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e";
     private const string ModelRepo = "k2-fsa/OmniVoice";
@@ -88,6 +88,7 @@ public sealed class OmniVoiceService
             throw new IOException("Failed to launch "+Path.GetFileName(program));
         _children[proc.Id]=proc;
         var last=new Queue<string>();
+        var lastLock=new object();
         using var registration=ct.Register(() =>
         {
             try { if(!proc.HasExited)proc.Kill(entireProcessTree:true); }
@@ -101,8 +102,11 @@ public sealed class OmniVoiceService
                 if(line is null)break;
                 if(line.Length==0)continue;
                 var safe=line.Length>420?line[..420]:line;
-                if(last.Count>=15)last.Dequeue();
-                last.Enqueue(safe);
+                lock(lastLock)
+                {
+                    if(last.Count>=15)last.Dequeue();
+                    last.Enqueue(safe);
+                }
                 // Avoid echoing entire inference scripts or file contents.
                 log?.Invoke("OmniVoice: "+safe);
             }
@@ -113,8 +117,12 @@ public sealed class OmniVoiceService
             var stderr=Pump(proc.StandardError);
             await Task.WhenAll(proc.WaitForExitAsync(ct),stdout,stderr);
             if(proc.ExitCode!=0)
+            {
+                string details;
+                lock(lastLock)details=string.Join(" | ",last.TakeLast(5));
                 throw new IOException(Path.GetFileName(program)+
-                    " exited "+proc.ExitCode+"; "+string.Join(" | ",last.TakeLast(5)));
+                    " exited "+proc.ExitCode+"; "+details);
+            }
         }
         finally
         {
@@ -354,7 +362,11 @@ public sealed class OmniVoiceService
         {
             ["text"]=narration,["ref_audio"]=profile.ReferenceWavPath,
             ["ref_text"]=profile.ReferenceTranscript,
-            ["output"]=output,["speed"]=Math.Clamp(speed,0.7,1.3)
+            ["output"]=output,["speed"]=Math.Clamp(speed,0.7,1.3),
+            // Save/load the encoded voice identity for named library profiles.
+            // Unsaved previews have no profile ID, so no prompt is retained.
+            ["voice_prompt"]=string.IsNullOrWhiteSpace(profile.Id)?"":Path.Combine(
+                Path.GetDirectoryName(profile.ReferenceWavPath)!,"voice-clone.pt")
         });
         await File.WriteAllTextAsync(job,json,ct);
         try
