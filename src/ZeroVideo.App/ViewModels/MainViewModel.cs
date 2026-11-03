@@ -80,6 +80,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<int> Durations { get; } = [5, 10, 15, 20, 30, 45, 60, 90, 120];
     public ObservableCollection<string> AspectRatios { get; } = ["16:9", "9:16"];
     public ObservableCollection<string> Styles { get; } = new(VisualStylePresets.Names);
+    public ObservableCollection<string> AiImageAnimationEngines { get; } =
+        ["Camera Motion (FFmpeg)", "FramePack (Local)"];
+
     public ObservableCollection<string> ClipchampVoices { get; } =
     [
         "Andrew", "Ava", "Brian", "Emma", "Aria", "Christopher", "Eric", "Guy", "Jenny", "Michelle", "Roger", "Steffan"
