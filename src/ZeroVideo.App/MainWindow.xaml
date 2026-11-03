@@ -108,12 +108,15 @@
             <DockPanel>
               <StackPanel DockPanel.Dock="Top">
                 <TextBlock Text="Automation Shorts" FontSize="21" FontWeight="SemiBold"/>
-                <TextBlock Text="Paste a link or idea into each row. Videos run sequentially using the existing Create pipeline, including its manual Clipchamp voice confirmation." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,12"/>
+                <TextBlock Text="Paste a link or idea into each row. Check multiple rows, use Check All or Delete Checked to manage the queue. Only rows are deleted, not MP4s, PNGs or project folders. Video automation still runs sequentially." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,12"/>
               </StackPanel>
               <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
                 <WrapPanel>
                   <Button Style="{StaticResource SecondaryButton}" Command="{Binding AddShortRowCommand}" Content="+ Add row"/>
                   <Button Style="{StaticResource SecondaryButton}" Command="{Binding RemoveShortRowCommand}" Content="Remove last row"/>
+                  <Button Style="{StaticResource SecondaryButton}" Command="{Binding CheckAllShortsCommand}" Content="Check All"/>
+                  <Button Style="{StaticResource SecondaryButton}" Command="{Binding DeleteCheckedShortsCommand}"
+                          Content="Delete Checked" ToolTip="Delete only checked queue rows, never saved images, videos or project files."/>
                   <Button Style="{StaticResource PrimaryButton}" Command="{Binding StartShortsCommand}" Content="Start automation"/>
                   <Button Style="{StaticResource SecondaryButton}" Command="{Binding ResumeShortsCommand}"
                           Content="Resume Unfinished" ToolTip="Continue previously saved scripts, images, audio and unfinished video jobs."/>
@@ -123,6 +126,15 @@
               </StackPanel>
               <DataGrid ItemsSource="{Binding ShortQueue}" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False">
                 <DataGrid.Columns>
+                  <DataGridTemplateColumn Header="Use" Width="54">
+                    <DataGridTemplateColumn.CellTemplate>
+                      <DataTemplate>
+                        <CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center"
+                                  ToolTip="Select this row for Check All / Delete Checked; does not change the automation run order."/>
+                      </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                  </DataGridTemplateColumn>
                   <DataGridTextColumn Header="Link / text idea" Binding="{Binding Idea, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
                   <DataGridTextColumn Header="Status" Binding="{Binding Status}" IsReadOnly="True" Width="170"/>
                 </DataGrid.Columns>
