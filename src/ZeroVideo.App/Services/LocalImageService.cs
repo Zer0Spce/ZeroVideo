@@ -600,9 +600,9 @@ public sealed class LocalImageService
         using var form=new MultipartFormDataContent();
         await using var from=File.OpenRead(localFile);
         using var image=new StreamContent(from);
+        var ext=Path.GetExtension(localFile).ToLowerInvariant();
         image.Headers.ContentType=new MediaTypeHeaderValue(
-            Path.GetExtension(localFile).ToLowerInvariant()==".png"?
-                "image/png":"image/jpeg");
+            ext==".png"?"image/png":ext==".webp"?"image/webp":"image/jpeg");
         form.Add(image,"image",Path.GetFileName(localFile));
         form.Add(new StringContent("input"),"type");
         form.Add(new StringContent("true"),"overwrite");
