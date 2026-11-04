@@ -20,6 +20,7 @@
     <EmbeddedResource Include="Resources\liveportrait_import_probe.py" />
     <EmbeddedResource Include="Resources\liveportrait_face_probe.py" />
     <EmbeddedResource Include="Resources\pulid_import_probe.py" />
+    <EmbeddedResource Include="Resources\pulid_flux_compat.py" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\profiles\automation.default.json" Link="profiles\automation.default.json" CopyToOutputDirectory="PreserveNewest" />
