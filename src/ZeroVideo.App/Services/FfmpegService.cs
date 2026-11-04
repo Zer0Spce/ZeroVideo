@@ -829,10 +829,10 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
                 "Caption ASS file must be inside the project's render folder.");
         log?.Invoke("Burning synchronized captions with FFmpeg/libass: "+
             assName+" (video encode only; audio copied unchanged)...");
-        var args=$"-y -nostdin -i \\"{sourceMp4}\\" "+
-            $"-vf \\"ass={assName}\\" "+
+        var args=$"-y -nostdin -i \"{sourceMp4}\" "+
+            $"-vf \"ass={assName}\" "+
             "-map 0:v:0 -map 0:a:0 -c:v libx264 -preset medium -crf 20 "+
-            $"-pix_fmt yuv420p -c:a copy -movflags +faststart \\"{outputMp4}\\"";
+            $"-pix_fmt yuv420p -c:a copy -movflags +faststart \"{outputMp4}\"";
         var burn=await runner.RunAsync(settings.FfmpegPath,args,renderDir,ct);
         if(burn.ExitCode!=0 ||
             !File.Exists(outputMp4) ||
