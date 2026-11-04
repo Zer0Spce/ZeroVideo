@@ -595,6 +595,140 @@ public sealed class LocalImageService
         catch(HttpRequestException){return false;}
     }
 
+    /// <summary>
+    /// Restart the dedicated ComfyUI for LivePortrait. A previous ZeroVideo
+    /// session can leave its Python server on :8188 after _serverProcess is
+    /// lost. Reclaim only a verified instance using our exact embedded
+    /// Python, running ComfyUI/main.py and owning the port, and only after
+    /// user confirmation. Never kill all python.exe processes.
+    /// </summary>
+    public async Task<string> RestartForLivePortraitAsync(
+        Action<string>? log, Func<string,bool> confirmOldInstance,
+        CancellationToken ct)
+    {
+        if (_serverProcess is { HasExited: false })
+        {
+            log?.Invoke("Restarting the ComfyUI Python process owned by this ZeroVideo session...");
+            await RestartOwnedServerAsync(log,ct);
+            return "Restarted ZeroVideo-owned ComfyUI at http://127.0.0.1:8188.";
+        }
+
+        if (!await IsOnlineAsync(ct))
+        {
+            log?.Invoke("ComfyUI is offline; starting a new local instance...");
+            await StartAsync(log,ct);
+            return "Started new ZeroVideo ComfyUI at http://127.0.0.1:8188.";
+        }
+
+        var pid = await FindStaleOwnedComfyUiOnPortAsync(ct);
+        if (pid is null)
+            throw new InvalidOperationException(
+                "ComfyUI is already responding at 127.0.0.1:8188, but it is not " +
+                "a verifiable ZeroVideo-managed Python instance. The restart " +
+                "button will not terminate unrelated Python processes. Close " +
+                "that ComfyUI server using its own window/Task Manager, then " +
+                "click Start / Restart ComfyUI again.");
+
+        var warning =
+            "An older ZeroVideo ComfyUI process (PID " + pid.Value +
+            ") is still listening on port 8188. ZeroVideo can safely " +
+            "restart this specific Python instance to reload LivePortrait nodes." +
+            Environment.NewLine + Environment.NewLine +
+            "Running ComfyUI generations in that process will be interrupted. " +
+            "Other Python processes and OmniVoice will remain untouched." +
+            Environment.NewLine + Environment.NewLine +
+            "Restart this ZeroVideo ComfyUI process?";
+        if (!confirmOldInstance(warning))
+        {
+            log?.Invoke("ComfyUI restart canceled; no Python process was stopped.");
+            return "Restart canceled; existing ComfyUI was not changed.";
+        }
+
+        // Reconfirm ownership immediately before termination, protecting
+        // against stale PIDs and unrelated processes taking over the port.
+        if (await FindStaleOwnedComfyUiOnPortAsync(ct) != pid)
+            throw new IOException(
+                "The ComfyUI process changed during confirmation. Nothing was " +
+                "terminated. Click Restart again to inspect the current process.");
+
+        using (var oldProcess = Process.GetProcessById(pid.Value))
+        {
+            log?.Invoke("Stopping only verified stale ZeroVideo ComfyUI PID " +
+                pid.Value + "...");
+            if (!oldProcess.HasExited)
+            {
+                oldProcess.Kill(entireProcessTree:true);
+                await oldProcess.WaitForExitAsync(ct);
+            }
+        }
+        // The old port can remain bound briefly while its child processes exit.
+        for (var i=0; i<15 && await IsOnlineAsync(ct); i++)
+            await Task.Delay(500,ct);
+        if (await IsOnlineAsync(ct))
+            throw new IOException(
+                "Port 8188 is still occupied after stopping the old ZeroVideo " +
+                "process. ZeroVideo will not start another GPU-heavy server. " +
+                "Inspect the ComfyUI process in Task Manager.");
+
+        await StartAsync(log,ct);
+        return "Restarted the older ZeroVideo ComfyUI process at " +
+               "http://127.0.0.1:8188. LivePortrait nodes can now reload.";
+    }
+
+    private async Task<int?> FindStaleOwnedComfyUiOnPortAsync(CancellationToken ct)
+    {
+        // Built-in Windows commands identify the TCP LISTENING owner
+        // *and* the executable/command line; no extra NuGet dependencies.
+        // EncodedCommand avoids quoting user-supplied paths in the shell.
+        const string script =
+            "$owners = @(Get-NetTCPConnection -State Listen -LocalPort 8188 " +
+            "-ErrorAction SilentlyContinue | " +
+            "Select-Object -ExpandProperty OwningProcess -Unique); " +
+            "if($owners.Count -gt 0) { " +
+            "Get-CimInstance Win32_Process -Filter \"Name = 'python.exe'\" | " +
+            "Where-Object { $owners -contains $_.ProcessId } | " +
+            "Select-Object ProcessId,ExecutablePath,CommandLine | " +
+            "ConvertTo-Json -Compress }";
+        var base64=Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script));
+        var output=await new ProcessRunner().RunAsync("powershell.exe",
+            "-NoProfile -NonInteractive -EncodedCommand " + base64, PortableRoot,ct);
+        if(output.ExitCode!=0 || string.IsNullOrWhiteSpace(output.StdOut))
+            return null;
+
+        using var json=JsonDocument.Parse(output.StdOut);
+        var root=json.RootElement;
+        var candidates=root.ValueKind==JsonValueKind.Array
+            ? root.EnumerateArray().Select(x=>x.Clone()).ToArray()
+            : root.ValueKind==JsonValueKind.Object
+                ? [root.Clone()]
+                : [];
+
+        foreach(var entry in candidates)
+        {
+            if(!entry.TryGetProperty("ProcessId",out var pidField) ||
+               !pidField.TryGetInt32(out var pid) || pid<1 ||
+               !entry.TryGetProperty("ExecutablePath",out var exeField) ||
+               !entry.TryGetProperty("CommandLine",out var cmdField))
+                continue;
+            var exe=exeField.GetString();
+            var cmd=cmdField.GetString()??"";
+            if(string.IsNullOrWhiteSpace(exe) || !File.Exists(exe))
+                continue;
+            if(!string.Equals(Path.GetFullPath(exe),
+                Path.GetFullPath(PortablePython),StringComparison.OrdinalIgnoreCase))
+                continue;
+            if(!cmd.Contains("ComfyUI/main.py",StringComparison.OrdinalIgnoreCase) &&
+               !cmd.Contains("ComfyUI\\main.py",StringComparison.OrdinalIgnoreCase))
+                continue;
+            if(!System.Text.RegularExpressions.Regex.IsMatch(cmd,
+                @"--port(?:\s+|=)[""']?8188\b",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                continue;
+            return pid;
+        }
+        return null;
+    }
+
     public async Task RestartOwnedServerAsync(Action<string>? log,CancellationToken ct)
     {
         // Do not kill an external ComfyUI session. Only restart the server
