@@ -1382,7 +1382,26 @@
                          Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
             </StackPanel>
             <Separator Margin="0,18"/>
-            <TextBlock Text="Local AI Image Animation (FramePack)" FontSize="18" FontWeight="SemiBold"/>
+            <TextBlock Text="Local AI Image Animation — Wan2.2 / ComfyUI" FontSize="18" FontWeight="SemiBold"/>
+            <TextBlock Text="RECOMMENDED FOR RTX 3060 8GB: Wan2.2 TI2V-5B uses ZeroVideo's existing ComfyUI engine (no separate FramePack Python/server). Three model files total around 17 GB. First install ComfyUI under Local Images if needed; install the video models below."
+                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,7"/>
+            <WrapPanel Margin="0,3,0,7">
+              <Button Content="1. Install Wan2.2 Video Models (~17 GB)" Style="{StaticResource PrimaryButton}"
+                      Command="{Binding InstallWanVideoCommand}"/>
+              <Button Content="2. Start ComfyUI for Video" Style="{StaticResource SecondaryButton}"
+                      Command="{Binding StartWanVideoCommand}"/>
+              <Button Content="3. Test ComfyUI Video Connection" Style="{StaticResource SecondaryButton}"
+                      Command="{Binding TestWanVideoCommand}"/>
+            </WrapPanel>
+            <TextBlock Text="{Binding WanVideoStatus}" Foreground="{StaticResource AccentHover}"
+                       TextWrapping="Wrap" Margin="0,3,0,7"/>
+            <Label Content="ACTIVE IMAGE ANIMATION ENGINE"/>
+            <ComboBox Width="300" HorizontalAlignment="Left"
+                      ItemsSource="{Binding AiImageAnimationEngines}"
+                      SelectedItem="{Binding Settings.AiImageAnimationEngine, Mode=TwoWay}"/>
+            <TextBlock Text="For subtle motion, use 3–4 seconds, a maximum of 1–3 AI clips per video, and leave FFmpeg camera motion enabled. Wan2.2 preserves originals and automatically falls back when unavailable; VRAM offloading can be slow."
+                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,9"/>
+            <TextBlock Text="Legacy AI Image Animation (FramePack — optional)" FontSize="16" FontWeight="SemiBold" Margin="0,10,0,0"/>
             <TextBlock Text="ZeroVideo preserves original images. Download and install the official FramePack Windows package here (1.81 GB), then start its local server. The separate required model download on first start exceeds 30 GB. Existing FramePack installations are reused."
                        Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,8"/>
             <WrapPanel Margin="0,2,0,7">
@@ -1401,9 +1420,8 @@
             <TextBlock Text="{Binding FramePackSetupStatus}" Foreground="{StaticResource AccentHover}"
                        TextWrapping="Wrap" Margin="0,2,0,9"/>
             <TextBlock Text="Official: https://github.com/lllyasviel/FramePack" Foreground="{StaticResource AccentHover}" Margin="0,3,0,7"/>
-            <Label Content="ANIMATION ENGINE"/>
-            <ComboBox Width="280" HorizontalAlignment="Left" ItemsSource="{Binding AiImageAnimationEngines}"
-                      SelectedItem="{Binding Settings.AiImageAnimationEngine, Mode=TwoWay}"/>
+            <TextBlock Text="FramePack settings below apply only when you select FramePack (Local). Wan2.2 ignores these paths."
+                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,7"/>
             <Label Content="FRAMEPACK PYTHON.EXE (FROM ITS OWN INSTALLATION)" Margin="0,8,0,0"/>
             <TextBox Width="740" Text="{Binding Settings.FramePackPythonPath, UpdateSourceTrigger=PropertyChanged}"/>
             <Label Content="FRAMEPACK SERVER URL (LOCAL ONLY)" Margin="0,8,0,0"/>
@@ -1418,7 +1436,7 @@
             <TextBox Width="120" Text="{Binding Settings.FramePackClipSeconds, UpdateSourceTrigger=LostFocus}"/>
             <Label Content="MAX AI CLIPS PER VIDEO (0-30; OTHERS USE CAMERA MOTION)" Margin="0,8,0,0"/>
             <TextBox Width="120" Text="{Binding Settings.FramePackMaxClipsPerVideo, UpdateSourceTrigger=LostFocus}"/>
-            <TextBlock Text="FramePack first run downloads more than 30 GB of model weights. On RTX 3060 8 GB generation is slow. FramePack failure does not stop video rendering; Stop/Force Stop cancels ZeroVideo-owned adapters. Click Save settings after changing these options."
+            <TextBlock Text="The clip length and AI clip limit above apply to both Wan2.2 and FramePack. When generating with Wan2.2, stop any GPU-heavy FramePack or OmniVoice jobs. Click Save settings after changes."
                        Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
             <Separator Margin="0,18"/>
             <TextBlock Text="Custom background music" FontSize="18" FontWeight="SemiBold"/>
