@@ -28,7 +28,7 @@ public sealed class ChatGptBrowserService(BrowserSession browser, AutomationProf
             catch (Exception ex) when (attempt == 1)
             {
                 log?.Invoke($"Outline JSON was invalid ({ex.Message}). Retrying in the same project chat.");
-                prompt += "\nIMPORTANT: Your previous response could not be parsed. Return one complete valid JSON object only. Do not use markdown fences.";
+                prompt += "\nIMPORTANT: Your previous response could not be parsed. Return one complete valid JSON object inside a fenced json code block, with no text outside the block.";
             }
         }
         throw new InvalidDataException("ChatGPT did not return a valid outline after two attempts.");
@@ -56,7 +56,7 @@ public sealed class ChatGptBrowserService(BrowserSession browser, AutomationProf
             catch (Exception ex) when (attempt == 1)
             {
                 log?.Invoke($"Chapter {metadata.Number} JSON was invalid ({ex.Message}). Retrying in the same project chat.");
-                prompt += "\nIMPORTANT: Your previous response could not be parsed. Return one complete valid JSON object only, with all scenes included and no markdown fences.";
+                prompt += "\nIMPORTANT: Your previous response could not be parsed. Return one complete valid JSON object inside a fenced json code block, with all scenes included and no text outside the block.";
             }
         }
         throw new InvalidDataException($"ChatGPT did not return valid JSON for chapter {metadata.Number} after two attempts.");
@@ -216,7 +216,7 @@ copyrighted photograph.
         var prompt = $"Generate exactly {count} distinct, factual and compelling video ideas for the niche: {niche}. " +
             "Use curiosity-driven YouTube/TikTok titles and specific opening hooks that deliver on the title. " +
             "Avoid repetition, invented facts, misleading clickbait and guaranteed-view claims. " +
-            "IMPORTANT: Return ONLY one complete valid JSON object, without markdown or commentary. " +
+            "IMPORTANT: Return one complete valid JSON object inside a fenced json code block, with no other commentary. " +
             "Required JSON schema: " +
             """ 
             {"response_type":"zerovideo_ideas_v1","niche":"the requested niche","ideas":[{"title":"Specific video title","hook":"Compelling opening hook"}]}
@@ -595,8 +595,11 @@ copyrighted photograph.
                     generating,
                     stableJson,
                     DateTime.UtcNow - unchangedMainSince,
-                    !string.IsNullOrWhiteSpace(visibleMain) &&
-                        visibleMain.Contains(freshJson, StringComparison.Ordinal)))
+                    (!string.IsNullOrWhiteSpace(codeBlock) &&
+                        string.Equals(ChatGptResponseRecovery.FindJsonInCodeBlock(
+                            codeBlock, requestId), freshJson, StringComparison.Ordinal)) ||
+                    (!string.IsNullOrWhiteSpace(visibleMain) &&
+                        visibleMain.Contains(freshJson, StringComparison.Ordinal))))
                 {
                     if (generating)
                         log?.Invoke("ChatGPT: Stop control still visible, but completed JSON and full conversation text remained unchanged for 12 seconds; recovering reply.");

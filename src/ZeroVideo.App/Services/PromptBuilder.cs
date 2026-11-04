@@ -35,7 +35,7 @@ Requirements:
 - If the topic is current or factual, do not invent claims or sources. When genuinely known, include useful source URLs or source names; otherwise leave sources empty.
 - Avoid generic chapter names like "More Information".
 
-Return ONLY valid JSON, no markdown and no commentary, using exactly this shape:
+Return exactly ONE Markdown fenced json code block with no text outside the block, using exactly this shape:
 {
   "title": "video title",
   "sources": ["source URL or source name"],
@@ -151,7 +151,7 @@ Requirements:
 - Use role from: hook, setup, detail, evidence, transition, reveal, ending.
 - Do not fabricate specific quotes, documents, statistics, or events.
 
-Return ONLY valid JSON, no markdown and no commentary. Do NOT duplicate the narration in a separate chapter-level narration field. Use exactly:
+Return exactly ONE Markdown fenced json code block with no text outside the block. Do NOT duplicate the narration in a separate chapter-level narration field. Use exactly:
 {
   "number": {{chapter.Number}},
   "title": "{{Escape(chapter.Title)}}",
