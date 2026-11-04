@@ -308,14 +308,19 @@ public sealed class PuLidSetupService(
     public static bool NeedsComfyFluxCompatibilityRepair()
     {
         var plugin = Path.Combine(Folder, "pulidflux.py");
-        if (!File.Exists(plugin) || !File.Exists(FluxModelSource))
+        var hook = Path.Combine(Folder, "PulidFluxHook.py");
+        if (!File.Exists(plugin) || !File.Exists(hook) ||
+            !File.Exists(FluxModelSource))
             return false;
         var current = File.ReadAllText(FluxModelSource);
         return current.Contains("timestep_zero_index",
                 StringComparison.Ordinal) &&
-            File.ReadAllText(plugin).Contains(
+            (File.ReadAllText(plugin).Contains(
                 "wrappers_name, pulid_outer_sample_wrappers_with_override)",
-                StringComparison.Ordinal);
+                StringComparison.Ordinal) ||
+             File.ReadAllText(hook).Contains(
+                "transformer_options = extra_options[\\\"transformer_options\\\"]",
+                StringComparison.Ordinal));
     }
 
     private async Task RepairComfyFluxCompatibilityAsync(
