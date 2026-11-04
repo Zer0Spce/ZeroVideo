@@ -5,8 +5,9 @@ using ZeroVideo.App.Models;
 
 namespace ZeroVideo.App.Services;
 
-public sealed class FfmpegService(ProcessRunner runner, DependencyService dependencies)
+public sealed class FfmpegService(ProcessRunner runner, DependencyService dependencies, LocalImageService? localImages = null)
 {
+    private readonly LivePortraitService _livePortrait = new(localImages ?? new LocalImageService());
     public async Task ValidateAsync(ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
         await EnsureToolsAsync(settings, log, ct);
@@ -97,6 +98,7 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         Directory.CreateDirectory(exportsDir);
 
         var chapterOutputs = new List<string>();
+        var chapterTimings = new List<NarrationTimelineService.ChapterTiming>();
         var effects = new RenderEffectsState();
         foreach (var chapter in project.Chapters)
         {
@@ -106,7 +108,24 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
 
             var audioSeconds = await ProbeDurationAsync(chapter.AudioPath, settings, ct);
             if (audioSeconds <= 0) audioSeconds = Math.Max(1, chapter.TargetSeconds);
-            NormalizeSceneDurations(chapter, audioSeconds);
+            // One authoritative timing plan for the scene visuals, ASS
+            // captions and exported SRT. Distribute scene time based on
+            // actual spoken script and the chapter's detected voice pauses.
+            var voiceActivity = await DetectNarrationSpeechAsync(
+                chapter, settings, audioSeconds, log, ct);
+            var timing = NarrationTimelineService.Plan(
+                chapter, audioSeconds, voiceActivity);
+            chapterTimings.Add(timing);
+            for (var i = 0; i < chapter.Scenes.Count; i++)
+                chapter.Scenes[i].TargetSeconds = timing.Scenes[i].Duration;
+            chapter.TargetSeconds = (int)Math.Round(audioSeconds);
+            if (!NarrationTimelineService.ScriptsMatch(chapter))
+                log?.Invoke($"Chapter {chapter.Number}: saved scene text differs " +
+                    "from the original chapter TTS. Caption text will follow " +
+                    "the actual spoken chapter script rather than mixing scene drafts.");
+            log?.Invoke($"Chapter {chapter.Number}: aligned {timing.Scenes.Count} " +
+                $"scene(s) to {audioSeconds:0.00}s narration with " +
+                $"{timing.Speech.Count} detected speech interval(s).");
 
             var visual = await RenderChapterVisualAsync(project, chapter, settings, renderDir, effects, log, ct);
             var output = Path.Combine(renderDir, $"chapter-{chapter.Number:00}-final.mp4");
@@ -143,7 +162,33 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         }
 
         if (project.Options.GenerateCaptions)
-            await WriteSrtAsync(project, Path.ChangeExtension(finalPath, ".srt"), ct);
+            await WriteSrtAsync(project, Path.ChangeExtension(finalPath, ".srt"),
+                chapterTimings, ct);
+
+        if (project.Options.BurnInBoldCaptions && project.AspectRatio == "9:16")
+        {
+            var captionAss = Path.Combine(renderDir, "styled-video-captions.ass");
+            if (await WriteBoldCaptionAssAsync(
+                project, chapterTimings, captionAss, log, ct))
+            {
+                var captionedMp4 = Path.Combine(renderDir, "video-with-styled-captions.mp4");
+                log?.Invoke("Rendering bold vertical captions: smaller all-white uppercase text, " +
+                    "black outline, timed to detected narration speech and pauses.");
+                // 'ass' supports color override spans; use a short relative
+                // filename to avoid Windows drive-letter filter escaping.
+                var renderArgs = $"-y -i \"{finalPath}\" -vf \"ass=styled-video-captions.ass\" " +
+                    $"-map 0:v:0 -map 0:a:0 -c:v libx264 -preset medium -crf 20 " +
+                    $"-pix_fmt yuv420p -c:a copy -movflags +faststart \"{captionedMp4}\"";
+                var burn = await runner.RunAsync(settings.FfmpegPath, renderArgs, renderDir, ct);
+                if (burn.ExitCode != 0 || !File.Exists(captionedMp4))
+                    throw new InvalidOperationException("Bold caption burn-in failed. " +
+                        "Check that FFmpeg has the libass subtitle filter. " +
+                        (burn.StdErr.Length > 1000 ? burn.StdErr[^1000..] : burn.StdErr));
+                File.Copy(captionedMp4, finalPath, true);
+                File.Delete(captionedMp4);
+                log?.Invoke("Bold captions embedded in final vertical MP4.");
+            }
+        }
 
         await ValidateAudibleAudioAsync(finalPath, settings, "Final video", log, ct);
         return finalPath;
@@ -162,55 +207,115 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
             var mediaItems = ProjectMedia.FindAll(project, chapter, scene).ToList();
             if (mediaItems.Count == 0)
             {
-                var fallback = FindNearestTimelineMedia(project, chapter, scene);
+                var fallback = FindScriptAlignedTimelineMedia(project, chapter, scene);
                 if (fallback is not null)
                 {
                     mediaItems.Add(fallback.Path);
-                    log?.Invoke($"Scene {chapter.Number}.{scene.Number}: no direct media; reusing nearby scene {fallback.ChapterNumber}.{fallback.SceneNumber} instead of rendering an empty frame.");
+                    log?.Invoke($"Scene {chapter.Number}.{scene.Number}: missing direct media. " +
+                        $"Reusing script-relevant visual {fallback.ChapterNumber}.{fallback.SceneNumber} " +
+                        "based on matching subject, location and evidence.");
                 }
             }
 
             if (mediaItems.Count == 0)
             {
-                var seconds = Math.Max(1.0, scene.TargetSeconds);
-                var duration = F(seconds);
+                var seconds = Math.Max(0.25, scene.TargetSeconds);
+                var hasNextScene = !ReferenceEquals(scene, chapter.Scenes[^1]);
+                var renderSeconds = seconds + (hasNextScene ? configuredTransition : 0);
+                var duration = F(renderSeconds);
                 var output = Path.Combine(renderDir, $"c{chapter.Number:00}-s{scene.Number:000}.mp4");
                 log?.Invoke($"Scene {chapter.Number}.{scene.Number}: no media exists anywhere in the project; using the branded project backdrop.");
                 var args = $"-y -f lavfi -i \"color=c=0x241C30:s={w}x{h}:r=30:d={duration}\" -vf \"drawbox=x=0:y=0:w=iw:h=ih/3:color=0x34254A@0.75:t=fill,drawbox=x=0:y=ih*0.72:w=iw:h=ih*0.28:color=0x17151F@0.82:t=fill\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
                 var result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
                 if (result.ExitCode != 0) throw new InvalidOperationException($"Scene render failed ({chapter.Number}.{scene.Number}): {result.StdErr}");
-                clips.Add(new RenderedClip(output, seconds, "fade"));
+                clips.Add(new RenderedClip(output, renderSeconds, "fade"));
                 continue;
             }
 
-            var perVisualSeconds = Math.Max(1.0, scene.TargetSeconds / mediaItems.Count);
+            var perVisualSeconds = Math.Max(0.25, scene.TargetSeconds / mediaItems.Count);
             for (var mediaIndex = 0; mediaIndex < mediaItems.Count; mediaIndex++)
             {
                 var media = mediaItems[mediaIndex];
                 var transition = ChooseTransitionPreset(project, effects);
-                var renderSeconds = perVisualSeconds + configuredTransition;
+                // Every scene/visual receives only the transition overlap
+                // that will be consumed by the next clip. The final clip
+                // has NO extra frames; this keeps the chapter aligned with
+                // exactly its TTS audio duration.
+                var isLast = ReferenceEquals(scene, chapter.Scenes[^1]) &&
+                    mediaIndex == mediaItems.Count - 1;
+                var renderSeconds = perVisualSeconds +
+                    (isLast ? 0 : configuredTransition);
                 var duration = F(renderSeconds);
                 var suffix = mediaItems.Count > 1 ? $"-v{mediaIndex + 1:00}" : "";
                 var output = Path.Combine(renderDir, $"c{chapter.Number:00}-s{scene.Number:000}{suffix}.mp4");
                 string args;
                 string motion;
 
-                if (IsVideo(media))
+                // LivePortrait animates only detected faces. No generative
+                // full-scene video diffusion, and no Wan/FramePack service.
+                // Scenes with no face gracefully use existing FFmpeg motion.
+                string? aiClip = null;
+                var wantsPortrait = settings.AiImageAnimationEngine == "LivePortrait (Local)";
+                var maxClips = Math.Clamp(settings.LivePortraitMaxClipsPerVideo, 0, 30);
+                if (!IsVideo(media) && wantsPortrait &&
+                    effects.AiAttemptCount < maxClips &&
+                    await _livePortrait.CanAnimateAsync(media, log, ct))
                 {
-                    motion = "source video";
+                    // Only count scenes with a detected, sufficiently large
+                    // face. Environment-only scenes must not exhaust the
+                    // per-video LivePortrait limit.
+                    effects.AiAttemptCount++;
+                    aiClip = await _livePortrait.TryAnimateAsync(
+                        media, project, scene, settings, log, ct);
+                    if (aiClip is not null)
+                    {
+                        try
+                        {
+                            if (await ProbeDurationAsync(aiClip, settings, ct) < 1.0)
+                                throw new InvalidDataException("Animated face clip too short.");
+                            effects.AiGeneratedClipCount++;
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception ex)
+                        {
+                            log?.Invoke("LivePortrait clip invalid; using source still: " + ex.Message);
+                            aiClip = null;
+                        }
+                    }
+                }
+                var renderMedia = aiClip ?? media;
+                if (IsVideo(renderMedia))
+                {
+                    motion = aiClip is null ? "source video"
+                        : "AI subtle facial motion (LivePortrait)";
                     var vf = $"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h},fps=30";
                     var styleFx = BuildStyleEffectFilter(project);
                     if (!string.IsNullOrWhiteSpace(styleFx)) vf += "," + styleFx;
-                    args = $"-y -stream_loop -1 -i \"{media}\" -t {duration} -vf \"{vf}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
+                    args = $"-y -stream_loop -1 -i \"{renderMedia}\" -t {duration} -vf \"{vf}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
                 }
                 else
                 {
-                    motion = ChooseMotionPreset(project, scene, effects);
+                    motion = settings.AiImageAnimationEngine == "Off" ||
+                        (settings.AiImageAnimationEngine == "LivePortrait (Local)" &&
+                         !settings.LivePortraitFallbackToCamera)
+                        ? "static" : ChooseMotionPreset(project, scene, effects);
                     args = BuildStillRenderArgs(media, output, renderSeconds, w, h, motion, project);
                 }
 
                 log?.Invoke($"Scene {chapter.Number}.{scene.Number}: effect {motion}; transition {transition}; {renderSeconds:0.0}s render segment.");
                 var result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
+                if (result.ExitCode != 0 && aiClip is not null)
+                {
+                    // An AI clip may decode but still be incompatible with
+                    // the main renderer. Retry against the source still.
+                    log?.Invoke("AI video render failed; falling back to original illustrated image.");
+                    motion = settings.AiImageAnimationEngine == "Off" ||
+                        (settings.AiImageAnimationEngine == "LivePortrait (Local)" &&
+                         !settings.LivePortraitFallbackToCamera)
+                        ? "static" : ChooseMotionPreset(project, scene, effects);
+                    args = BuildStillRenderArgs(media, output, renderSeconds, w, h, motion, project);
+                    result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
+                }
                 if (result.ExitCode != 0)
                     throw new InvalidOperationException($"Scene render failed ({chapter.Number}.{scene.Number}, visual {mediaIndex + 1}): {result.StdErr}");
 
@@ -259,16 +364,58 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
             return chapterVisual;
         }
 
-        log?.Invoke($"Chapter {chapter.Number}: advanced transition render failed; falling back to safe concatenation. {result.StdErr}");
-        return await ConcatRenderedClipsAsync(chapter, settings, renderDir, clips, chapterVisual, ct);
+        log?.Invoke($"Chapter {chapter.Number}: advanced transition render failed; " +
+            "rebuilding a cut-only scene timeline without the extra " +
+            "crossfade frames, preserving audio/visual boundaries. " + result.StdErr);
+        return await ConcatRenderedClipsAsync(chapter, settings, renderDir,
+            clips, chapterVisual, ct, configuredTransition);
     }
 
-    private async Task<string> ConcatRenderedClipsAsync(ProjectChapter chapter, ZeroVideoSettings settings, string renderDir, List<RenderedClip> clips, string chapterVisual, CancellationToken ct)
+    private async Task<string> ConcatRenderedClipsAsync(
+        ProjectChapter chapter, ZeroVideoSettings settings, string renderDir,
+        List<RenderedClip> clips, string chapterVisual, CancellationToken ct,
+        double removeTransitionOverlap = 0)
     {
-        var list = Path.Combine(renderDir, $"chapter-{chapter.Number:00}-visuals.txt");
-        await File.WriteAllLinesAsync(list, clips.Select(p => $"file '{p.Path.Replace("'", "'\\''")}'"), ct);
-        var concat = await runner.RunAsync(settings.FfmpegPath, $"-y -f concat -safe 0 -i \"{list}\" -c copy \"{chapterVisual}\"", renderDir, ct);
-        if (concat.ExitCode != 0) throw new InvalidOperationException($"Chapter visual concat failed: {concat.StdErr}");
+        if (removeTransitionOverlap <= 0)
+        {
+            var list = Path.Combine(renderDir,
+                $"chapter-{chapter.Number:00}-visuals.txt");
+            await File.WriteAllLinesAsync(list, clips.Select(p =>
+                $"file '{p.Path.Replace("'", "'\\''")}'"), ct);
+            var concat = await runner.RunAsync(settings.FfmpegPath,
+                $"-y -f concat -safe 0 -i \"{list}\" -c copy \"{chapterVisual}\"",
+                renderDir, ct);
+            if (concat.ExitCode != 0)
+                throw new InvalidOperationException(
+                    $"Chapter visual concat failed: {concat.StdErr}");
+            return chapterVisual;
+        }
+
+        // Advanced xfade failed. If we simply concatenate original clips,
+        // every clip still contains its unused 0.35s transition tail:
+        // scene N's audio then plays over scene N-1's image. Trim each
+        // crossfade pad before rebuilding a cut-only 30fps timeline.
+        var args = new StringBuilder("-y");
+        var filter = new StringBuilder();
+        for (var i = 0; i < clips.Count; i++)
+        {
+            args.Append($" -i \"{clips[i].Path}\"");
+            var duration = Math.Max(0.10, clips[i].DurationSeconds -
+                (i < clips.Count - 1 ? removeTransitionOverlap : 0));
+            filter.Append($"[{i}:v]trim=duration={F(duration)},")
+                  .Append($"setpts=PTS-STARTPTS,fps=30[v{i}];");
+        }
+        for (var i = 0; i < clips.Count; i++)
+            filter.Append($"[v{i}]");
+        filter.Append($"concat=n={clips.Count}:v=1:a=0[outv]");
+        args.Append($" -filter_complex \"{filter}\" -map \"[outv]\"")
+            .Append($" -an -c:v libx264 -preset medium -crf 18")
+            .Append($" -pix_fmt yuv420p \"{chapterVisual}\"");
+        var built = await runner.RunAsync(settings.FfmpegPath,
+            args.ToString(), renderDir, ct);
+        if (built.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"Scene-aligned fallback concat failed: {built.StdErr}");
         return chapterVisual;
     }
 
@@ -330,6 +477,20 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         var dynamicStep = F(step * 2.5);
         string Smooth(string expr) => expr + $",scale={w}:{h}:flags=lanczos,fps=30";
 
+        if (motion == "subtle-life")
+        {
+            // Periodic 3–5-second micro-pan, micro-zoom, and ambient light
+            // breathing. Every cycle returns to the initial pose without
+            // changing the illustrated subject or adding fabricated details.
+            var loop = Math.Clamp(options.SubtleImageAnimationSeconds, 3.0, 5.0);
+            var phase = F(2.0 * Math.PI / (loop * 30.0));
+            return Smooth($"zoompan=z='1.044+0.004*sin(on*{phase})':" +
+                $"x='(iw-iw/zoom)*(0.5+0.08*sin(on*{phase}))':" +
+                $"y='(ih-ih/zoom)*(0.5+0.06*(1-cos(on*{phase})))':" +
+                $"d={frames}:s={sw}x{sh}:fps=30") +
+                $",eq=brightness='0.002*sin(n*{phase})':eval=frame";
+        }
+
         if (!options.ContinuousMotion)
         {
             return motion switch
@@ -363,6 +524,8 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         if (!project.Options.StyleAwareEffects)
             return $"eq=contrast={F(1.015 + 0.012 * strength)}:saturation={F(1.0 + 0.01 * strength)},vignette={vignette}";
 
+        if (style.Contains("neo-noir"))
+            return $"eq=contrast={F(1.055 + 0.012 * strength)}:saturation={F(0.96 + 0.015 * strength)},vignette={F(0.28 + 0.04 * strength)}";
         if (style.Contains("mystery") || style.Contains("conspiracy"))
             return $"eq=contrast={F(1.035 + 0.015 * strength)}:brightness={F(-0.006 * strength)}:saturation={F(0.95 - 0.025 * strength)},vignette={F(0.32 + 0.08 * strength)},noise=alls={noise}:allf=t+u";
         if (style.Contains("history") || style.Contains("archival"))
@@ -385,6 +548,8 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
     {
         if (!project.Options.AddMotion || project.Options.MotionStyle.Equals("None", StringComparison.OrdinalIgnoreCase))
             return "static";
+        if (project.Options.SubtleImageAnimation)
+            return "subtle-life";
 
         var style = (project.Style ?? "").ToLowerInvariant();
         var requested = project.Options.MotionStyle ?? "Automatic";
@@ -492,36 +657,50 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
 
     private static string F(double value) => value.ToString("0.#####", CultureInfo.InvariantCulture);
 
-    private static TimelineMedia? FindNearestTimelineMedia(VideoProject project, ProjectChapter currentChapter, ProjectScene currentScene)
+    private static TimelineMedia? FindScriptAlignedTimelineMedia(
+        VideoProject project, ProjectChapter currentChapter,
+        ProjectScene currentScene)
     {
-        var timeline = project.Chapters
-            .SelectMany(chapter => chapter.Scenes.Select(scene => (Chapter: chapter, Scene: scene)))
-            .ToList();
-
-        var currentIndex = timeline.FindIndex(x =>
-            ReferenceEquals(x.Chapter, currentChapter) && ReferenceEquals(x.Scene, currentScene));
-
-        if (currentIndex < 0)
-            currentIndex = timeline.FindIndex(x => x.Chapter.Number == currentChapter.Number && x.Scene.Number == currentScene.Number);
-        if (currentIndex < 0) return null;
-
-        // Prefer the previous scene so a missing visual naturally holds the last real image.
-        for (var i = currentIndex - 1; i >= 0; i--)
+        // A missing scene visual must not silently become an unrelated
+        // image merely because it came immediately before in the queue.
+        // Prefer an existing visual illustrating the same specific subject,
+        // evidence or location. If none matches, use the neutral backdrop.
+        var target = SceneVisualPlanService.Keywords(currentScene);
+        if(target.Count==0) return null;
+        var bestScore = 0.0;
+        TimelineMedia? best = null;
+        var timeline = project.Chapters.SelectMany(ch =>
+            ch.Scenes.Select(sc => (Chapter:ch,Scene:sc))).ToList();
+        var current = timeline.FindIndex(x =>
+            ReferenceEquals(x.Chapter,currentChapter) &&
+            ReferenceEquals(x.Scene,currentScene));
+        for (var i = 0; i < timeline.Count; i++)
         {
-            var media = ProjectMedia.FindAll(project, timeline[i].Chapter, timeline[i].Scene);
-            if (media.Count > 0)
-                return new TimelineMedia(media[^1], timeline[i].Chapter.Number, timeline[i].Scene.Number);
+            var item = timeline[i];
+            if (ReferenceEquals(item.Scene,currentScene) &&
+                ReferenceEquals(item.Chapter,currentChapter)) continue;
+            var media = ProjectMedia.FindAll(project,item.Chapter,item.Scene);
+            if(media.Count==0) continue;
+            var found=SceneVisualPlanService.Keywords(item.Scene);
+            var shared=target.Count(w=>found.Contains(w));
+            // A single generic shared word like "investigation" is
+            // insufficient evidence that the visual matches narration.
+            if(shared<2 && target.Count>2)continue;
+            var relevance=SceneVisualPlanService.Relevance(
+                currentScene,item.Scene);
+            if(relevance<0.22)continue;
+            var distance=current<0?20:Math.Abs(current-i);
+            var score=relevance+
+                (item.Chapter.Number==currentChapter.Number?0.12:0)-
+                Math.Min(distance*0.012,0.30);
+            if(score>bestScore)
+            {
+                bestScore=score;
+                best=new TimelineMedia(media[0],item.Chapter.Number,
+                    item.Scene.Number);
+            }
         }
-
-        // At the beginning of a project/chapter, borrow the next available visual.
-        for (var i = currentIndex + 1; i < timeline.Count; i++)
-        {
-            var media = ProjectMedia.FindAll(project, timeline[i].Chapter, timeline[i].Scene);
-            if (media.Count > 0)
-                return new TimelineMedia(media[0], timeline[i].Chapter.Number, timeline[i].Scene.Number);
-        }
-
-        return null;
+        return best;
     }
 
     private static bool IsVideo(string path)
@@ -537,24 +716,178 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         chapter.TargetSeconds = (int)Math.Round(actualAudioSeconds);
     }
 
-    private static async Task WriteSrtAsync(VideoProject project, string path, CancellationToken ct)
+    // FFmpeg's silencedetect runs on the ORIGINAL chapter TTS track (before
+    // background music is mixed), so quiet music cannot skew subtitle timing.
+    // This is pause-aware speech timing, not phoneme/word forced alignment.
+    private async Task<List<(double Start, double End)>> DetectNarrationSpeechAsync(
+        ProjectChapter chapter, ZeroVideoSettings settings, double seconds,
+        Action<string>? log, CancellationToken ct)
+    {
+        var fallback = new List<(double Start, double End)> { (0, seconds) };
+        if (string.IsNullOrWhiteSpace(chapter.AudioPath) ||
+            !File.Exists(chapter.AudioPath) || seconds <= 0) return fallback;
+        try
+        {
+            // Silence events are emitted to stderr. The null output is local
+            // Windows FFmpeg, so it does not affect existing uploaded media.
+            var args = $"-hide_banner -nostats -i \"{chapter.AudioPath}\" " +
+                "-af silencedetect=noise=-37dB:d=0.14 -f null NUL";
+            var result = await runner.RunAsync(settings.FfmpegPath, args, ct: ct);
+            if (result.ExitCode != 0) return fallback;
+            var events = Regex.Matches(result.StdErr ?? "",
+                @"silence_(start|end):\s*(-?\d+(?:\.\d+)?)", RegexOptions.IgnoreCase);
+            if (events.Count == 0) return fallback;
+
+            var active = new List<(double Start, double End)>();
+            double? talkingFrom = 0;
+            foreach (Match match in events)
+            {
+                ct.ThrowIfCancellationRequested();
+                var type = match.Groups[1].Value;
+                if (!double.TryParse(match.Groups[2].Value, NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out var time)) continue;
+                time = Math.Clamp(time, 0, seconds);
+                if (type.Equals("start", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (talkingFrom.HasValue && time > talkingFrom.Value + 0.055)
+                        active.Add((talkingFrom.Value, time));
+                    talkingFrom = null;
+                }
+                else
+                {
+                    talkingFrom = time;
+                }
+            }
+            if (talkingFrom.HasValue && seconds > talkingFrom.Value + 0.055)
+                active.Add((talkingFrom.Value, seconds));
+            // Keep only substantial speech activity. A short quiet first/last
+            // part is fine, but detection errors must not zero the captions.
+            var total = active.Sum(x => x.End - x.Start);
+            if (active.Count == 0 || total < seconds * 0.20) return fallback;
+            log?.Invoke($"Captions chapter {chapter.Number}: analyzed voice track, " +
+                $"{active.Count} speech section(s), {total:0.0}/{seconds:0.0}s audible.");
+            return active;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            log?.Invoke($"Captions chapter {chapter.Number}: speech analysis unavailable " +
+                $"({ex.Message}); using chapter timing.");
+            return fallback;
+        }
+    }
+
+    private static double SpeechPosition(
+        IReadOnlyList<(double Start, double End)> intervals, double progress)
+    {
+        var total = intervals.Sum(x => x.End - x.Start);
+        if (total <= 0) return 0;
+        var remaining = Math.Clamp(progress, 0, 1) * total;
+        foreach (var span in intervals)
+        {
+            var duration = span.End - span.Start;
+            if (remaining <= duration) return span.Start + remaining;
+            remaining -= duration;
+        }
+        return intervals[^1].End;
+    }
+
+    // Pronunciation pace differs between short and long words; a light
+    // syllable-length estimate distributes narration between audio pauses.
+    private static double CaptionWordWeight(string word)
+    {
+        var clean = Regex.Replace(word, @"[^\p{L}\p{N}]", "");
+        return Math.Clamp(clean.Length / 4.2, 0.85, 3.4);
+    }
+
+    private async Task<bool> WriteBoldCaptionAssAsync(
+        VideoProject project,
+        IReadOnlyList<NarrationTimelineService.ChapterTiming> timelines,
+        string path, Action<string>? log, CancellationToken ct)
     {
         var sb = new StringBuilder();
-        var index = 1;
-        double cursor = 0;
+        sb.AppendLine("[Script Info]")
+          .AppendLine("ScriptType: v4.00+")
+          .AppendLine("PlayResX: 1080")
+          .AppendLine("PlayResY: 1920")
+          .AppendLine("ScaledBorderAndShadow: yes")
+          .AppendLine("WrapStyle: 2")
+          .AppendLine()
+          .AppendLine("[V4+ Styles]")
+          .AppendLine("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
+          .AppendLine("Style: Punchy,Arial Black,76,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,6,0,2,145,145,350,1")
+          .AppendLine()
+          .AppendLine("[Events]")
+          .AppendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
 
-        foreach (var chapter in project.Chapters)
-        foreach (var scene in chapter.Scenes)
+        var elapsed = 0.0;
+        var captions = 0;
+        for(var chapterIndex=0; chapterIndex<project.Chapters.Count; chapterIndex++)
         {
-            var end = cursor + scene.TargetSeconds;
-            sb.AppendLine(index++.ToString())
-              .AppendLine($"{Timestamp(cursor)} --> {Timestamp(end)}")
-              .AppendLine(scene.Narration.Trim())
-              .AppendLine();
-            cursor = end;
+            ct.ThrowIfCancellationRequested();
+            var chapter = project.Chapters[chapterIndex];
+            var timing = timelines[chapterIndex];
+            var cues = NarrationTimelineService.CaptionCues(chapter,timing);
+            foreach (var cue in cues)
+            {
+                var caption = CaptionLayoutService.Format(cue.Words);
+                if(string.IsNullOrWhiteSpace(caption)) continue;
+                sb.Append("Dialogue: 0,")
+                  .Append(AssCaptionTime(elapsed+cue.Time.Start)).Append(',')
+                  .Append(AssCaptionTime(elapsed+cue.Time.End))
+                  .Append(",Punchy,,0,0,0,,")
+                  .AppendLine(caption);
+                captions++;
+            }
+            log?.Invoke($"Captions chapter {chapter.Number}: {cues.Count} " +
+                "script phrases locked to the same scene timing as visuals.");
+            elapsed += timing.Duration;
         }
 
-        await File.WriteAllTextAsync(path, sb.ToString(), ct);
+        if (captions == 0) return false;
+        await File.WriteAllTextAsync(path, sb.ToString(), new UTF8Encoding(false), ct);
+        log?.Invoke($"Narration-synced captions written: {captions} " +
+            "non-overlapping scene-bound phrases; all white, maximum 2 lines, " +
+            "42–76pt with protected side margins and no automatic line wraps.");
+        return true;
+    }
+
+    private static string AssCaptionTime(double seconds)
+    {
+        var ticks = Math.Max(0, (long)Math.Round(seconds * 100.0));
+        var hh = ticks / 360000;
+        var mm = ticks / 6000 % 60;
+        var ss = ticks / 100 % 60;
+        var cc = ticks % 100;
+        return string.Format(CultureInfo.InvariantCulture, "{0}:{1:00}:{2:00}.{3:00}", hh, mm, ss, cc);
+    }
+
+    private static async Task WriteSrtAsync(
+        VideoProject project,string path,
+        IReadOnlyList<NarrationTimelineService.ChapterTiming> timelines,
+        CancellationToken ct)
+    {
+        var sb=new StringBuilder();
+        var index=1;
+        var chapterOffset=0.0;
+        for(var chapterIndex=0;chapterIndex<project.Chapters.Count;chapterIndex++)
+        {
+            var chapter=project.Chapters[chapterIndex];
+            var timing=timelines[chapterIndex];
+            var spoken=NarrationTimelineService.SpokenSceneWords(chapter);
+            for(var i=0;i<chapter.Scenes.Count;i++)
+            {
+                var beat=timing.Scenes[i];
+                sb.AppendLine(index++.ToString())
+                  .AppendLine($"{Timestamp(chapterOffset+beat.Start)} --> " +
+                    $"{Timestamp(chapterOffset+beat.End)}")
+                  .AppendLine(string.Join(" ",spoken[i]).Trim())
+                  .AppendLine();
+            }
+            chapterOffset+=timing.Duration;
+        }
+        await File.WriteAllTextAsync(path,sb.ToString(),
+            new UTF8Encoding(false),ct);
     }
 
     private static string Timestamp(double sec)
@@ -578,5 +911,7 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         public Queue<string> RecentTransitions { get; } = new();
         public int MotionCursor;
         public int TransitionCursor;
+        public int AiGeneratedClipCount;
+        public int AiAttemptCount;
     }
 }
