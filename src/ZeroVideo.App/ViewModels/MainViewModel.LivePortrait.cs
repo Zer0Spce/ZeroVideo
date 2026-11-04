@@ -62,14 +62,20 @@ public sealed partial class MainViewModel
 
     private async Task StartLivePortraitComfyUiAsync()
     {
-        LivePortraitStatus = "Starting existing ComfyUI at 127.0.0.1:8188...";
-        if (await _localImages.IsOnlineAsync(_cts.Token))
-            await _localImages.RestartOwnedServerAsync(Log, _cts.Token);
-        else
-            await _localImages.StartAsync(Log, _cts.Token);
-        LivePortraitStatus = "ComfyUI started. Test Connection to verify LivePortrait nodes.";
+        LivePortraitStatus = "Starting or safely restarting ZeroVideo ComfyUI at 127.0.0.1:8188...";
+        LivePortraitStatus = await _localImages.RestartForLivePortraitAsync(
+            Log, ConfirmComfyUiProcessRestart, _cts.Token);
         Log(LivePortraitStatus);
     }
+
+    // Used by both the LivePortrait and Local Images restart buttons.
+    // A stale process from an older ZeroVideo session is only stopped after
+    // the running executable, startup arguments and port owner are verified.
+    private static bool ConfirmComfyUiProcessRestart(string warning) =>
+        Application.Current.Dispatcher.Invoke(() =>
+            MessageBox.Show(warning, "ZeroVideo — restart ComfyUI",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning)
+                == MessageBoxResult.Yes);
 
     private async Task TestLivePortraitAsync()
     {
