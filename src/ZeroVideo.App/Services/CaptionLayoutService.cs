@@ -14,6 +14,9 @@ public static class CaptionLayoutService
     public const int MinimumFontSize = 42;
     // Deliberately narrower than 1080-2*Margin; leaves room for outline.
     public const int TextSafeWidth = 720;
+    public const int LandscapeTextSafeWidth = 1320;
+    public const int LandscapeMaxFontSize = 68;
+    public const int LandscapeMinFontSize = 44;
 
     private static double VisualUnits(string phrase)
     {
@@ -39,24 +42,28 @@ public static class CaptionLayoutService
         return upper.Replace("\\","").Replace("{","").Replace("}","");
     }
 
-    private static (int FontSize,int ScaleX) Fit(double units)
+    private static (int FontSize,int ScaleX) Fit(double units,bool landscape)
     {
-        var font=Math.Clamp((int)Math.Floor(TextSafeWidth/units),
-            MinimumFontSize,MaximumFontSize);
-        // No hard 40% scale floor: sufficiently long surnames must fit.
-        var scale=(int)Math.Floor(TextSafeWidth*100.0/(units*font));
+        var safe=landscape?LandscapeTextSafeWidth:TextSafeWidth;
+        var min=landscape?LandscapeMinFontSize:MinimumFontSize;
+        var max=landscape?LandscapeMaxFontSize:MaximumFontSize;
+        var font=Math.Clamp((int)Math.Floor(safe/units),min,max);
+        // Long names shrink rather than wrapping beyond frame edges.
+        var scale=(int)Math.Floor(safe*100.0/(units*font));
         return (font,Math.Clamp(scale,10,100));
     }
 
-    public static string Format(IReadOnlyList<string> rawWords)
+    public static string Format(IReadOnlyList<string> rawWords,
+        bool landscape=false)
     {
         if(rawWords.Count==0) return "";
         var words=rawWords.Select(EscapeWord).ToList();
         var single=string.Join(" ",words);
-        var one=Fit(VisualUnits(single));
+        var one=Fit(VisualUnits(single),landscape);
         // Keep a one-line caption when still legible. Otherwise split only
         // at a word boundary and use at most two lines.
-        if(words.Count==1 || (one.FontSize>=62 && one.ScaleX>=84))
+        if(words.Count==1 ||
+           (one.FontSize>=(landscape?56:62) && one.ScaleX>=84))
             return "{\\q2\\fs"+one.FontSize+"\\fscx"+one.ScaleX+"}"+single;
 
         var split=1;
@@ -70,7 +77,8 @@ public static class CaptionLayoutService
         }
         var left=string.Join(" ",words.Take(split));
         var right=string.Join(" ",words.Skip(split));
-        var fit=Fit(Math.Max(VisualUnits(left),VisualUnits(right)));
+        var fit=Fit(Math.Max(VisualUnits(left),VisualUnits(right)),
+            landscape);
         return "{\\q2\\fs"+fit.FontSize+"\\fscx"+fit.ScaleX+
             "}"+left+"\\N"+right;
     }
@@ -79,9 +87,10 @@ public static class CaptionLayoutService
     /// Material layout invariant: even after conservative broad-face
     /// glyph estimation, neither subtitle line exceeds its safe width.
     /// </summary>
-    public static bool FitsInsideSafeWidth(IReadOnlyList<string> words)
+    public static bool FitsInsideSafeWidth(IReadOnlyList<string> words,
+        bool landscape=false)
     {
-        var text=Format(words);
+        var text=Format(words,landscape);
         var prefixEnd=text.IndexOf('}');
         if(prefixEnd<0)return false;
         var prefix=text[..prefixEnd];
@@ -92,6 +101,7 @@ public static class CaptionLayoutService
             !int.TryParse(prefix[(scaleAt+5)..],out var scale))return false;
         var lines=text[(prefixEnd+1)..].Split("\\N",StringSplitOptions.None);
         return lines.Length<=2 && lines.All(l =>
-            VisualUnits(l)*font*scale/100.0<=TextSafeWidth+1.0);
+            VisualUnits(l)*font*scale/100.0<=
+                (landscape?LandscapeTextSafeWidth:TextSafeWidth)+1.0);
     }
 }
