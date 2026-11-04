@@ -1393,6 +1393,12 @@
             <TextBox Width="740" Text="{Binding Settings.FramePackPythonPath, UpdateSourceTrigger=PropertyChanged}"/>
             <Label Content="FRAMEPACK SERVER URL (LOCAL ONLY)" Margin="0,8,0,0"/>
             <TextBox Width="740" Text="{Binding Settings.FramePackServerUrl, UpdateSourceTrigger=PropertyChanged}"/>
+            <Button Content="Test FramePack Connection" Style="{StaticResource SecondaryButton}"
+                    Command="{Binding TestFramePackConnectionCommand}" HorizontalAlignment="Left"
+                    Margin="0,10,0,5"
+                    ToolTip="Checks whether the local FramePack server is running and exposes the expected generation endpoint. Does not use the GPU."/>
+            <TextBlock Text="The FramePack server must be running separately. If the test fails, open its installation and launch demo_gradio.py. The test does not download or generate video."
+                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,8"/>
             <Label Content="AI CLIP LENGTH (3-5 SECONDS)" Margin="0,8,0,0"/>
             <TextBox Width="120" Text="{Binding Settings.FramePackClipSeconds, UpdateSourceTrigger=LostFocus}"/>
             <Label Content="MAX AI CLIPS PER VIDEO (0-30; OTHERS USE CAMERA MOTION)" Margin="0,8,0,0"/>
