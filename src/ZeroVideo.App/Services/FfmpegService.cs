@@ -5,8 +5,9 @@ using ZeroVideo.App.Models;
 
 namespace ZeroVideo.App.Services;
 
-public sealed class FfmpegService(ProcessRunner runner, DependencyService dependencies)
+public sealed class FfmpegService(ProcessRunner runner, DependencyService dependencies, LocalImageService? localImages = null)
 {
+    private readonly LivePortraitService _livePortrait = new(localImages ?? new LocalImageService());
     public async Task ValidateAsync(ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
         await EnsureToolsAsync(settings, log, ct);
@@ -145,6 +146,30 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         if (project.Options.GenerateCaptions)
             await WriteSrtAsync(project, Path.ChangeExtension(finalPath, ".srt"), ct);
 
+        if (project.Options.BurnInBoldCaptions && project.AspectRatio == "9:16")
+        {
+            var captionAss = Path.Combine(renderDir, "styled-video-captions.ass");
+            if (await WriteBoldCaptionAssAsync(project, settings, captionAss, log, ct))
+            {
+                var captionedMp4 = Path.Combine(renderDir, "video-with-styled-captions.mp4");
+                log?.Invoke("Rendering bold vertical captions: smaller all-white uppercase text, " +
+                    "black outline, timed to detected narration speech and pauses.");
+                // 'ass' supports color override spans; use a short relative
+                // filename to avoid Windows drive-letter filter escaping.
+                var renderArgs = $"-y -i \"{finalPath}\" -vf \"ass=styled-video-captions.ass\" " +
+                    $"-map 0:v:0 -map 0:a:0 -c:v libx264 -preset medium -crf 20 " +
+                    $"-pix_fmt yuv420p -c:a copy -movflags +faststart \"{captionedMp4}\"";
+                var burn = await runner.RunAsync(settings.FfmpegPath, renderArgs, renderDir, ct);
+                if (burn.ExitCode != 0 || !File.Exists(captionedMp4))
+                    throw new InvalidOperationException("Bold caption burn-in failed. " +
+                        "Check that FFmpeg has the libass subtitle filter. " +
+                        (burn.StdErr.Length > 1000 ? burn.StdErr[^1000..] : burn.StdErr));
+                File.Copy(captionedMp4, finalPath, true);
+                File.Delete(captionedMp4);
+                log?.Invoke("Bold captions embedded in final vertical MP4.");
+            }
+        }
+
         await ValidateAudibleAudioAsync(finalPath, settings, "Final video", log, ct);
         return finalPath;
     }
@@ -195,22 +220,67 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
                 string args;
                 string motion;
 
-                if (IsVideo(media))
+                // LivePortrait animates only detected faces. No generative
+                // full-scene video diffusion, and no Wan/FramePack service.
+                // Scenes with no face gracefully use existing FFmpeg motion.
+                string? aiClip = null;
+                var wantsPortrait = settings.AiImageAnimationEngine == "LivePortrait (Local)";
+                var maxClips = Math.Clamp(settings.LivePortraitMaxClipsPerVideo, 0, 30);
+                if (!IsVideo(media) && wantsPortrait &&
+                    effects.AiAttemptCount < maxClips)
                 {
-                    motion = "source video";
+                    effects.AiAttemptCount++;
+                    aiClip = await _livePortrait.TryAnimateAsync(
+                        media, project, scene, settings, log, ct);
+                    if (aiClip is not null)
+                    {
+                        try
+                        {
+                            if (await ProbeDurationAsync(aiClip, settings, ct) < 1.0)
+                                throw new InvalidDataException("Animated face clip too short.");
+                            effects.AiGeneratedClipCount++;
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception ex)
+                        {
+                            log?.Invoke("LivePortrait clip invalid; using source still: " + ex.Message);
+                            aiClip = null;
+                        }
+                    }
+                }
+                var renderMedia = aiClip ?? media;
+                if (IsVideo(renderMedia))
+                {
+                    motion = aiClip is null ? "source video"
+                        : "AI subtle facial motion (LivePortrait)";
                     var vf = $"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h},fps=30";
                     var styleFx = BuildStyleEffectFilter(project);
                     if (!string.IsNullOrWhiteSpace(styleFx)) vf += "," + styleFx;
-                    args = $"-y -stream_loop -1 -i \"{media}\" -t {duration} -vf \"{vf}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
+                    args = $"-y -stream_loop -1 -i \"{renderMedia}\" -t {duration} -vf \"{vf}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
                 }
                 else
                 {
-                    motion = ChooseMotionPreset(project, scene, effects);
+                    motion = settings.AiImageAnimationEngine == "Off" ||
+                        (settings.AiImageAnimationEngine == "LivePortrait (Local)" &&
+                         !settings.LivePortraitFallbackToCamera)
+                        ? "static" : ChooseMotionPreset(project, scene, effects);
                     args = BuildStillRenderArgs(media, output, renderSeconds, w, h, motion, project);
                 }
 
                 log?.Invoke($"Scene {chapter.Number}.{scene.Number}: effect {motion}; transition {transition}; {renderSeconds:0.0}s render segment.");
                 var result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
+                if (result.ExitCode != 0 && aiClip is not null)
+                {
+                    // An AI clip may decode but still be incompatible with
+                    // the main renderer. Retry against the source still.
+                    log?.Invoke("AI video render failed; falling back to original illustrated image.");
+                    motion = settings.AiImageAnimationEngine == "Off" ||
+                        (settings.AiImageAnimationEngine == "LivePortrait (Local)" &&
+                         !settings.LivePortraitFallbackToCamera)
+                        ? "static" : ChooseMotionPreset(project, scene, effects);
+                    args = BuildStillRenderArgs(media, output, renderSeconds, w, h, motion, project);
+                    result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
+                }
                 if (result.ExitCode != 0)
                     throw new InvalidOperationException($"Scene render failed ({chapter.Number}.{scene.Number}, visual {mediaIndex + 1}): {result.StdErr}");
 
@@ -330,6 +400,20 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         var dynamicStep = F(step * 2.5);
         string Smooth(string expr) => expr + $",scale={w}:{h}:flags=lanczos,fps=30";
 
+        if (motion == "subtle-life")
+        {
+            // Periodic 3–5-second micro-pan, micro-zoom, and ambient light
+            // breathing. Every cycle returns to the initial pose without
+            // changing the illustrated subject or adding fabricated details.
+            var loop = Math.Clamp(options.SubtleImageAnimationSeconds, 3.0, 5.0);
+            var phase = F(2.0 * Math.PI / (loop * 30.0));
+            return Smooth($"zoompan=z='1.044+0.004*sin(on*{phase})':" +
+                $"x='(iw-iw/zoom)*(0.5+0.08*sin(on*{phase}))':" +
+                $"y='(ih-ih/zoom)*(0.5+0.06*(1-cos(on*{phase})))':" +
+                $"d={frames}:s={sw}x{sh}:fps=30") +
+                $",eq=brightness='0.002*sin(n*{phase})':eval=frame";
+        }
+
         if (!options.ContinuousMotion)
         {
             return motion switch
@@ -363,6 +447,8 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         if (!project.Options.StyleAwareEffects)
             return $"eq=contrast={F(1.015 + 0.012 * strength)}:saturation={F(1.0 + 0.01 * strength)},vignette={vignette}";
 
+        if (style.Contains("neo-noir"))
+            return $"eq=contrast={F(1.055 + 0.012 * strength)}:saturation={F(0.96 + 0.015 * strength)},vignette={F(0.28 + 0.04 * strength)}";
         if (style.Contains("mystery") || style.Contains("conspiracy"))
             return $"eq=contrast={F(1.035 + 0.015 * strength)}:brightness={F(-0.006 * strength)}:saturation={F(0.95 - 0.025 * strength)},vignette={F(0.32 + 0.08 * strength)},noise=alls={noise}:allf=t+u";
         if (style.Contains("history") || style.Contains("archival"))
@@ -385,6 +471,8 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
     {
         if (!project.Options.AddMotion || project.Options.MotionStyle.Equals("None", StringComparison.OrdinalIgnoreCase))
             return "static";
+        if (project.Options.SubtleImageAnimation)
+            return "subtle-life";
 
         var style = (project.Style ?? "").ToLowerInvariant();
         var requested = project.Options.MotionStyle ?? "Automatic";
@@ -537,6 +625,256 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         chapter.TargetSeconds = (int)Math.Round(actualAudioSeconds);
     }
 
+    // FFmpeg's silencedetect runs on the ORIGINAL chapter TTS track (before
+    // background music is mixed), so quiet music cannot skew subtitle timing.
+    // This is pause-aware speech timing, not phoneme/word forced alignment.
+    private async Task<List<(double Start, double End)>> DetectNarrationSpeechAsync(
+        ProjectChapter chapter, ZeroVideoSettings settings, double seconds,
+        Action<string>? log, CancellationToken ct)
+    {
+        var fallback = new List<(double Start, double End)> { (0, seconds) };
+        if (string.IsNullOrWhiteSpace(chapter.AudioPath) ||
+            !File.Exists(chapter.AudioPath) || seconds <= 0) return fallback;
+        try
+        {
+            // Silence events are emitted to stderr. The null output is local
+            // Windows FFmpeg, so it does not affect existing uploaded media.
+            var args = $"-hide_banner -nostats -i \"{chapter.AudioPath}\" " +
+                "-af silencedetect=noise=-37dB:d=0.14 -f null NUL";
+            var result = await runner.RunAsync(settings.FfmpegPath, args, ct: ct);
+            if (result.ExitCode != 0) return fallback;
+            var events = Regex.Matches(result.StdErr ?? "",
+                @"silence_(start|end):\s*(-?\d+(?:\.\d+)?)", RegexOptions.IgnoreCase);
+            if (events.Count == 0) return fallback;
+
+            var active = new List<(double Start, double End)>();
+            double? talkingFrom = 0;
+            foreach (Match match in events)
+            {
+                ct.ThrowIfCancellationRequested();
+                var type = match.Groups[1].Value;
+                if (!double.TryParse(match.Groups[2].Value, NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out var time)) continue;
+                time = Math.Clamp(time, 0, seconds);
+                if (type.Equals("start", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (talkingFrom.HasValue && time > talkingFrom.Value + 0.055)
+                        active.Add((talkingFrom.Value, time));
+                    talkingFrom = null;
+                }
+                else
+                {
+                    talkingFrom = time;
+                }
+            }
+            if (talkingFrom.HasValue && seconds > talkingFrom.Value + 0.055)
+                active.Add((talkingFrom.Value, seconds));
+            // Keep only substantial speech activity. A short quiet first/last
+            // part is fine, but detection errors must not zero the captions.
+            var total = active.Sum(x => x.End - x.Start);
+            if (active.Count == 0 || total < seconds * 0.20) return fallback;
+            log?.Invoke($"Captions chapter {chapter.Number}: analyzed voice track, " +
+                $"{active.Count} speech section(s), {total:0.0}/{seconds:0.0}s audible.");
+            return active;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            log?.Invoke($"Captions chapter {chapter.Number}: speech analysis unavailable " +
+                $"({ex.Message}); using chapter timing.");
+            return fallback;
+        }
+    }
+
+    private static double SpeechPosition(
+        IReadOnlyList<(double Start, double End)> intervals, double progress)
+    {
+        var total = intervals.Sum(x => x.End - x.Start);
+        if (total <= 0) return 0;
+        var remaining = Math.Clamp(progress, 0, 1) * total;
+        foreach (var span in intervals)
+        {
+            var duration = span.End - span.Start;
+            if (remaining <= duration) return span.Start + remaining;
+            remaining -= duration;
+        }
+        return intervals[^1].End;
+    }
+
+    // Pronunciation pace differs between short and long words; a light
+    // syllable-length estimate distributes narration between audio pauses.
+    private static double CaptionWordWeight(string word)
+    {
+        var clean = Regex.Replace(word, @"[^\p{L}\p{N}]", "");
+        return Math.Clamp(clean.Length / 4.2, 0.85, 3.4);
+    }
+
+    private async Task<bool> WriteBoldCaptionAssAsync(
+        VideoProject project, ZeroVideoSettings settings, string path,
+        Action<string>? log, CancellationToken ct)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("[Script Info]")
+          .AppendLine("ScriptType: v4.00+")
+          .AppendLine("PlayResX: 1080")
+          .AppendLine("PlayResY: 1920")
+          .AppendLine("ScaledBorderAndShadow: yes")
+          .AppendLine("WrapStyle: 0")
+          .AppendLine()
+          .AppendLine("[V4+ Styles]")
+          .AppendLine("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
+          .AppendLine("Style: Punchy,Arial Black,88,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,7,0,2,105,105,350,1")
+          .AppendLine()
+          .AppendLine("[Events]")
+          .AppendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
+
+        var elapsed = 0.0;
+        var captions = 0;
+        foreach (var chapter in project.Chapters)
+        {
+            ct.ThrowIfCancellationRequested();
+            // The actual duration of the TTS chapter is the only reliable
+            // boundary between concatenated audio chapters.
+            var seconds = !string.IsNullOrWhiteSpace(chapter.AudioPath) &&
+                File.Exists(chapter.AudioPath)
+                ? await ProbeDurationAsync(chapter.AudioPath, settings, ct)
+                : 0;
+            if (seconds <= 0)
+                seconds = Math.Max(0.1, chapter.Scenes.Sum(sc => Math.Max(0.1, sc.TargetSeconds)));
+
+            var active = await DetectNarrationSpeechAsync(chapter, settings, seconds, log, ct);
+            var groups = new List<List<string>>();
+            var current = new List<string>();
+            // Clipchamp TTS uses chapter.Narration as its input, NOT the
+            // individual scene texts. Align exactly that narration first.
+            var script = !string.IsNullOrWhiteSpace(chapter.Narration)
+                ? chapter.Narration
+                : string.Join(" ", chapter.Scenes.Select(scene => scene.Narration));
+            var words = Regex.Matches(script,
+                @"[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*[.!?,;:]?")
+                .Select(m => m.Value).ToList();
+            foreach (var word in words)
+            {
+                var proposedLength = current.Sum(x => x.Length) + current.Count + word.Length;
+                if (current.Count > 0 && (current.Count >= 3 || proposedLength > 19))
+                {
+                    groups.Add(current);
+                    current = new List<string>();
+                }
+                current.Add(word);
+                // A caption must never straddle a sentence ending. This
+                // prevents fragments like "COMPANY APART. WHEN".
+                if (Regex.IsMatch(word, @"[.!?;:]$"))
+                {
+                    groups.Add(current);
+                    current = new List<string>();
+                }
+            }
+            if (current.Count > 0) groups.Add(current);
+
+            var chapterWeight = groups.Sum(g => g.Sum(CaptionWordWeight));
+            var used = 0.0;
+            foreach (var group in groups)
+            {
+                var groupWeight = group.Sum(CaptionWordWeight);
+                var from = elapsed + SpeechPosition(active, used / Math.Max(0.001, chapterWeight));
+                used += groupWeight;
+                var to = elapsed + SpeechPosition(active, used / Math.Max(0.001, chapterWeight));
+                if (to - from < 0.08) continue;
+                var caption = FitCaptionToSafeArea(group);
+                sb.Append("Dialogue: 0,")
+                  .Append(AssCaptionTime(from)).Append(',')
+                  .Append(AssCaptionTime(to))
+                  .Append(",Punchy,,0,0,0,,")
+                  .AppendLine(caption); // All text stays white: no color overrides.
+                captions++;
+            }
+            elapsed += seconds;
+        }
+
+        if (captions == 0) return false;
+        await File.WriteAllTextAsync(path, sb.ToString(), new UTF8Encoding(false), ct);
+        log?.Invoke($"Audio-aware captions written: {captions} short phrases, " +
+            "white only, auto-fit 70-88pt within safe margins; speech/pause timing preserved.");
+        return true;
+    }
+
+    // Estimate actual broad-face uppercase glyph widths in units of font size.
+    // ASS styles are rendered using 1080x1920 reference coordinates. We reserve
+    // >100px on each side and outline padding instead of letting libass crop
+    // lengthy phrases at the edges of the vertical frame.
+    private static double CaptionVisualUnits(string phrase)
+    {
+        double units = 0;
+        foreach (var c in phrase.ToUpperInvariant())
+        {
+            if (c == ' ') units += 0.32;
+            else if ("MW@%".Contains(c)) units += 0.95;
+            else if ("OQGHN".Contains(c)) units += 0.78;
+            else if ("IJL".Contains(c)) units += 0.46;
+            else if (".,!:;'’".Contains(c)) units += 0.23;
+            else if ("()-".Contains(c)) units += 0.42;
+            else units += 0.69;
+        }
+        return Math.Max(1, units);
+    }
+
+    private static string FitCaptionToSafeArea(IReadOnlyList<string> group)
+    {
+        var words = group.Select(EscapeAssCaptionWord).ToList();
+        var oneLine = string.Join(" ", words);
+        const int targetWidth = 795; // 1080px minus 2x105px margin + outline/safety.
+        var units = CaptionVisualUnits(oneLine);
+        var singleLineFont = (int)Math.Floor(targetWidth / units);
+        if (singleLineFont >= 73 || words.Count == 1)
+        {
+            var font = Math.Clamp(singleLineFont, 66, 88);
+            // Additional horizontal scaling protects unusually long words.
+            var scaling = Math.Min(100,
+                (int)Math.Floor(targetWidth * 100.0 / (units * font)));
+            return "{\\fs" + font + "\\fscx" + Math.Max(40, scaling) + "}" + oneLine;
+        }
+
+        // For longer phrases choose the most balanced word-boundary wrap;
+        // never break a word or leave its remainder clipped off-frame.
+        var bestIndex = 1;
+        var bestWidth = double.MaxValue;
+        for (var split = 1; split < words.Count; split++)
+        {
+            var left = CaptionVisualUnits(string.Join(" ", words.Take(split)));
+            var right = CaptionVisualUnits(string.Join(" ", words.Skip(split)));
+            var largest = Math.Max(left, right);
+            if (largest < bestWidth)
+            {
+                bestWidth = largest;
+                bestIndex = split;
+            }
+        }
+        var fittedSize = Math.Clamp((int)Math.Floor(targetWidth / bestWidth), 70, 88);
+        var lineScale = Math.Min(100,
+            (int)Math.Floor(targetWidth * 100.0 / (bestWidth * fittedSize)));
+        var first = string.Join(" ", words.Take(bestIndex));
+        var second = string.Join(" ", words.Skip(bestIndex));
+        return "{\\fs" + fittedSize + "\\fscx" + Math.Max(40, lineScale) +
+            "}" + first + "\\N" + second;
+    }
+
+    private static string EscapeAssCaptionWord(string value)
+    {
+        var upper = value.ToUpperInvariant();
+        return upper.Replace("\\", "").Replace("{", "").Replace("}", "");
+    }
+
+    private static string AssCaptionTime(double seconds)
+    {
+        var ticks = Math.Max(0, (long)Math.Round(seconds * 100.0));
+        var hh = ticks / 360000;
+        var mm = ticks / 6000 % 60;
+        var ss = ticks / 100 % 60;
+        var cc = ticks % 100;
+        return string.Format(CultureInfo.InvariantCulture, "{0}:{1:00}:{2:00}.{3:00}", hh, mm, ss, cc);
+    }
+
     private static async Task WriteSrtAsync(VideoProject project, string path, CancellationToken ct)
     {
         var sb = new StringBuilder();
@@ -578,5 +916,7 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         public Queue<string> RecentTransitions { get; } = new();
         public int MotionCursor;
         public int TransitionCursor;
+        public int AiGeneratedClipCount;
+        public int AiAttemptCount;
     }
 }
