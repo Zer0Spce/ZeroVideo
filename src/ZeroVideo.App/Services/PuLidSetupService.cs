@@ -319,7 +319,7 @@ public sealed class PuLidSetupService(
                 "wrappers_name, pulid_outer_sample_wrappers_with_override)",
                 StringComparison.Ordinal) ||
              File.ReadAllText(hook).Contains(
-                "transformer_options = extra_options[\\\"transformer_options\\\"]",
+                "transformer_options = extra_options[\"transformer_options\"]",
                 StringComparison.Ordinal));
     }
 
