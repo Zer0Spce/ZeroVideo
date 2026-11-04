@@ -79,8 +79,9 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
         // after FFmpeg returns a genuine completed video. Retain files on
         // cancellation or render failure for safe recovery/resume.
         if (File.Exists(output) && new FileInfo(output).Length > 64 * 1024 &&
-            (project.RealPeople ?? []).Any(p =>
-                p.AutoTemporaryReferencePaths?.Count > 0) )
+            ((project.RealPeople ?? []).Any(p =>
+                p.AutoTemporaryReferencePaths?.Count > 0) ||
+             project.AutoIdentityEnabledByVideo))
         {
             AutoRealPersonIdentityService.Cleanup(project,log);
             await store.SaveAsync(project, settings.ProjectsRoot);
@@ -280,10 +281,21 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
                     "; no AI approximations will be created or deleted.");
                 if (!project.Options.EnableRealPersonIdentityLock)
                 {
-                    project.AutoIdentityEnabledByVideo=true;
-                    project.Options.EnableRealPersonIdentityLock=true;
-                    project.ActiveAutoIdentityPerson=subject;
-                    await store.SaveAsync(project,settings.ProjectsRoot);
+                    try
+                    {
+                        await localImages.TestPulidIdentityAdapterAsync(log,ct);
+                        project.AutoIdentityEnabledByVideo=true;
+                        project.Options.EnableRealPersonIdentityLock=true;
+                        project.ActiveAutoIdentityPerson=subject;
+                        await store.SaveAsync(project,settings.ProjectsRoot);
+                    }
+                    catch(OperationCanceledException) { throw; }
+                    catch(Exception ex)
+                    {
+                        log?.Invoke("Approved manual face references are preserved, " +
+                            "but automatic Identity Lock wasn't enabled because " +
+                            "PuLID is not ready: "+ex.Message);
+                    }
                 }
                 return;
             }
