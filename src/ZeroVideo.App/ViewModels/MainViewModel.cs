@@ -57,8 +57,6 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         InstallFfmpegCommand = new AsyncCommand(()=>RunManagedJobAsync("Dependency installation",InstallFfmpegAsync));
         SaveSettingsCommand = new AsyncCommand(SaveSettingsAsync);
         RunPreflightCommand = new AsyncCommand(()=>RunManagedJobAsync("System preflight",RunPreflightAsync));
-        TestFramePackConnectionCommand = new AsyncCommand(()=>
-            RunManagedJobAsync("Test FramePack Connection",ProbeFramePackConnectionAsync));
         OpenProjectFolderCommand = new AsyncCommand(OpenProjectFolderAsync, () => Directory.Exists(ProjectDirectory));
         LoadProjectCommand = new AsyncCommand(LoadProjectAsync);
         CancelCommand = new RelayCommand(RequestStopJob);
@@ -71,8 +69,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         InitializeLibraryAndCalendarCommands();
         InitializeContentSeriesCommands();
         InitializeLocalImageCommands();
-        InitializeFramePackCommands();
-        InitializeWanVideoCommands();
+        InitializeLivePortraitCommands();
         InitializeCharacterCommands();
         InitializeOmniVoiceCommands();
         BrowseMusicCommand = new RelayCommand(BrowseMusic);
@@ -85,7 +82,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<string> AspectRatios { get; } = ["16:9", "9:16"];
     public ObservableCollection<string> Styles { get; } = new(VisualStylePresets.Names);
     public ObservableCollection<string> AiImageAnimationEngines { get; } =
-        ["Camera Motion (FFmpeg)", "Wan2.2 5B (ComfyUI)", "FramePack (Local)"];
+        ["Off", "Camera Motion (FFmpeg)", "LivePortrait (Local)"];
 
     public ObservableCollection<string> ClipchampVoices { get; } =
     [
@@ -139,7 +136,6 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public ICommand InstallFfmpegCommand { get; }
     public ICommand SaveSettingsCommand { get; }
     public ICommand RunPreflightCommand { get; }
-    public ICommand TestFramePackConnectionCommand { get; }
     public ICommand OpenProjectFolderCommand { get; }
     public ICommand LoadProjectCommand { get; }
     public ICommand BrowseMusicCommand { get; }
@@ -407,24 +403,6 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         Log("New Chat requested: the next ChatGPT operation will start fresh, then ZeroVideo will reuse that chat for all following work.");
     }
 
-    private async Task ProbeFramePackConnectionAsync()
-    {
-        Status = "Checking local FramePack endpoint...";
-        try
-        {
-            Status = await new FramePackAnimationService(_runner)
-                .ProbeAsync(Settings, _cts.Token);
-            Log(Status);
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
-        {
-            Status = "FramePack not ready: " + ex.Message;
-            Log(Status);
-            throw;
-        }
-    }
-
     private async Task RunPreflightAsync()
     {
         try
@@ -547,7 +525,6 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         _omniPreviewPlayer.Stop();
         _omniPreviewPlayer.Close();
         _omniVoice.StopActiveProcesses();
-        FramePackSetupService.StopOwnedServer();
         await _browser.DisposeAsync();
     }
 
