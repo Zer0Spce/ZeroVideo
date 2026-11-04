@@ -84,7 +84,13 @@ public sealed class LocalImageService
         File.Exists(FluxClipPath) && File.Exists(FluxVaePath) &&
         Directory.Exists(GgufNodeFolder);
 
-    private static readonly Uri Server = new("http://127.0.0.1:8188/");
+    // Each ZeroVideo service instance owns its selected ComfyUI endpoint.
+    // A pre-existing external instance can occupy port 8188 without exposing
+    // the newly installed LivePortrait nodes. We never terminate that process.
+    private Uri _serverUri = new("http://127.0.0.1:8188/");
+    public Uri ServerUri => _serverUri;
+    public bool OwnsLiveServer => _serverProcess is { HasExited: false };
+
     private static readonly HttpClient Http = new(new HttpClientHandler
     {
         AllowAutoRedirect = true, AutomaticDecompression = DecompressionMethods.All
@@ -109,7 +115,7 @@ public sealed class LocalImageService
             try
             {
                 using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                using var request=await Http.PostAsync(new Uri(Server,"interrupt"),
+                using var request=await Http.PostAsync(new Uri(ServerUri,"interrupt"),
                     new StringContent("{}"),timeout.Token);
             }
             catch { /* The engine may already have exited. */ }
@@ -478,7 +484,7 @@ public sealed class LocalImageService
             using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(7));
             using var response=await Http.GetAsync(
-                new Uri(Server,"object_info/UnetLoaderGGUF"),timeout.Token);
+                new Uri(ServerUri,"object_info/UnetLoaderGGUF"),timeout.Token);
             if(!response.IsSuccessStatusCode)return false;
             using var doc=JsonDocument.Parse(
                 await response.Content.ReadAsStringAsync(timeout.Token));
@@ -588,11 +594,105 @@ public sealed class LocalImageService
         {
             using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(4));
-            using var resp=await Http.GetAsync(new Uri(Server,"system_stats"),timeout.Token);
+            using var resp=await Http.GetAsync(new Uri(ServerUri,"system_stats"),timeout.Token);
             return resp.IsSuccessStatusCode;
         }
         catch(OperationCanceledException) when(!ct.IsCancellationRequested){return false;}
         catch(HttpRequestException){return false;}
+    }
+
+    private async Task<bool> HasNodeAsync(string node, CancellationToken ct)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(8));
+            using var response = await Http.GetAsync(
+                new Uri(ServerUri,"object_info/"+Uri.EscapeDataString(node)),
+                timeout.Token);
+            if (!response.IsSuccessStatusCode) return false;
+            using var json = JsonDocument.Parse(
+                await response.Content.ReadAsStringAsync(timeout.Token));
+            return json.RootElement.TryGetProperty(node,out _);
+        }
+        catch (OperationCanceledException) when(!ct.IsCancellationRequested) { return false; }
+        catch (HttpRequestException) { return false; }
+        catch (JsonException) { return false; }
+    }
+
+    private async Task<bool> HasLivePortraitNodesAsync(CancellationToken ct) =>
+        await HasNodeAsync("DownloadAndLoadLivePortraitModels",ct) &&
+        await HasNodeAsync("ZeroVideoIdleDriver",ct);
+
+    private static int ChooseFreePort()
+    {
+        for(var port=8189; port<=8209; port++)
+        {
+            try
+            {
+                using var listener=new System.Net.Sockets.TcpListener(
+                    System.Net.IPAddress.Loopback,port);
+                listener.Start();
+                listener.Stop();
+                return port;
+            }
+            catch(System.Net.Sockets.SocketException) { }
+        }
+        throw new IOException(
+            "No free loopback port 8189–8209 for ZeroVideo-owned ComfyUI. " +
+            "Close unused ComfyUI sessions before retrying.");
+    }
+
+    /// <summary>
+    /// Ensure the server used by ZeroVideo knows the newly installed facial
+    /// nodes. A running *external* server on 8188 is never killed. Instead,
+    /// launch our bundled ComfyUI on an unused loopback port and route ALL
+    /// subsequent local image + LivePortrait API requests to that endpoint.
+    /// </summary>
+    public async Task EnsureLivePortraitServerAsync(
+        Action<string>? log,CancellationToken ct)
+    {
+        if(!HasComfyUi) throw new FileNotFoundException(
+            "ZeroVideo's local ComfyUI portable installation is missing.");
+        if(await IsOnlineAsync(ct))
+        {
+            if(await HasLivePortraitNodesAsync(ct))
+            {
+                log?.Invoke("LivePortrait nodes are registered on " + ServerUri);
+                return;
+            }
+            if(OwnsLiveServer)
+            {
+                log?.Invoke("Restarting ZeroVideo-owned ComfyUI to reload the new LivePortrait nodes.");
+                await RestartOwnedServerAsync(log,ct);
+            }
+            else
+            {
+                var previous=ServerUri;
+                var port=ChooseFreePort();
+                log?.Invoke("A different ComfyUI is occupying " + previous +
+                    " without LivePortrait nodes. Keeping that process untouched. " +
+                    "Starting ZeroVideo's bundled ComfyUI on 127.0.0.1:" + port +
+                    " instead. On an 8 GB GPU, close other GPU-heavy ComfyUI jobs to avoid VRAM exhaustion.");
+                _serverUri=new Uri("http://127.0.0.1:"+port+"/");
+                try { await StartAsync(log,ct); }
+                catch
+                {
+                    _serverUri=previous;
+                    throw;
+                }
+            }
+        }
+        else
+        {
+            await StartAsync(log,ct);
+        }
+        if(!await HasLivePortraitNodesAsync(ct))
+            throw new InvalidOperationException(
+                "ZeroVideo's ComfyUI at " + ServerUri +
+                " started but LivePortrait nodes did not register. " +
+                "Run Install LivePortrait again and read the extension import diagnostics.");
+        log?.Invoke("LivePortrait nodes confirmed at " + ServerUri);
     }
 
     public async Task RestartOwnedServerAsync(Action<string>? log,CancellationToken ct)
@@ -617,7 +717,7 @@ public sealed class LocalImageService
     {
         if(await IsOnlineAsync(ct))
         {
-            log?.Invoke("ComfyUI already running at 127.0.0.1:8188.");
+            log?.Invoke("ComfyUI already running at "+ServerUri);
             return;
         }
         if(!HasComfyUi)throw new FileNotFoundException(
@@ -629,7 +729,7 @@ public sealed class LocalImageService
         };
         foreach(var arg in new[]{"-s","ComfyUI/main.py",
             "--windows-standalone-build","--lowvram","--disable-auto-launch",
-            "--listen","127.0.0.1","--port","8188"})
+            "--listen","127.0.0.1","--port",ServerUri.Port.ToString()})
             psi.ArgumentList.Add(arg);
         _serverProcess=Process.Start(psi) ??
             throw new IOException("Could not launch ComfyUI's embedded Python.");
@@ -637,7 +737,7 @@ public sealed class LocalImageService
         for(var i=0;i<120;i++)
         {
             ct.ThrowIfCancellationRequested();
-            if(await IsOnlineAsync(ct)) { log?.Invoke("ComfyUI is online.");return; }
+            if(await IsOnlineAsync(ct)) { log?.Invoke("ZeroVideo ComfyUI is online at "+ServerUri);return; }
             if(_serverProcess.HasExited)
                 throw new IOException("ComfyUI exited during startup. Check NVIDIA drivers and ComfyUI logs.");
             await Task.Delay(1000,ct);
@@ -719,7 +819,7 @@ public sealed class LocalImageService
         return target;
     }
 
-    private static async Task<string> UploadCharacterReferenceAsync(
+    private async Task<string> UploadCharacterReferenceAsync(
         string localFile,CancellationToken ct)
     {
         if(!File.Exists(localFile))throw new FileNotFoundException(
@@ -735,7 +835,7 @@ public sealed class LocalImageService
         form.Add(image,"image",Path.GetFileName(localFile));
         form.Add(new StringContent("input"),"type");
         form.Add(new StringContent("true"),"overwrite");
-        using var response=await Http.PostAsync(new Uri(Server,"upload/image"),form,ct);
+        using var response=await Http.PostAsync(new Uri(ServerUri,"upload/image"),form,ct);
         var body=await response.Content.ReadAsStringAsync(ct);
         if(!response.IsSuccessStatusCode)
             throw new IOException("ComfyUI could not load character reference: "+
@@ -963,7 +1063,7 @@ public sealed class LocalImageService
             inputs=new{filename_prefix="ZeroVideoLocal",images=Ref("8",0)}};
         log?.Invoke("ComfyUI generating "+width+"x"+height+" "+style+" image with "+
             (isFlux?"FLUX.1-schnell Q4":"SDXL illustrated checkpoint")+"...");
-        using var req=new HttpRequestMessage(HttpMethod.Post,new Uri(Server,"prompt"))
+        using var req=new HttpRequestMessage(HttpMethod.Post,new Uri(ServerUri,"prompt"))
         {
             Content=JsonContent.Create(new{prompt=graph,client_id="zerovideo-"+Guid.NewGuid().ToString("N")})
         };
@@ -985,7 +1085,7 @@ public sealed class LocalImageService
         {
             ct.ThrowIfCancellationRequested();
             await Task.Delay(2000,ct);
-            using var history=await Http.GetAsync(new Uri(Server,"history/"+
+            using var history=await Http.GetAsync(new Uri(ServerUri,"history/"+
                 Uri.EscapeDataString(promptId)),ct);
             history.EnsureSuccessStatusCode();
             using var doc=JsonDocument.Parse(await history.Content.ReadAsStringAsync(ct));
@@ -1006,7 +1106,7 @@ public sealed class LocalImageService
             var type=image.TryGetProperty("type",out var t)?t.GetString()??"output":"output";
             if(filename.Length==0||type!="output")
                 throw new InvalidDataException("Invalid image reference from ComfyUI.");
-            var uri=new Uri(Server,"view?filename="+Uri.EscapeDataString(filename)+
+            var uri=new Uri(ServerUri,"view?filename="+Uri.EscapeDataString(filename)+
                 "&subfolder="+Uri.EscapeDataString(subfolder)+"&type=output");
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             var temporary=destination+".partial";
