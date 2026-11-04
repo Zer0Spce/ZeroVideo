@@ -169,6 +169,8 @@ def run_job(job):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--job")
+    parser.add_argument("--server", default="http://127.0.0.1:7860")
+    parser.add_argument("--probe", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -186,6 +188,11 @@ def main():
         assert "camera push-in" in motion_prompt("slow zoom in")
         assert find_video({"video": None}) is None
         print("FramePack adapter offline smoke tests passed.")
+        return
+    if args.probe:
+        server = require_loopback(args.server)
+        api = find_framepack_api(server)
+        print("[FramePack] CONNECTED: " + server + api, flush=True)
         return
     if not args.job:
         raise ValueError("Missing --job JSON file.")
