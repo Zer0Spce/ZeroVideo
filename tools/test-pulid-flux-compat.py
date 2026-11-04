@@ -63,6 +63,29 @@ class PuLidFluxCompatibilityTests(unittest.TestCase):
             self.plugin, self.flux, verify_only=True
         ))
 
+    def test_pinned_vendor_has_both_old_and_new_wrapper_classes(self):
+        # Reproduces the actual regression in Build #281. Upstream
+        # lldacing has an old wrapper inside ApplyPulidFlux and a correctly
+        # named native wrapper inside its separate FixPulidFluxPatch class.
+        # The repair must NOT count these as two wrappers in one class.
+        separate_fix = (
+            "\nclass FixPulidFluxPatch:\n"
+            "    def fix_pulid_patch(self, model):\n"
+            "        " + compat.NEW_WRAPPER + "\n"
+        )
+        self.main.write_text(
+            self.main.read_text() + separate_fix, encoding="utf-8"
+        )
+        fixed = separate_fix
+        compat.repair(self.plugin, self.flux)
+        new_source = self.main.read_text(encoding="utf-8")
+        self.assertEqual(new_source.count(compat.OLD_WRAPPER), 0)
+        self.assertEqual(new_source.count(compat.NEW_WRAPPER), 2)
+        self.assertTrue(new_source.endswith(fixed))
+        self.assertIn("already patched", compat.repair(
+            self.plugin, self.flux
+        ))
+
     def test_recover_partially_patched_hook_assignments(self):
         # An interrupted previous repair may leave the three hook callbacks
         # in a mixed old/new state. Repair must be resumable rather than
