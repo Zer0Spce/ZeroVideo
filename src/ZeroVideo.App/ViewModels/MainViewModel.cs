@@ -83,6 +83,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<string> Styles { get; } = new(VisualStylePresets.Names);
     public ObservableCollection<string> AiImageAnimationEngines { get; } =
         ["Off", "Camera Motion (FFmpeg)", "LivePortrait (Local)"];
+    public ObservableCollection<string> LivePortraitMotionStrengthOptions { get; } =
+        ["Low", "Medium"];
 
     public ObservableCollection<string> ClipchampVoices { get; } =
     [
