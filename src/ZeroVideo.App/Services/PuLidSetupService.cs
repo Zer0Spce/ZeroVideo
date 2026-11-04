@@ -204,8 +204,7 @@ public sealed class PuLidSetupService(
                 "-s -m pip install --disable-pip-version-check "+
                 "--only-binary=:all: --upgrade-strategy only-if-needed "+
                 "\"onnx>=1.17,<2\" \"scipy\" \"scikit-image\" "+
-                "\"scikit-learn\" \"requests\" \"tqdm\" "+
-                "\"onnxruntime-gpu\""),
+                "\"scikit-learn\" \"requests\" \"tqdm\""),
             ("Current official InsightFace Python module (no model download)",
                 "-s -m pip install --disable-pip-version-check "+
                 "--only-binary=:all: --no-deps \"insightface==2.1\""),
@@ -220,6 +219,28 @@ public sealed class PuLidSetupService(
             var result=await runner.RunAsync(python,command,
                 LocalImageService.PortableRoot,ct);
             RequireSuccess(result,stage);
+        }
+
+        // onnxruntime and onnxruntime-gpu are separate pip distributions
+        // exposing the same import. Installing both can overwrite shared
+        // binaries and break an already healthy LivePortrait/ComfyUI.
+        // Reuse whichever working ORT the user already has.
+        var ortProbe=await runner.RunAsync(python,
+            "-s -c \"import onnxruntime as ort; print(ort.__version__)\"",
+            LocalImageService.PortableRoot,ct);
+        if(ortProbe.ExitCode==0)
+            log?.Invoke("PuLID setup: reusing the installed ONNX Runtime "+
+                ortProbe.StdOut.Trim()+"; no provider replacement.");
+        else
+        {
+            log?.Invoke("PuLID setup: ONNX Runtime missing; installing the "+
+                "official NVIDIA-capable runtime for embedded Python.");
+            var install=await runner.RunAsync(python,
+                "-s -m pip install --disable-pip-version-check "+
+                "--only-binary=:all: --upgrade-strategy only-if-needed "+
+                "\"onnxruntime-gpu\"",
+                LocalImageService.PortableRoot,ct);
+            RequireSuccess(install,"ONNX Runtime dependency installation");
         }
     }
 
