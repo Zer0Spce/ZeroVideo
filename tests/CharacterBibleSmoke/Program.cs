@@ -170,6 +170,101 @@ try
     Check(RealPersonIdentityService.Match(person, shots[0]) is null,
         "Identity Lock OFF disables all identity conditioning immediately");
 
+    // Hands-free per-topic identity: no prompt for each video.
+    Check(new ProjectOptions().AutoRealPersonIdentity,
+        "New projects automatically enable per-topic real-person mode");
+    Check(new ProjectOptions().AutoIdentityPortraitCount == 2,
+        "Default automatic identity uses two temporary portrait guides");
+
+    var zak = new VideoProject
+    {
+        Id = "zak-project",
+        ProjectDirectory = Path.Combine(root, "zak-project"),
+        Title = "Zak Bagans — The Ghost Hunter Who Built an Empire",
+        Topic = "zak bagans story"
+    };
+    var dahmer = new VideoProject
+    {
+        Id = "dahmer-project",
+        ProjectDirectory = Path.Combine(root, "dahmer-project"),
+        Title = "Jeffrey Dahmer — The Investigation",
+        Topic = "Jeffrey Dahmer story"
+    };
+    var unknown = new VideoProject
+    {
+        Title = "The Zodiac Killer — America's Unsolved Cipher",
+        Topic = "The Axeman of New Orleans"
+    };
+    Check(AutoRealPersonIdentityService.DetectMainPerson(zak) == "Zak Bagans",
+        "Zak Bagans is detected from the current video title");
+    Check(AutoRealPersonIdentityService.DetectMainPerson(dahmer) ==
+        "Jeffrey Dahmer", "Next topic detects Jeffrey Dahmer independently");
+    Check(AutoRealPersonIdentityService.DetectMainPerson(unknown) is null,
+        "Unnamed killer/case titles do not trigger a fabricated identity");
+
+    var zakProfile=AutoRealPersonIdentityService.GetOrCreate(zak,"Zak Bagans");
+    Check(zakProfile.AutoCreatedForVideo,
+        "Automatically created profile is marked separately from manual profiles");
+    var zakTemp=AutoRealPersonIdentityService.TemporaryDirectory(zak);
+    var dahmerTemp=AutoRealPersonIdentityService.TemporaryDirectory(dahmer);
+    Directory.CreateDirectory(zakTemp);
+    Directory.CreateDirectory(dahmerTemp);
+    var zakPhoto=Path.Combine(zakTemp,"AI-APPROXIMATE-Zak_Bagans-v1-a123.png");
+    var dahmerPhoto=Path.Combine(dahmerTemp,
+        "AI-APPROXIMATE-Jeffrey_Dahmer-v1-b456.png");
+    File.WriteAllBytes(zakPhoto,new byte[2048]);
+    File.WriteAllBytes(dahmerPhoto,new byte[2048]);
+    AutoRealPersonIdentityService.AttachTemporary(zak,zakProfile,zakPhoto);
+    var dahmerProfile=AutoRealPersonIdentityService.GetOrCreate(
+        dahmer,"Jeffrey Dahmer");
+    AutoRealPersonIdentityService.AttachTemporary(dahmer,dahmerProfile,dahmerPhoto);
+    Check(AutoRealPersonIdentityService.ValidTemporaryCount(zak,zakProfile)==1,
+        "Interrupted project retains one checkpointed temporary portrait");
+    var manualPhoto=Path.Combine(zak.ProjectDirectory,"approved-zak.png");
+    File.WriteAllBytes(manualPhoto,new byte[2048]);
+    zakProfile.ReferencePaths.Add(manualPhoto);
+
+    // A path outside the tracked project-specific temporary folder cannot
+    // be registered for automatic deletion.
+    var outsideRejected=false;
+    try
+    {
+        AutoRealPersonIdentityService.AttachTemporary(zak,zakProfile,manualPhoto);
+    }
+    catch(InvalidDataException){ outsideRejected=true; }
+    Check(outsideRejected,
+        "A manually approved photo cannot be tagged as a disposable temp");
+    Check(!AutoRealPersonIdentityService.IsSafeTemporaryPath(zak,dahmerPhoto),
+        "Another video's temporary portrait is outside this project's deletion scope");
+
+    zak.Options.EnableRealPersonIdentityLock=true;
+    zak.AutoIdentityEnabledByVideo=true;
+    zak.ActiveAutoIdentityPerson="Zak Bagans";
+    var report=AutoRealPersonIdentityService.Cleanup(zak);
+    Check(report.Deleted==1 && report.Failed==0,
+        "Successful-video cleanup removes exactly the tracked temporary portrait");
+    Check(!File.Exists(zakPhoto) && File.Exists(manualPhoto),
+        "Cleanup deletes only auto-generated references, never manual photos");
+    Check(File.Exists(dahmerPhoto),
+        "Completing Zak project does not delete Dahmer project portraits");
+    Check(!zak.Options.EnableRealPersonIdentityLock &&
+        string.IsNullOrEmpty(zak.ActiveAutoIdentityPerson),
+        "Auto-activated identity is cleared after video completion");
+    Check(zak.RealPeople.Count==1 &&
+        zak.RealPeople[0].ReferencePaths.Count==1 &&
+        zak.RealPeople[0].ReferencePaths[0]==manualPhoto,
+        "Manually supplied references are kept intact and attached");
+
+    // The next person's completed video should clean only its own files.
+    dahmer.Options.EnableRealPersonIdentityLock=true;
+    dahmer.AutoIdentityEnabledByVideo=true;
+    dahmer.ActiveAutoIdentityPerson="Jeffrey Dahmer";
+    var nextReport=AutoRealPersonIdentityService.Cleanup(dahmer);
+    Check(nextReport.Deleted==1 && dahmer.RealPeople.Count==0,
+        "Next-topic references are removed after its completed video");
+    Check(File.Exists(manualPhoto),
+        "Next-topic cleanup cannot delete an earlier project's manual source");
+
     Console.WriteLine("Character Bible regression checks passed.");
 }
 finally
