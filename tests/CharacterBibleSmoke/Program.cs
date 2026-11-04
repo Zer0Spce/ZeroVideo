@@ -265,6 +265,129 @@ try
     Check(File.Exists(manualPhoto),
         "Next-topic cleanup cannot delete an earlier project's manual source");
 
+    // A single mapping now drives video cut positions, ASS and SRT captions.
+    var spokenChapter = new ProjectChapter
+    {
+        Number = 2,
+        Narration = "Zak Bagans entered an abandoned corridor and opened " +
+            "a locked door. He discovered an old cassette tape on a desk " +
+            "beside a dusty folder.",
+        Scenes =
+        [
+            new ProjectScene
+            {
+                Number = 1, TargetSeconds = 8,
+                Narration = "Zak Bagans entered an abandoned corridor " +
+                    "and opened a locked door.",
+                ImagePrompt = "Wide shot of Zak Bagans walking through " +
+                    "the corridor toward a wooden door.",
+                VisualQuery = "abandoned corridor wooden door"
+            },
+            new ProjectScene
+            {
+                Number = 2, TargetSeconds = 8,
+                Narration = "He discovered an old cassette tape on a desk " +
+                    "beside a dusty folder.",
+                ImagePrompt = "Object close-up: cassette tape beside a " +
+                    "dusty investigation folder on a wooden desk.",
+                VisualQuery = "cassette tape vintage desk"
+            }
+        ]
+    };
+    Check(NarrationTimelineService.ScriptsMatch(spokenChapter),
+        "Chapter voiceover matches its concatenated scene narration");
+    var speechIntervals = new List<(double Start,double End)>
+    {
+        (0.3,6.1),(6.6,12.7),(13.2,18.8)
+    };
+    var timing = NarrationTimelineService.Plan(
+        spokenChapter,20.0,speechIntervals);
+    Check(timing.Scenes.Count==2 &&
+        Math.Abs(timing.Scenes[0].Start)<0.001 &&
+        Math.Abs(timing.Scenes[^1].End-20)<0.001 &&
+        Math.Abs(timing.Scenes.Sum(s=>s.Duration)-20)<0.001,
+        "Scene timing partitions the exact real TTS duration without drift");
+    Check(timing.Scenes[0].End>3 &&
+        timing.Scenes[0].End<17 &&
+        timing.Scenes[1].Start==timing.Scenes[0].End,
+        "Scene cuts follow narration proportions and detected pauses");
+    var cues = NarrationTimelineService.CaptionCues(
+        spokenChapter,timing);
+    Check(cues.Count>=4 &&
+        cues.Zip(cues.Skip(1)).All(pair=>
+            pair.First.Time.End<=pair.Second.Time.Start+0.00001),
+        "Burned caption phrases never overlap or mix subsequent scenes");
+    Check(cues.All(c=>c.Time.End<=20.001 &&
+        c.Time.Start>=0 && c.Time.Duration>0),
+        "Caption timings stay inside narrated chapter duration");
+    Check(cues.All(c=>CaptionLayoutService.FitsInsideSafeWidth(c.Words)),
+        "Every timed caption fits within the 9:16 safe area");
+    Check(CaptionLayoutService.FitsInsideSafeWidth(
+        ["EXTRAORDINARILYLONGWORD","INVESTIGATORS","DISCOVERED"]),
+        "Long words fit without clipping and with no third ASS line");
+    Check(CaptionLayoutService.Format(
+        ["THE","HIDDEN","CASSETTE","TAPE"])
+        .Contains("\\q2"),
+        "ASS captions prevent implicit wrapping by libass");
+
+    var savedDraft = new ProjectChapter
+    {
+        Narration = "An authentic recording was found at the abandoned house.",
+        Scenes =
+        [
+            new ProjectScene { Narration="A totally different script." },
+            new ProjectScene { Narration="Another original draft." }
+        ]
+    };
+    Check(!NarrationTimelineService.ScriptsMatch(savedDraft),
+        "Legacy chapter narration mismatch is detected");
+    var voiceWords=NarrationTimelineService.SpokenSceneWords(savedDraft);
+    Check(string.Join(" ",voiceWords.SelectMany(w=>w))
+        .Contains("authentic recording",StringComparison.OrdinalIgnoreCase) &&
+        !string.Join(" ",voiceWords.SelectMany(w=>w))
+            .Contains("different script",StringComparison.OrdinalIgnoreCase),
+        "Captions follow the actual TTS script instead of mixing old scene drafts");
+
+    var wide = SceneVisualPlanService.Compose(
+        spokenChapter.Scenes[0].Narration,
+        spokenChapter.Scenes[0].ImagePrompt,
+        spokenChapter.Scenes[0].VisualQuery,0,true);
+    var objectShot = SceneVisualPlanService.Compose(
+        spokenChapter.Scenes[1].Narration,
+        spokenChapter.Scenes[1].ImagePrompt,
+        spokenChapter.Scenes[1].VisualQuery,1,true);
+    Check(wide.Name=="wide" && wide.Wide &&
+        wide.IdentityMultiplier<1.0 &&
+        wide.Instruction.Contains("full body",StringComparison.OrdinalIgnoreCase),
+        "Real-person identity on wide shots keeps full-body action and environment");
+    Check(objectShot.Name=="detail" && !objectShot.Wide &&
+        !objectShot.Instruction.Contains("facial close-up",
+            StringComparison.OrdinalIgnoreCase),
+        "Evidence/object narration uses an object detail, never a face headshot");
+    var explicitPortrait=SceneVisualPlanService.Compose(
+        "The investigator's expression turned fearful.",
+        "A close-up face portrait of the investigator.",
+        "expression portrait",5,true);
+    Check(explicitPortrait.Name=="face",
+        "An explicitly scripted face portrait remains eligible for close-up");
+    var differentA=SceneVisualPlanService.Compose(
+        "The witness testified.","Investigators investigate",
+        "courtroom",0,true);
+    var differentB=SceneVisualPlanService.Compose(
+        "The witness testified.","Investigators investigate",
+        "courtroom",1,true);
+    Check(differentA.Name!=differentB.Name,
+        "Different independent scene seeds vary unspecified camera distance");
+    Check(SceneVisualPlanService.Relevance(
+        spokenChapter.Scenes[0],spokenChapter.Scenes[1])<
+        SceneVisualPlanService.Relevance(
+            spokenChapter.Scenes[0],spokenChapter.Scenes[0]),
+        "Missing media selection prefers genuinely matching narrated evidence");
+    Check(SceneVisualPlanService.Relevance(
+        new ProjectScene{ImagePrompt="The Zodiac cipher written on paper"},
+        new ProjectScene{ImagePrompt="An empty ocean with sailing ship"})<0.2,
+        "Unrelated generic footage cannot replace a missing script-specific scene");
+
     Console.WriteLine("Character Bible regression checks passed.");
 }
 finally
