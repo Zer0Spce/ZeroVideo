@@ -14,6 +14,7 @@ are changed. Preserve vendor backups; no model data or other nodes are touched.
 """
 import argparse
 import os
+import re
 from pathlib import Path
 import shutil
 import sys
@@ -39,18 +40,67 @@ class CompatibilityError(RuntimeError):
     pass
 
 
-def checked_replacement(contents, old, new, count, label):
-    originals = contents.count(old)
-    updated = contents.count(new)
-    if originals == count and updated == 0:
-        return contents.replace(old, new), True
-    if originals == 0 and updated == count:
-        return contents, False
-    raise CompatibilityError(
-        f"{label} differs from pinned PuLID-FLUX source: "
-        f"old={originals}, patched={updated}, expected={count}. "
-        "Refusing to modify an unrecognized custom node."
+# Match only executable wrapper calls/assignment lines; never rewrite
+# comments, imported vendor symbols or arbitrary third-party code.
+OLD_WRAPPER_LINE = re.compile(
+    r'(?m)^([ \t]*)model\.add_wrapper_with_key\(\s*'
+    r'comfy\.patcher_extension\.WrappersMP\.OUTER_SAMPLE,\s*'
+    r'wrappers_name,\s*pulid_outer_sample_wrappers_with_override\s*\)[ \t]*$'
+)
+NEW_WRAPPER_LINE = re.compile(
+    r'(?m)^([ \t]*)model\.add_wrapper_with_key\(\s*'
+    r'comfy\.patcher_extension\.WrappersMP\.OUTER_SAMPLE,\s*'
+    r'wrappers_name,\s*pulid_outer_sample_wrappers\s*\)[ \t]*$'
+)
+OLD_OPTIONS_LINE = re.compile(
+    r'''(?m)^([ \t]*)transformer_options\s*=\s*'''
+    r'''extra_options\[\s*["']transformer_options["']\s*\][ \t]*$'''
+)
+NEW_OPTIONS_LINE = re.compile(
+    r'''(?m)^([ \t]*)transformer_options\s*=\s*'''
+    r'''\(extra_options\.get\(["']transformer_options["']\) '''
+    r'''or input_args\.get\(["']transformer_options["']\) or \{\}\)[ \t]*$'''
+)
+
+
+def repair_main_source(content, filename):
+    old = list(OLD_WRAPPER_LINE.finditer(content))
+    new = list(NEW_WRAPPER_LINE.finditer(content))
+    if len(old) + len(new) != 1:
+        raise CompatibilityError(
+            f"{filename}: expected one PuLID OUTER_SAMPLE wrapper, "
+            f"found old={len(old)}, compatible={len(new)}. "
+            "This extension differs from the pinned upstream source, "
+            "and your files have NOT been overwritten."
+        )
+    if not old:
+        return content, False
+    updated, count = OLD_WRAPPER_LINE.subn(
+        lambda match: match.group(1) + NEW_WRAPPER, content
     )
+    assert count == 1
+    return updated, True
+
+
+def repair_hook_source(content, filename):
+    old = list(OLD_OPTIONS_LINE.finditer(content))
+    new = list(NEW_OPTIONS_LINE.finditer(content))
+    # The pinned upstream extension has exactly 3 hooks, but interrupted
+    # previous repairs may leave a mixture of old and new hook assignments.
+    if len(old) + len(new) != 3:
+        raise CompatibilityError(
+            f"{filename}: expected 3 transformer_options hook assignments, "
+            f"found legacy={len(old)}, compatible={len(new)}. "
+            "The installed PuLID extension differs from the pinned source "
+            "or a previous edit was incomplete; no unknown code was changed."
+        )
+    if not old:
+        return content, False
+    updated, count = OLD_OPTIONS_LINE.subn(
+        lambda match: match.group(1) + NEW_OPTIONS, content
+    )
+    assert count == len(old)
+    return updated, True
 
 
 def copy_with_backup(path, original, updated):
@@ -105,14 +155,10 @@ def repair(plugin_dir, flux_model_path, verify_only=False):
         )
 
     # Validate BOTH files fully before writing EITHER file.
-    main_updated, change_main = checked_replacement(
-        main_original, OLD_WRAPPER, NEW_WRAPPER, 1,
-        "PuLID outer sampler wrapper"
-    )
-    hook_updated, change_hook = checked_replacement(
-        hook_original, OLD_OPTIONS, NEW_OPTIONS, 3,
-        "PuLID transformer_options hook"
-    )
+    main_updated, change_main = repair_main_source(
+        main_original, str(main_file))
+    hook_updated, change_hook = repair_hook_source(
+        hook_original, str(hook_file))
     if verify_only and (change_main or change_hook):
         raise CompatibilityError(
             "Installed PuLID extension is incompatible with this ComfyUI "
