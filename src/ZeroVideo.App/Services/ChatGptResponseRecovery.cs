@@ -49,6 +49,90 @@ public static class ChatGptResponseRecovery
         return null;
     }
 
+    /// <summary>
+    /// Fallback for the new ChatGPT UI, whose messages sometimes have no
+    /// assistant role, conversation-turn test ID or markdown wrapper. In that
+    /// case the page's main.innerText still contains the completed JSON.
+    /// Exclude all JSON already visible before send and JSON in the user's
+    /// prompt, otherwise old chapters and schema examples become false hits.
+    /// </summary>
+    public static string? FindFreshJsonInMainText(
+        string? currentMainText,
+        string? baselineMainText,
+        string? sentPrompt)
+    {
+        if (string.IsNullOrWhiteSpace(currentMainText) ||
+            string.Equals(currentMainText, baselineMainText, StringComparison.Ordinal))
+            return null;
+
+        var json = ExtractLastValidJsonObject(currentMainText);
+        if (json is null) return null;
+
+        if ((!string.IsNullOrEmpty(baselineMainText) &&
+             baselineMainText.Contains(json, StringComparison.Ordinal)) ||
+            (!string.IsNullOrEmpty(sentPrompt) &&
+             sentPrompt.Contains(json, StringComparison.Ordinal)))
+            return null;
+
+        // In a mixed conversation the last object must have the type of the
+        // requested output. A partial new answer must not fall back to an
+        // earlier idea/metadata/outline JSON schema or old chapter.
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+
+            if (sentPrompt?.Contains("zerovideo_ideas_v1", StringComparison.OrdinalIgnoreCase) == true)
+                return HasNonEmptyArray(root, "ideas") &&
+                    IsStringValue(root, "response_type", "zerovideo_ideas_v1") ? json : null;
+
+            if (sentPrompt?.Contains("zerovideo_publish_v2", StringComparison.OrdinalIgnoreCase) == true)
+                return IsStringValue(root, "response_type", "zerovideo_publish_v2") &&
+                    HasNonEmptyString(root, "youtube_title") &&
+                    HasNonEmptyString(root, "tiktok_caption") ? json : null;
+
+            if (sentPrompt?.Contains("ONE chapter", StringComparison.OrdinalIgnoreCase) == true &&
+                sentPrompt.Contains("scenes", StringComparison.OrdinalIgnoreCase))
+                return HasNonEmptyArray(root, "scenes") ? json : null;
+
+            if (sentPrompt?.Contains("master outline", StringComparison.OrdinalIgnoreCase) == true ||
+                sentPrompt?.Contains("master story outline", StringComparison.OrdinalIgnoreCase) == true)
+                return HasNonEmptyArray(root, "chapters") ? json : null;
+        }
+        catch (JsonException) { return null; }
+
+        return json;
+    }
+
+    private static bool TryGetProperty(JsonElement root, string name, out JsonElement value)
+    {
+        foreach (var property in root.EnumerateObject())
+        {
+            if (!string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
+                continue;
+            value = property.Value;
+            return true;
+        }
+        value = default;
+        return false;
+    }
+
+    private static bool HasNonEmptyArray(JsonElement root, string name)
+        => TryGetProperty(root, name, out var value) &&
+           value.ValueKind == JsonValueKind.Array &&
+           value.GetArrayLength() > 0;
+
+    private static bool HasNonEmptyString(JsonElement root, string name)
+        => TryGetProperty(root, name, out var value) &&
+           value.ValueKind == JsonValueKind.String &&
+           !string.IsNullOrWhiteSpace(value.GetString());
+
+    private static bool IsStringValue(JsonElement root, string name, string expected)
+        => TryGetProperty(root, name, out var value) &&
+           value.ValueKind == JsonValueKind.String &&
+           string.Equals(value.GetString(), expected, StringComparison.OrdinalIgnoreCase);
+
     public static string? ExtractLastValidJsonObject(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;

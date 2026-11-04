@@ -28,6 +28,61 @@ Check(ChatGptResponseRecovery.FindFreshJson(
     [oldChatJson, "Temporary ChatGPT error"], 1, oldChatJson, oldChatJson) is null,
     "ChatGPT recovery will not use stale JSON when the newest response is prose");
 
+// Regression: ChatGPT's newer rendered UI has zero author-role, assistant,
+// conversation-turn and .markdown selectors, yet main.innerText contains JSON.
+// These tests exercise the exact fallback used in that situation.
+const string previousOutline = """{"chapters":[{"number":1,"title":"Old case"}]}""";
+const string newOutline = """{"chapters":[{"number":1,"title":"Rader"},{"number":2,"title":"Evidence"}]}""";
+const string outlinePrompt = "Create ONLY the master outline. Required JSON schema: " +
+    """{"chapters":[]}""";
+const string pageBeforeSend = "Older conversation\n" + previousOutline +
+    "\nChatGPT can make mistakes. Check important info.";
+const string mainAfterResponse = "Older conversation\n" + previousOutline +
+    "\nCreate Master Outline\n" + outlinePrompt +
+    "\nLatest response\n" + newOutline +
+    "\nChatGPT can make mistakes. Check important info.\nThinking effort\nMedium";
+Check(ChatGptResponseRecovery.FindFreshJsonInMainText(
+    mainAfterResponse, pageBeforeSend, outlinePrompt) == newOutline,
+    "Plain-main-text fallback recovers completed outline with ZERO assistant DOM markers");
+Check(ChatGptResponseRecovery.FindFreshJsonInMainText(
+    pageBeforeSend, pageBeforeSend, outlinePrompt) is null,
+    "Plain-main-text fallback rejects an unchanged old conversation");
+Check(ChatGptResponseRecovery.FindFreshJsonInMainText(
+    pageBeforeSend + "\n" + outlinePrompt, pageBeforeSend, outlinePrompt) is null,
+    "Plain-main-text fallback cannot mistake a prompt JSON schema for a response");
+Check(ChatGptResponseRecovery.FindFreshJsonInMainText(
+    pageBeforeSend + "\n" + outlinePrompt +
+    "\nLatest response\n" + """{"chapters":[{"number":1,"title":"Still typing"}""" ,
+    pageBeforeSend, outlinePrompt) is null,
+    "Plain-main-text fallback does not reuse old JSON while assistant is streaming");
+Check(ChatGptResponseRecovery.FindFreshJsonInMainText(
+    "Prior transcript\n" + new string('x', 60000) + "\n" + newOutline +
+    "\nChatGPT can make mistakes. Check important info.",
+    pageBeforeSend, outlinePrompt) == newOutline,
+    "Plain-main-text fallback reads a long 60k-character conversation");
+const string chapterPrompt = "You are writing ONE chapter. Return scenes in valid JSON.";
+const string chapterJson = """{"number":1,"title":"The Disk","scenes":[{"number":1,"narration":"Evidence."}]}""";
+Check(ChatGptResponseRecovery.FindFreshJsonInMainText(
+    "History\n" + chapterPrompt + "\n" + chapterJson,
+    "History", chapterPrompt) == chapterJson,
+    "Plain-main-text fallback recognizes completed one-chapter scene JSON");
+Check(ChatGptResponseRecovery.FindFreshJsonInMainText(
+    "History\n" + chapterPrompt + "\n" + """{"number":1,"title":"No scenes"}""",
+    "History", chapterPrompt) is null,
+    "Plain-main-text fallback rejects a chapter missing required scenes");
+const string ideasPrompt = "Generate ideas. Required response_type zerovideo_ideas_v1.";
+const string ideasJson = """{"response_type":"zerovideo_ideas_v1","ideas":[{"title":"A","hook":"B"}]}""";
+Check(ChatGptResponseRecovery.FindFreshJsonInMainText(
+    "History\n" + ideasPrompt + "\n" + ideasJson,
+    "History", ideasPrompt) == ideasJson,
+    "Plain-main-text fallback validates fresh Ideas JSON");
+const string publishPrompt = "Return response_type zerovideo_publish_v2.";
+const string publishJson = """{"response_type":"zerovideo_publish_v2","youtube_title":"Title","youtube_description":"Details","tiktok_caption":"Caption"}""";
+Check(ChatGptResponseRecovery.FindFreshJsonInMainText(
+    "History\n" + publishPrompt + "\n" + publishJson,
+    "History", publishPrompt) == publishJson,
+    "Plain-main-text fallback validates fresh Publishing metadata JSON");
+
 Check(!new ProjectOptions().EnableCharacterConsistency,
     "New projects keep Character Bible disabled by default");
 

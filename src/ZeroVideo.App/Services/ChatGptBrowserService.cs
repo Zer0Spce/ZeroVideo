@@ -243,6 +243,9 @@ copyrighted photograph.
         var baseline = baselineCandidates.Select(ChatGptResponseRecovery.ExtractLastValidJsonObject)
             .LastOrDefault(value => value is not null) ?? "";
         var baselineAssistant = baselineCandidates.LastOrDefault() ?? "";
+        // The latest ChatGPT UI sometimes has ZERO assistant-role/markdown
+        // nodes. Its visible main text still contains the actual reply.
+        var baselineMainText = await ReadMainConversationTextAsync(page);
         await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
         log?.Invoke("ChatGPT: prompt sent; waiting for the finished response...");
 
@@ -253,6 +256,8 @@ copyrighted photograph.
             baselineCount,
             baseline,
             baselineAssistant,
+            baselineMainText,
+            prompt,
             log,
             ct);
 
@@ -478,10 +483,13 @@ copyrighted photograph.
         int baselineCount,
         string baseline,
         string baselineAssistant,
+        string baselineMainText,
+        string sentPrompt,
         Action<string>? log,
         CancellationToken ct)
     {
         string lastJson = "", lastRaw = "";
+        var reportedPlainTextFallback = false;
         int stableJson = 0, stableRaw = 0;
         var started = DateTime.UtcNow;
 
@@ -492,6 +500,26 @@ copyrighted photograph.
             var candidates = await ReadAssistantCandidatesAsync(page);
             var freshJson = ChatGptResponseRecovery.FindFreshJson(
                 candidates, baselineCount, baselineAssistant, baseline);
+
+            // A new ChatGPT renderer can expose no identifiable assistant
+            // nodes at all. The attached diagnostics confirm main.innerText
+            // contains the completed JSON even when ALL selectors match zero.
+            // Validate against BOTH the pre-send page and the user's prompt.
+            if (freshJson is not null &&
+                (baselineMainText.Contains(freshJson, StringComparison.Ordinal) ||
+                 sentPrompt.Contains(freshJson, StringComparison.Ordinal)))
+                freshJson = null;
+            if (freshJson is null)
+            {
+                var visibleMain = await ReadMainConversationTextAsync(page);
+                freshJson = ChatGptResponseRecovery.FindFreshJsonInMainText(
+                    visibleMain, baselineMainText, sentPrompt);
+                if (freshJson is not null && !reportedPlainTextFallback)
+                {
+                    reportedPlainTextFallback = true;
+                    log?.Invoke("ChatGPT: response found in visible conversation text; assistant DOM selectors unavailable.");
+                }
+            }
 
             if (freshJson is not null)
             {
@@ -546,7 +574,14 @@ copyrighted photograph.
         var finalCandidates = await ReadAssistantCandidatesAsync(page);
         var recovered = ChatGptResponseRecovery.FindFreshJson(
             finalCandidates, baselineCount, baselineAssistant, baseline);
-        if (recovered is not null)
+        if (recovered is null ||
+            baselineMainText.Contains(recovered, StringComparison.Ordinal) ||
+            sentPrompt.Contains(recovered, StringComparison.Ordinal))
+        {
+            recovered = ChatGptResponseRecovery.FindFreshJsonInMainText(
+                await ReadMainConversationTextAsync(page), baselineMainText, sentPrompt);
+        }
+        if (recovered is not null && !await AnyVisibleAsync(page, stopSelectors))
         {
             log?.Invoke("ChatGPT: finished JSON recovered on final check.");
             return recovered;
@@ -564,6 +599,30 @@ copyrighted photograph.
     // The ChatGPT page can have new assistant markdown without stable role
     // attributes. Read all visible output blocks in DOM order, excluding
     // user turns. Never favor an older JSON just because it matches a selector.
+    private static async Task<string> ReadMainConversationTextAsync(IPage page)
+    {
+        foreach (var frame in page.Frames)
+        {
+            try
+            {
+                if (frame != page.MainFrame &&
+                    !frame.Url.Contains("chatgpt.com", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                // Do NOT depend on role, article, markdown or test-id markers:
+                // several recent UI deployments have none of them.
+                var text = await frame.EvaluateAsync<string?>(@"
+() => {
+  const main=document.querySelector('main') || document.querySelector('[role=""main""]');
+  return main ? (main.innerText || main.textContent || '') : '';
+}");
+                if (!string.IsNullOrWhiteSpace(text)) return text;
+            }
+            catch (PlaywrightException) { /* ChatGPT may replace the tree mid-read. */ }
+        }
+        return "";
+    }
+
     private static async Task<string[]> ReadAssistantCandidatesAsync(IPage page)
     {
         const string script = """
@@ -685,6 +744,17 @@ copyrighted photograph.
                 "Captured assistant text (first 20000 chars):"+Environment.NewLine+
                 assistantText[..Math.Min(assistantText.Length,20000)];
             await File.WriteAllTextAsync(file,detail);
+            // Keep a local full-text snapshot, not only the last 1800 chars.
+            // This allows debugging future UI changes where role selectors fail.
+            var fullMainText = await ReadMainConversationTextAsync(page);
+            if (!string.IsNullOrWhiteSpace(fullMainText))
+            {
+                var fullTextPath = Path.Combine(AppPaths.DiagnosticsDirectory,
+                    "ChatGPT-JSON-"+reason+"-"+stamp+".main.txt");
+                await File.WriteAllTextAsync(fullTextPath,
+                    fullMainText[..Math.Min(fullMainText.Length, 500000)]);
+                log?.Invoke("ChatGPT: full visible conversation diagnostic: "+fullTextPath);
+            }
             log?.Invoke("ChatGPT: local DOM diagnostic saved: "+file);
             try
             {
