@@ -12,6 +12,14 @@ public sealed partial class MainViewModel
 {
     private RealPersonIdentity? _selectedRealPerson;
     private string _newRealPersonName = "";
+    private int _identityPortraitCount = 2;
+    public int IdentityPortraitCount
+    {
+        get => _identityPortraitCount;
+        set => Set(ref _identityPortraitCount, Math.Clamp(value, 1, 2));
+    }
+    public System.Collections.ObjectModel.ObservableCollection<int>
+        IdentityPortraitCountOptions { get; } = [1,2];
     private string _identityLockStatus =
         "Off by default. Add a real person's name and 1–3 approved clear face photos, " +
         "then enable the project toggle. FLUX PuLID adapter must be installed separately.";
@@ -31,6 +39,8 @@ public sealed partial class MainViewModel
         get => _identityLockStatus;
         private set => Set(ref _identityLockStatus, value);
     }
+    public ICommand GenerateChatGptIdentityGuidesCommand { get; private set; } = null!;
+    public ICommand InstallPuLidNodesCommand { get; private set; } = null!;
     public ICommand AddRealPersonCommand { get; private set; } = null!;
     public ICommand ImportRealPersonPhotoCommand { get; private set; } = null!;
     public ICommand ClearRealPersonPhotosCommand { get; private set; } = null!;
@@ -41,6 +51,11 @@ public sealed partial class MainViewModel
 
     private void InitializeRealPersonIdentityCommands()
     {
+        GenerateChatGptIdentityGuidesCommand = new AsyncCommand(() =>
+            RunManagedJobAsync("Auto-generate identity reference portraits",
+                GenerateChatGptIdentityGuidesAsync));
+        InstallPuLidNodesCommand = new AsyncCommand(() =>
+            RunManagedJobAsync("One-click PuLID-FLUX setup",InstallPuLidNodesAsync));
         AddRealPersonCommand = new AsyncCommand(() => RunManagedJobAsync(
             "Add real-person identity", AddRealPersonAsync));
         ImportRealPersonPhotoCommand = new AsyncCommand(() => RunManagedJobAsync(
@@ -56,6 +71,137 @@ public sealed partial class MainViewModel
         DownloadPuLidIdentityModelsCommand = new AsyncCommand(() =>
             RunManagedJobAsync("Download PuLID identity weights",
                 DownloadIdentityAssetsAsync));
+    }
+
+    private string? DetectMainPersonFromProject()
+    {
+        // Conservative extraction: only clear "Firstname Lastname" title
+        // prefixes. Never guess that a location/organization is a real person.
+        var text = !string.IsNullOrWhiteSpace(Project.Title) &&
+                   !Project.Title.StartsWith("Untitled ZeroVideo", StringComparison.OrdinalIgnoreCase)
+            ? Project.Title : Project.Topic;
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        var prefix = System.Text.RegularExpressions.Regex.Split(
+            text, @"\s+[—–-]\s+|:\s+|\s+\|\s+")[0].Trim();
+        var matches = System.Text.RegularExpressions.Regex.Match(prefix,
+            @"^(?<name>[A-Za-z][A-Za-z.'-]*\s+[A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*)?)\s*(?:story|documentary|biography)?$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!matches.Success) return null;
+        var name=matches.Groups["name"].Value.Trim();
+        var components=name.Split(' ',StringSplitOptions.RemoveEmptyEntries);
+        if(components.Length<2 || components.Length>3 ||
+           new [] {"The","A","An","How","Why","Inside","Story","What","When","Ghost"}
+                .Contains(components[0],StringComparer.OrdinalIgnoreCase))
+            return null;
+        return System.Globalization.CultureInfo.InvariantCulture.TextInfo
+            .ToTitleCase(name.ToLowerInvariant());
+    }
+
+    private async Task GenerateChatGptIdentityGuidesAsync()
+    {
+        Project.RealPeople ??= [];
+        var person = SelectedRealPerson;
+        if(person is null)
+        {
+            // If the person isn't selected, use the entered name or the
+            // clearly named headline subject. Do not infer random names from
+            // the narration or create a reference for an ambiguous title.
+            var name = !string.IsNullOrWhiteSpace(NewRealPersonName)
+                ? NewRealPersonName.Trim() : DetectMainPersonFromProject();
+            if(string.IsNullOrWhiteSpace(name))
+                throw new InvalidOperationException(
+                    "Select an existing identity or type the real person's full name. " +
+                    "For example: Zak Bagans.");
+            person=Project.RealPeople.FirstOrDefault(p=>
+                p.Name.Equals(name,StringComparison.OrdinalIgnoreCase));
+            if(person is null)
+            {
+                person=new RealPersonIdentity { Name=name };
+                Project.RealPeople.Add(person);
+            }
+            SelectedRealPerson=person;
+            NewRealPersonName="";
+        }
+        person.ReferencePaths ??= [];
+        person.AiApproximateReferencePaths ??= [];
+        var count=Math.Min(Math.Clamp(IdentityPortraitCount,1,2),
+            3-person.ReferencePaths.Count);
+        if(count<1)
+            throw new InvalidOperationException(
+                "This identity has three references already. Use Clear Photos " +
+                "or select a different person first.");
+
+        if(string.IsNullOrWhiteSpace(Project.ProjectDirectory))
+            await SaveIdentityProjectAsync();
+        var text =
+            "Generate "+count+" ChatGPT illustration(s) of "+person.Name+
+            " using your project's current '"+Project.Style+"' style. " +
+            "They are AI-created APPROXIMATIONS, not authenticated photographs " +
+            "or guarantees of facial likeness. For documentaries requiring " +
+            "historical accuracy, replace them with actual approved reference " +
+            "photographs. They will be saved locally, attached automatically, " +
+            "and used only if Identity Lock is turned on. Continue?";
+        if (MessageBox.Show(text,"ZeroVideo — AI approximation notice",
+                MessageBoxButton.YesNo, MessageBoxImage.Information)
+            != MessageBoxResult.Yes)
+        {
+            IdentityLockStatus="Automatic identity reference generation canceled.";
+            return;
+        }
+
+        for(var i=0;i<count;i++)
+        {
+            _cts.Token.ThrowIfCancellationRequested();
+            var nextIndex=person.AiApproximateReferencePaths.Count+1+i;
+            IdentityLockStatus="ChatGPT generating "+person.Name+
+                " portrait "+(i+1)+" of "+count+
+                " with "+Project.Style+"...";
+            Log(IdentityLockStatus);
+            var saved=await _chat.GenerateIdentityReferenceAsync(
+                Project,person.Name,Math.Clamp(nextIndex,1,3),
+                Settings,Log,_cts.Token);
+            // Only attach successfully captured, nonempty original images.
+            if(!File.Exists(saved) || new FileInfo(saved).Length<1024)
+                throw new InvalidDataException(
+                    "ChatGPT returned an incomplete portrait; it was not attached.");
+            person.ReferencePaths.Add(saved);
+            person.AiApproximateReferencePaths.Add(saved);
+            await SaveIdentityProjectAsync();
+        }
+        Project.Options.EnableRealPersonIdentityLock=true;
+        await SaveIdentityProjectAsync();
+        IdentityLockStatus=person.Name+": "+person.ReferencePaths.Count+
+            " reference(s) now attached. "+count+
+            " new AI-generated approximate portrait(s) saved; Identity Lock enabled. " +
+            "For accurate likeness, replace with approved real photos. " +
+            "Next: Install & Setup PuLID-FLUX and Test Adapter.";
+        Log(IdentityLockStatus);
+    }
+
+    private async Task InstallPuLidNodesAsync()
+    {
+        if(MessageBox.Show(
+            "Install the lldacing PuLID-FLUX ComfyUI extension and the two " +
+            "official identity model files (~2 GB) into ZeroVideo's existing " +
+            "ComfyUI installation? This also installs Python packages into " +
+            "ComfyUI's bundled Python (not your system Python). It may change " +
+            "ComfyUI package versions; close existing generation jobs first. " +
+            "On an RTX 3060 8 GB the FLUX Schnell/PuLID combination is " +
+            "experimental and may exceed GPU memory. Continue?",
+            "ZeroVideo — Install PuLID-FLUX",
+            MessageBoxButton.YesNo,MessageBoxImage.Warning)
+            != MessageBoxResult.Yes) return;
+        IdentityLockStatus="Installing PuLID nodes and verified model weights...";
+        var installer = new PuLidSetupService(_runner,_localImages);
+        await installer.InstallAndVerifyAsync(message =>
+        {
+            IdentityLockStatus=message;
+            Log(message);
+        },_cts.Token);
+        IdentityLockStatus="PuLID extension, FaceNet requirements and identity " +
+            "weights are installed. Restart ComfyUI (if running), then click " +
+            "Test Identity Adapter. Portrait quality/VRAM still require a test.";
+        Log(IdentityLockStatus);
     }
 
     private async Task SaveIdentityProjectAsync()
@@ -151,6 +297,7 @@ public sealed partial class MainViewModel
         if (SelectedRealPerson is not { } person) return;
         // Detach references without deleting files used by saved projects.
         person.ReferencePaths.Clear();
+        person.AiApproximateReferencePaths?.Clear();
         await SaveIdentityProjectAsync();
         IdentityLockStatus = "References detached from " + person.Name +
             ". Previously copied files were not deleted.";
