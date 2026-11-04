@@ -442,6 +442,55 @@ try
           !LocalImageResolutionService.IsValidMode("Bogus"),
         "Unknown saved options safely return to Fast/Direct");
 
+    // Regression: before this fix, .SRT exported but 16:9 MP4
+    // received NO visible subtitles because burn-in required 9:16.
+    var defaultCaptionOptions = new ProjectOptions();
+    Check(defaultCaptionOptions.GenerateCaptions &&
+        defaultCaptionOptions.BurnInBoldCaptions,
+        "New Longform projects default to SRT and visible burned captions");
+    Check(CaptionRenderPolicy.ShouldBurn(defaultCaptionOptions,"16:9"),
+        "16:9 Longform Automation now burns visible captions into MP4");
+    Check(CaptionRenderPolicy.ShouldBurn(defaultCaptionOptions,"9:16"),
+        "9:16 Shorts keeps existing visible caption burn-in");
+    Check(!CaptionRenderPolicy.ShouldBurn(defaultCaptionOptions,"1:1"),
+        "Unsupported aspect ratios do not silently apply 16:9 captions");
+    defaultCaptionOptions.GenerateCaptions=false;
+    Check(CaptionRenderPolicy.ShouldBurn(defaultCaptionOptions,"16:9"),
+        "Burned Longform captions work without an external .SRT sidecar");
+    defaultCaptionOptions.BurnInBoldCaptions=false;
+    Check(!CaptionRenderPolicy.ShouldBurn(defaultCaptionOptions,"16:9"),
+        "Longform Burn Captions toggle opt-out is respected");
+    Check(CaptionRenderPolicy.AssCanvas("16:9").Contains("PlayResX: 1920") &&
+        CaptionRenderPolicy.AssCanvas("16:9").Contains("PlayResY: 1080"),
+        "Longform captions render on correct 1920x1080 ASS canvas");
+    Check(CaptionRenderPolicy.AssCanvas("9:16").Contains("PlayResX: 1080") &&
+        CaptionRenderPolicy.AssCanvas("9:16").Contains("PlayResY: 1920"),
+        "Shorts retain their original 1080x1920 ASS canvas");
+    Check(CaptionRenderPolicy.AssStyle("16:9").Contains(",195,195,118,1") &&
+        CaptionRenderPolicy.AssStyle("9:16").Contains(",145,145,350,1"),
+        "Landscape and portrait margins are distinct and safe");
+    var widescreenCaptions = new List<string[]>
+    {
+        ["THE","CASE","BEGAN"],
+        ["JEFFREY","DAHMER","INVESTIGATORS"],
+        ["EXTRAORDINARILYLONGWORD","LONGEST","INTERVIEW"],
+        ["EVIDENCE","POINTED","SOMEWHERE"],
+        ["ZAK","BAGANS","DISAPPEARED"]
+    };
+    foreach(var words in widescreenCaptions)
+    {
+        Check(CaptionLayoutService.FitsInsideSafeWidth(words,true),
+            "16:9 caption remains on-screen and at most two lines: "+
+            string.Join(" ",words));
+        var formatted=CaptionLayoutService.Format(words,true);
+        Check(formatted.Contains("\\q2") &&
+            formatted.Split("\\N").Length<=2,
+            "16:9 caption explicitly disables libass automatic wrapping");
+    }
+    Check(CaptionLayoutService.FitsInsideSafeWidth(
+        ["THE","FINAL","RECORDING"],false),
+        "16:9 caption change does not modify Shorts 9:16 safe margins");
+
     Console.WriteLine("Character Bible regression checks passed.");
 }
 finally
