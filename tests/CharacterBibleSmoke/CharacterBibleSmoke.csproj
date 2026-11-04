@@ -9,5 +9,6 @@
     <Compile Include="../../src/ZeroVideo.App/Models/VideoProject.cs" Link="VideoProject.cs"/>
     <Compile Include="../../src/ZeroVideo.App/Services/CharacterConsistencyService.cs" Link="CharacterConsistencyService.cs"/>
     <Compile Include="../../src/ZeroVideo.App/Services/RealPersonIdentityService.cs" Link="RealPersonIdentityService.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/AutoRealPersonIdentityService.cs" Link="AutoRealPersonIdentityService.cs"/>
   </ItemGroup>
 </Project>
