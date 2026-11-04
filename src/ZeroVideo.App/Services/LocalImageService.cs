@@ -1067,7 +1067,8 @@ public sealed class LocalImageService
     private async Task<object> ApplyPuLidIdentityAsync(
         Dictionary<string,object> graph, RealPersonIdentity identity,
         ZeroVideoSettings settings, Action<string>? log,
-        CancellationToken ct, double strength)
+        CancellationToken ct, double strength,
+        SceneVisualPlanService.ShotPlan shot)
     {
         var portraits = RealPersonIdentityService.ApprovedReferences(identity);
         if (portraits.Count == 0)
@@ -1120,13 +1121,17 @@ public sealed class LocalImageService
             eva_clip=Ref("31",0),
             face_analysis=Ref("32",0),
             image=imageBatch,
-            weight=Math.Clamp(strength,0.35,1.1),
-            start_at=0.0,end_at=0.95
+            // Identity should not dominate environment or full-body scenes.
+            // Keep the user's chosen face strength for explicit face closeups,
+            // and reduce the conditioning window for wide/action scenes.
+            weight=Math.Clamp(strength*shot.IdentityMultiplier,0.25,1.1),
+            start_at=0.05,end_at=shot.Wide?0.72:0.88
         }};
         log?.Invoke("Real Person Identity Lock: feeding "+
             portraits.Count+" approved face photo(s) to PuLID-FLUX " +
-            "with FaceNet CPU analysis. Scene latent/seed stay independent. " +
-            "This requires enough GPU memory for the additional model.");
+            "with FaceNet CPU analysis; framing="+shot.Name+
+            ", reference weight multiplier="+shot.IdentityMultiplier.ToString("0.00")+
+            ". Scene latent, action, environment and seed stay independent.");
         return Ref("36",0);
     }
 
@@ -1203,33 +1208,49 @@ public sealed class LocalImageService
         var height=portrait?(isFlux?1024:1248):(isFlux?576:704);
         var isComicPage=style=="Comic Book Explainer";
         var styleCue=IllustratedStyleCue(style);
-        // Most important text first, then the action and props. A previous
-        // verbose prompt buried the main character in hundreds of words.
+        // The original prompt front-loaded "REAL PERSON IDENTITY" and
+        // called every vertical picture a "portrait". That biased FLUX and
+        // PuLID toward repeated studio headshots even when the script wanted
+        // an event, a location or a whole-body action.
+        var seed=fixedSeed??Random.Shared.NextInt64(1,long.MaxValue);
+        var shot=SceneVisualPlanService.Compose(narration,direction,query,
+            seed,realPersonIdentity is not null);
+        log?.Invoke("Scene visual direction: "+shot.Name+
+            "; staging follows narrated action and specific props.");
         var positive=string.Join(". ",new[]{
-            realPersonIdentity is null ? "" :
-                "REAL PERSON IDENTITY: depict " +
-                CompactLocalText(realPersonIdentity.Name,90) +
-                " as the visible human subject. Face identity is supplied " +
-                "by an approved reference photo, NOT by duplicating " +
-                "the photo's background or clothing. Keep this scene distinct",
+            "SCENE NARRATION / WHAT MUST BE DEPICTED: "+
+                CompactLocalText(narration,500),
+            "SPECIFIC ACTION AND SETTING: "+
+                CompactLocalText(direction,320),
+            "CAMERA AND SHOT SCALE: "+shot.Instruction,
+            "IMPORTANT OBJECTS / HISTORICAL CONTEXT: "+
+                CompactLocalText(query,160),
             styleCue,
             !string.IsNullOrWhiteSpace(characterDescription)?
-                "LOCKED RECURRING CHARACTERS: "+CompactLocalText(characterDescription,460):"",
-            "MOST IMPORTANT: "+CompactLocalText(narration,420),
-            "SHOW ON SCREEN: "+CompactLocalText(direction,240),
-            "COMPOSITION: create a fresh scene-specific viewpoint, shot scale, "+
-                "staging and environmental details. Any character reference "+
-                "is for identity only, NEVER copy its background, camera angle, "+
-                "position, lighting, vehicle or surroundings",
-            "Key props and setting: "+CompactLocalText(query,120),
+                "RECURRING CHARACTER APPEARANCE ONLY: "+
+                CompactLocalText(characterDescription,350):"",
+            realPersonIdentity is null ? "" :
+                "FACE IDENTITY ONLY: If "+
+                CompactLocalText(realPersonIdentity.Name,90)+
+                " appears in this scene, preserve their recognizable facial " +
+                "features from the imported portraits. Do not reproduce " +
+                "those portrait photos or position the face at the center " +
+                "unless THIS SCENE explicitly calls for a closeup. " +
+                "The scene's environment and action are the primary focus",
             "Video topic: "+CompactLocalText(topic,85),
-            portrait?"vertical 9:16 portrait":"horizontal 16:9 widescreen",
-            isComicPage?"complete multi-panel printed comic PAGE":"one coherent illustrated scene",
-            "no captions, readable text, watermarks, logos or interface"
+            portrait?"vertical 9:16 cinematic VIDEO FRAME":
+                "horizontal 16:9 cinematic VIDEO FRAME",
+            isComicPage?"complete multi-panel printed comic PAGE":
+                "one coherent cinematic scene",
+            "no subtitles, no readable text, no watermark, no logos or UI"
         }.Where(x=>!string.IsNullOrWhiteSpace(x)));
         var negative="bad anatomy, distorted hands, blurry, low-detail, text, " +
             "words, lettering, speech bubbles, captions, watermark, logo, "+
             "interface, screen capture, random extra objects, generic empty room";
+        if(realPersonIdentity is not null && shot.Wide)
+            negative+=", isolated headshot, tight face portrait, floating " +
+                "head, head-and-shoulders studio photo, cropped torso, " +
+                "blank studio backdrop, facial close-up";
         if(style=="Comic Book Explainer")
             negative+=", grayscale only, monochrome, black-and-white-only, "+
                 "glossy digital illustration, smooth gradients, photorealism";
@@ -1242,7 +1263,6 @@ public sealed class LocalImageService
                 "stock photo, 3D, plastic faces";
         static object Ref(string id,int n)=>new object[]{id,n};
         var graph=new Dictionary<string,object>();
-        var seed=fixedSeed??Random.Shared.NextInt64(1,long.MaxValue);
         object latent=Ref("5",0);
         if(isFlux)
         {
@@ -1301,7 +1321,7 @@ public sealed class LocalImageService
             // Face-only identity conditioning is not equivalent to img2img.
             // Reference photos must not replace the scene's latent or camera.
             modelSource=await ApplyPuLidIdentityAsync(graph,realPersonIdentity,
-                settings, log, ct, realPersonIdentityStrength);
+                settings, log, ct, realPersonIdentityStrength, shot);
         }
         if(isFlux)
             graph["3"]=new {class_type="KSampler",inputs=new
