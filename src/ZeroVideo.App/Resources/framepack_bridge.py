@@ -187,6 +187,24 @@ def main():
         assert "Subtle continuous movement" in motion_prompt("hold")
         assert "camera push-in" in motion_prompt("slow zoom in")
         assert find_video({"video": None}) is None
+        # Fake the Gradio configuration so API discovery is tested offline.
+        from io import BytesIO
+        from unittest.mock import patch
+        with patch.object(sys.modules[__name__], "urlopen",
+                          return_value=BytesIO(json.dumps({
+                              "dependencies": [{"api_name": "process"}]
+                          }).encode("utf-8"))):
+            assert find_framepack_api("http://127.0.0.1:7860") == "/process"
+        with patch.object(sys.modules[__name__], "urlopen",
+                          return_value=BytesIO(json.dumps({
+                              "dependencies": [{"api_name": "different_app"}]
+                          }).encode("utf-8"))):
+            try:
+                find_framepack_api("http://127.0.0.1:7860")
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("Unrelated Gradio UI incorrectly accepted.")
         print("FramePack adapter offline smoke tests passed.")
         return
     if args.probe:
