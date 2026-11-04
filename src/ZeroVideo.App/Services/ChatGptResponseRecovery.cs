@@ -24,6 +24,67 @@ public static class ChatGptResponseRecovery
             (visibleTextContainsCompleteJson &&
              unchangedVisibleTextDuration >= TimeSpan.FromSeconds(12)));
 
+    /// <summary>
+    /// A distinct response contract for browser automation. The caller adds a
+    /// unique request key and a final completion key to each JSON response.
+    /// The app saves the verified document to a local .json file; asking the
+    /// ChatGPT website to produce/download an attachment is not required.
+    /// </summary>
+    public static string BuildStrictJsonInstruction(string requestId)
+    {
+        var endValue = "ZV_END_" + requestId;
+        return "\n\nZEROVIDEO MACHINE-READABLE JSON OUTPUT (required for automatic import):\n" +
+            "Return exactly ONE complete, syntactically valid JSON object, no markdown fences, no commentary, no downloadable attachment.\n" +
+            "Use standard JSON with double-quoted keys/strings. Escape embedded newlines and quotes; never truncate a string or omit closing braces.\n" +
+            "Add a TOP-LEVEL string property named zerovideo_request_id, with EXACT value " + requestId + ", as the FIRST property.\n" +
+            "Add a TOP-LEVEL string property named zerovideo_end_marker, with EXACT value " + endValue + ", as the LAST property.\n" +
+            "Keep all the other requested top-level keys, chapters, scenes and fields unchanged. The two metadata fields are additional, not replacements.\n" +
+            "Do not repeat the instruction or return an example document. The complete object must parse as a single JSON file.";
+    }
+
+    public static string? FindJsonForRequest(string? conversationText, string requestId)
+    {
+        if (string.IsNullOrWhiteSpace(conversationText) || string.IsNullOrWhiteSpace(requestId))
+            return null;
+
+        string? lastMatch = null;
+        var depth = 0;
+        var start = -1;
+        var quoted = false;
+        var escaped = false;
+        for (var i = 0; i < conversationText.Length; i++)
+        {
+            var ch = conversationText[i];
+            if (quoted)
+            {
+                if (escaped) { escaped = false; continue; }
+                if (ch == '\\') { escaped = true; continue; }
+                if (ch == '"') quoted = false;
+                continue;
+            }
+            if (ch == '"') { if (depth > 0) quoted = true; continue; }
+            if (ch == '{') { if (depth == 0) start = i; depth++; continue; }
+            if (ch != '}' || depth == 0) continue;
+            depth--;
+            if (depth != 0 || start < 0) continue;
+            var candidate = conversationText[start..(i + 1)];
+            start = -1;
+            if (!candidate.Contains(requestId, StringComparison.Ordinal)) continue;
+            try
+            {
+                using var doc = JsonDocument.Parse(candidate);
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object ||
+                    !IsStringValue(root, "zerovideo_request_id", requestId) ||
+                    !IsStringValue(root, "zerovideo_end_marker", "ZV_END_" + requestId))
+                    continue;
+                lastMatch = candidate;
+            }
+            catch (JsonException) { /* May be a prompt example or streaming JSON. */ }
+        }
+        return lastMatch;
+    }
+
     public static string? FindFreshJson(
         IReadOnlyList<string> assistantCandidates,
         int baselineCount,

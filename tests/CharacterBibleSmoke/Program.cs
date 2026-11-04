@@ -101,6 +101,45 @@ Check(!ChatGptResponseRecovery.CanAcceptStableJson(true, 1,
     TimeSpan.FromSeconds(30), true),
     "Stop-control fallback requires repeated complete JSON observations");
 
+// Distinct assistant JSON contract: a unique request ID and completion marker.
+// These are tested against the page's mixed prompt/history/assistant text.
+const string machineRequestId = "ZV_8e9b5a4f3c2d41ed9a326470c0f0a321";
+const string differentRequestId = "ZV_00000000000000000000000000000000";
+const string machineJson = """
+{"zerovideo_request_id":"ZV_8e9b5a4f3c2d41ed9a326470c0f0a321","number":1,"title":"BTK","scenes":[{"number":1,"narration":"He was caught after the digital trace."}],"zerovideo_end_marker":"ZV_END_ZV_8e9b5a4f3c2d41ed9a326470c0f0a321"}
+""";
+const string olderMachineJson = """
+{"zerovideo_request_id":"ZV_00000000000000000000000000000000","number":1,"scenes":[{"narration":"old"}],"zerovideo_end_marker":"ZV_END_ZV_00000000000000000000000000000000"}
+""";
+var machinePrompt = ChatGptResponseRecovery.BuildStrictJsonInstruction(machineRequestId);
+Check(machinePrompt.Contains(machineRequestId, StringComparison.Ordinal) &&
+      machinePrompt.Contains("zerovideo_end_marker", StringComparison.Ordinal) &&
+      machinePrompt.Contains("valid JSON object", StringComparison.Ordinal),
+    "Every ZeroVideo browser prompt requests a distinct parseable JSON document");
+Check(ChatGptResponseRecovery.FindJsonForRequest(
+    "Old answer\n" + olderMachineJson + "\nNew answer\n" + machineJson,
+    machineRequestId) == machineJson,
+    "Tagged JSON detector selects exact current request instead of older response");
+Check(ChatGptResponseRecovery.FindJsonForRequest(
+    "Old answer\n" + olderMachineJson + "\nNew answer\n" + machineJson,
+    differentRequestId) == olderMachineJson,
+    "Tagged JSON detector matches a different request only to that request's JSON");
+Check(ChatGptResponseRecovery.FindJsonForRequest(
+    machinePrompt + "\n" + new string('x', 61035) + "\n" + machineJson,
+    machineRequestId) == machineJson,
+    "Tagged JSON detector works in 61k-character transcripts with prompt text");
+Check(ChatGptResponseRecovery.FindJsonForRequest(
+    machinePrompt + "\n" + machineJson[..^3], machineRequestId) is null,
+    "Truncated current JSON cannot be accepted before its final closing brace");
+Check(ChatGptResponseRecovery.FindJsonForRequest(
+    machinePrompt + "\n" + machineJson.Replace("zerovideo_end_marker", "invalid_end_key"),
+    machineRequestId) is null,
+    "Missing exact completion field is rejected even when JSON parses");
+Check(ChatGptResponseRecovery.FindJsonForRequest(
+    machinePrompt + "\n" + olderMachineJson,
+    machineRequestId) is null,
+    "The user's marked prompt and unrelated old JSON cannot satisfy current request");
+
 Check(!new ProjectOptions().EnableCharacterConsistency,
     "New projects keep Character Bible disabled by default");
 

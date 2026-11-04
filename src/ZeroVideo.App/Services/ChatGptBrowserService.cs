@@ -233,8 +233,10 @@ copyrighted photograph.
         var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
         var page = await GetProjectPageAsync(project, settings, log, ct);
 
+        var requestId = "ZV_" + Guid.NewGuid().ToString("N");
+        var markedPrompt = prompt + ChatGptResponseRecovery.BuildStrictJsonInstruction(requestId);
         log?.Invoke("ChatGPT: waiting for the live composer...");
-        await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, prompt, ct);
+        await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, markedPrompt, ct);
 
         // Record the assistant output BEFORE sending, so old chapter JSON
         // cannot be mistaken for the result of this request.
@@ -257,13 +259,60 @@ copyrighted photograph.
             baseline,
             baselineAssistant,
             baselineMainText,
-            prompt,
+            markedPrompt,
+            requestId,
             log,
             ct);
 
         RememberConversation(project, page);
+        var taggedJson = ChatGptResponseRecovery.FindJsonForRequest(response, requestId);
+        if (taggedJson is not null)
+        {
+            await SaveVerifiedJsonAsync(project, requestId, taggedJson, log, ct);
+            log?.Invoke("ChatGPT: exact request ID and JSON end marker verified.");
+            response = taggedJson;
+        }
+        else
+        {
+            // Compatibility: do not discard a valid untagged reply. Existing
+            // outline/chapter validators still decide whether it is usable.
+            var plainJson = ChatGptResponseRecovery.ExtractLastValidJsonObject(response);
+            if (plainJson is not null)
+            {
+                await SaveVerifiedJsonAsync(project, requestId, plainJson, log, ct);
+                response = plainJson;
+                log?.Invoke("ChatGPT: strict markers missing; validated JSON recovered.");
+            }
+        }
         log?.Invoke("ChatGPT: finished response detected.");
         return response;
+    }
+
+    private static async Task SaveVerifiedJsonAsync(
+        VideoProject project, string requestId, string json,
+        Action<string>? log, CancellationToken ct)
+    {
+        try
+        {
+            using var _ = JsonDocument.Parse(json);
+            var root = !string.IsNullOrWhiteSpace(project.ProjectDirectory)
+                ? project.ProjectDirectory
+                : AppPaths.DataDirectory;
+            var folder = Path.Combine(root, "chatgpt-json");
+            Directory.CreateDirectory(folder);
+            var destination = Path.Combine(folder, requestId + ".json");
+            var temporary = destination + ".tmp";
+            await File.WriteAllTextAsync(temporary, json, ct);
+            File.Move(temporary, destination, overwrite: true);
+            log?.Invoke("ChatGPT: verified JSON saved to " + destination);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            // A response is already valid; a disk permission failure must
+            // not cause generation to repeat or lose the completed chapter.
+            log?.Invoke("ChatGPT: could not save optional JSON copy: " + ex.Message);
+        }
     }
 
     private async Task<IPage> GetProjectPageAsync(VideoProject project, ZeroVideoSettings settings, Action<string>? log, CancellationToken ct)
@@ -485,6 +534,7 @@ copyrighted photograph.
         string baselineAssistant,
         string baselineMainText,
         string sentPrompt,
+        string requestId,
         Action<string>? log,
         CancellationToken ct)
     {
@@ -507,8 +557,11 @@ copyrighted photograph.
                 lastVisibleMainText = visibleMain;
                 unchangedMainSince = DateTime.UtcNow;
             }
-            var freshJson = ChatGptResponseRecovery.FindFreshJson(
-                candidates, baselineCount, baselineAssistant, baseline);
+            var freshJson = ChatGptResponseRecovery.FindJsonForRequest(
+                visibleMain, requestId);
+            if (freshJson is null)
+                freshJson = ChatGptResponseRecovery.FindFreshJson(
+                    candidates, baselineCount, baselineAssistant, baseline);
 
             // A new ChatGPT renderer can expose no identifiable assistant
             // nodes at all. The attached diagnostics confirm main.innerText
@@ -595,8 +648,10 @@ copyrighted photograph.
 
         ct.ThrowIfCancellationRequested();
         var finalCandidates = await ReadAssistantCandidatesAsync(page);
-        var recovered = ChatGptResponseRecovery.FindFreshJson(
-            finalCandidates, baselineCount, baselineAssistant, baseline);
+        var recovered = ChatGptResponseRecovery.FindJsonForRequest(
+            await ReadMainConversationTextAsync(page), requestId)
+            ?? ChatGptResponseRecovery.FindFreshJson(
+                finalCandidates, baselineCount, baselineAssistant, baseline);
         if (recovered is null ||
             baselineMainText.Contains(recovered, StringComparison.Ordinal) ||
             sentPrompt.Contains(recovered, StringComparison.Ordinal))
