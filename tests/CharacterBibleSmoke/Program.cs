@@ -140,6 +140,53 @@ Check(ChatGptResponseRecovery.FindJsonForRequest(
     machineRequestId) is null,
     "The user's marked prompt and unrelated old JSON cannot satisfy current request");
 
+// User-facing format is a literal Markdown JSON code fence with a Copy
+// control, not bare JSON prose or an attachment. The reader validates the
+// exact code block content even in a long conversation.
+var jsonFence = new string((char)96, 3);
+var fencedMachineJson = jsonFence + "json\n" + machineJson + "\n" + jsonFence;
+Check(machinePrompt.Contains("Markdown fenced JSON CODE BLOCK", StringComparison.Ordinal) &&
+      machinePrompt.Contains("visible Copy control", StringComparison.Ordinal) &&
+      machinePrompt.Contains("OVERRIDES ANY EARLIER", StringComparison.Ordinal),
+    "Strict JSON prompt requests a copyable fenced JSON code block, overriding no-markdown instructions");
+Check(ChatGptResponseRecovery.FindJsonInCodeBlock(
+    fencedMachineJson, machineRequestId) == machineJson,
+    "Code-block parser extracts one valid fenced JSON document");
+Check(ChatGptResponseRecovery.FindJsonInCodeBlock(
+    machineJson, machineRequestId) == machineJson,
+    "Code-block parser accepts rendered pre/code contents without literal fences");
+Check(ChatGptResponseRecovery.FindJsonInCodeBlock(
+    jsonFence + "json\n" + olderMachineJson + "\n" + jsonFence, machineRequestId) is null,
+    "Code-block parser rejects an older request's JSON");
+Check(ChatGptResponseRecovery.FindJsonInCodeBlock(
+    fencedMachineJson[..^5], machineRequestId) is null,
+    "Code-block parser rejects an incomplete or unclosed fenced response");
+Check(ChatGptResponseRecovery.FindJsonInCodeBlock(
+    jsonFence + "json\n" + machineJson.Replace("zerovideo_end_marker", "missing_marker") +
+    "\n" + jsonFence, machineRequestId) is null,
+    "Code-block parser requires the exact end marker");
+Check(ChatGptResponseRecovery.HasEndMarker(machineJson, machineRequestId),
+    "JSON completion marker can trigger targeted repair on parse failure");
+
+var invalidNewlineTaggedJson = machineJson.Replace(
+    "digital trace.", "digital\ntrace.", StringComparison.Ordinal);
+Check(ChatGptResponseRecovery.FindJsonForRequest(
+    invalidNewlineTaggedJson, machineRequestId) is null,
+    "Malformed JSON with a real newline in narration is not accepted as valid");
+Check(ChatGptResponseRecovery.FindTaggedCandidateForRepair(
+    "Old replies\n" + invalidNewlineTaggedJson, machineRequestId)
+    == invalidNewlineTaggedJson,
+    "Malformed completed tagged JSON is extracted for correction rather than timing out");
+Check(ChatGptResponseRecovery.FindTaggedCandidateForRepair(
+    machinePrompt, machineRequestId) is null,
+    "Prompt alone never triggers a fake JSON repair attempt");
+Check(ChatGptResponseRecovery.FindTaggedCandidateForRepair(
+    olderMachineJson, machineRequestId) is null,
+    "Old tagged JSON is not treated as the current response");
+Check(ChatGptResponseRecovery.FindTaggedCandidateForRepair(
+    invalidNewlineTaggedJson[..^3], machineRequestId) is null,
+    "Incomplete JSON without a final closing brace does not trigger premature correction");
+
 Check(!new ProjectOptions().EnableCharacterConsistency,
     "New projects keep Character Bible disabled by default");
 

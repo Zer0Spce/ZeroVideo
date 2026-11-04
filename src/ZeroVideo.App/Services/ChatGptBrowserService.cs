@@ -552,13 +552,17 @@ copyrighted photograph.
             var generating = await AnyVisibleAsync(page, stopSelectors);
             var candidates = await ReadAssistantCandidatesAsync(page);
             var visibleMain = await ReadMainConversationTextAsync(page);
+            var codeBlock = await ReadLatestJsonCodeBlockAsync(page, requestId);
             if (!string.Equals(visibleMain, lastVisibleMainText, StringComparison.Ordinal))
             {
                 lastVisibleMainText = visibleMain;
                 unchangedMainSince = DateTime.UtcNow;
             }
-            var freshJson = ChatGptResponseRecovery.FindJsonForRequest(
-                visibleMain, requestId);
+            // Prefer the actual visible Copy-code-block contents. The request
+            // ID is unique, so older code blocks cannot be mistaken for it.
+            var freshJson = ChatGptResponseRecovery.FindJsonInCodeBlock(
+                codeBlock, requestId)
+                ?? ChatGptResponseRecovery.FindJsonForRequest(visibleMain, requestId);
             if (freshJson is null)
                 freshJson = ChatGptResponseRecovery.FindFreshJson(
                     candidates, baselineCount, baselineAssistant, baseline);
@@ -603,6 +607,22 @@ copyrighted photograph.
             }
             else { lastJson = ""; stableJson = 0; }
 
+            // If ChatGPT rendered the full code block but the JSON inside
+            // does NOT parse, do not spin for 12 minutes. Pass the exact
+            // malformed block to the existing one-time JSON correction step.
+            var malformedResponse = ChatGptResponseRecovery.HasEndMarker(codeBlock, requestId)
+                ? codeBlock
+                : ChatGptResponseRecovery.FindTaggedCandidateForRepair(visibleMain, requestId);
+            if (!generating && freshJson is null &&
+                !string.IsNullOrWhiteSpace(malformedResponse) &&
+                DateTime.UtcNow - unchangedMainSince >= TimeSpan.FromSeconds(8))
+            {
+                log?.Invoke("ChatGPT: completed tagged JSON is not parseable; requesting one JSON correction instead of waiting for timeout.");
+                await SaveChatGptResponseDiagnosticAsync(page,
+                    "Invalid-Tagged-Json", malformedResponse, log);
+                return malformedResponse;
+            }
+
             // If ChatGPT produced non-JSON prose, hand that NEW response to
             // existing validation + retry, not an earlier completed chapter.
             if (!generating && DateTime.UtcNow - started > TimeSpan.FromSeconds(30))
@@ -640,6 +660,7 @@ copyrighted photograph.
             {
                 lastHeartbeat = DateTime.UtcNow;
                 log?.Invoke($"ChatGPT: awaiting response — visible characters: {visibleMain.Length}, " +
+                    $"JSON code block: {!string.IsNullOrWhiteSpace(codeBlock)}, " +
                     $"complete new JSON: {freshJson is not null}, Stop control visible: {generating}, " +
                     $"stable JSON polls: {stableJson}.");
             }
@@ -648,7 +669,9 @@ copyrighted photograph.
 
         ct.ThrowIfCancellationRequested();
         var finalCandidates = await ReadAssistantCandidatesAsync(page);
-        var recovered = ChatGptResponseRecovery.FindJsonForRequest(
+        var finalCodeBlock = await ReadLatestJsonCodeBlockAsync(page, requestId);
+        var recovered = ChatGptResponseRecovery.FindJsonInCodeBlock(finalCodeBlock, requestId)
+            ?? ChatGptResponseRecovery.FindJsonForRequest(
             await ReadMainConversationTextAsync(page), requestId)
             ?? ChatGptResponseRecovery.FindFreshJson(
                 finalCandidates, baselineCount, baselineAssistant, baseline);
@@ -677,6 +700,56 @@ copyrighted photograph.
     // The ChatGPT page can have new assistant markdown without stable role
     // attributes. Read all visible output blocks in DOM order, excluding
     // user turns. Never favor an older JSON just because it matches a selector.
+    /// <summary>
+    /// Copy from the rendered ChatGPT JSON code block itself, rather than
+    /// scraping the full conversation or assuming assistant role attributes.
+    /// The assistant's unique request ID identifies only its current block.
+    /// </summary>
+    private static async Task<string?> ReadLatestJsonCodeBlockAsync(IPage page, string requestId)
+    {
+        const string script = """
+            (requestId) => {
+              const root=document.querySelector('main') ||
+                document.querySelector('[role="main"]');
+              if(!root)return null;
+              const selectors=[
+                'pre code','pre','[data-language="json"] code',
+                '[data-testid*="code-block"] code','[data-testid*="codeblock"] code'
+              ];
+              let matches=[];
+              for(const selector of selectors) {
+                try {
+                  for(const n of root.querySelectorAll(selector)) {
+                    const text=(n.innerText||n.textContent||'').trim();
+                    if(text.includes(requestId) &&
+                       text.includes('"zerovideo_request_id"'))
+                      matches.push({n,text});
+                  }
+                } catch {}
+              }
+              matches.sort((a,b)=>{
+                const v=a.n.compareDocumentPosition(b.n);
+                return v&Node.DOCUMENT_POSITION_FOLLOWING?-1:
+                  v&Node.DOCUMENT_POSITION_PRECEDING?1:0;
+              });
+              return matches.length?matches[matches.length-1].text:null;
+            }
+            """;
+        foreach (var frame in page.Frames)
+        {
+            try
+            {
+                if (frame != page.MainFrame &&
+                    !frame.Url.Contains("chatgpt.com", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var text = await frame.EvaluateAsync<string?>(script, requestId);
+                if (!string.IsNullOrWhiteSpace(text)) return text;
+            }
+            catch (PlaywrightException) { /* Re-read after streaming rerender. */ }
+        }
+        return null;
+    }
+
     private static async Task<string> ReadMainConversationTextAsync(IPage page)
     {
         foreach (var frame in page.Frames)

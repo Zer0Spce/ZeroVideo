@@ -33,14 +33,92 @@ public static class ChatGptResponseRecovery
     public static string BuildStrictJsonInstruction(string requestId)
     {
         var endValue = "ZV_END_" + requestId;
-        return "\n\nZEROVIDEO MACHINE-READABLE JSON OUTPUT (required for automatic import):\n" +
-            "Return exactly ONE complete, syntactically valid JSON object, no markdown fences, no commentary, no downloadable attachment.\n" +
-            "Use standard JSON with double-quoted keys/strings. Escape embedded newlines and quotes; never truncate a string or omit closing braces.\n" +
-            "Add a TOP-LEVEL string property named zerovideo_request_id, with EXACT value " + requestId + ", as the FIRST property.\n" +
-            "Add a TOP-LEVEL string property named zerovideo_end_marker, with EXACT value " + endValue + ", as the LAST property.\n" +
-            "Keep all the other requested top-level keys, chapters, scenes and fields unchanged. The two metadata fields are additional, not replacements.\n" +
-            "Do not repeat the instruction or return an example document. The complete object must parse as a single JSON file.";
+        var fence = new string((char)96, 3);
+        return "\n\nFINAL OUTPUT FORMAT — OVERRIDES ANY EARLIER 'NO MARKDOWN' OR 'RAW JSON' INSTRUCTION:\n" +
+            "Render your ENTIRE response as exactly ONE Markdown fenced JSON CODE BLOCK with the visible Copy control. " +
+            "This is important: DO NOT display ordinary paragraph text or bare JSON on the page.\n" +
+            "The FIRST line must be literally " + fence + "json. " +
+            "The LAST line must be literally " + fence + ". No text before or after the block.\n" +
+            "Inside the code block write one complete, strictly valid JSON OBJECT (double quotes, escaped control characters, no trailing commas).\n" +
+            "The FIRST top-level key must be \"zerovideo_request_id\" with exact string value \"" + requestId + "\".\n" +
+            "The LAST top-level key must be \"zerovideo_end_marker\" with exact string value \"" + endValue + "\".\n" +
+            "Keep ALL required chapter/outline/scene fields, numbers, arrays and narration. Do not cut or abbreviate JSON.\n" +
+            "The output must be a COPYABLE code block, not a file attachment, image, table, text paragraph, or writing block.\n" +
+            "This valid JSON object must parse as a single .json file when copied from the code block.\n";
     }
+
+    /// <summary>
+    /// Preferred source: the text of a rendered JSON code block. Validate its
+    /// exact request ID and completion marker rather than relying on a page
+    /// selector or accepting any old JSON in the conversation.
+    /// </summary>
+    public static string? FindJsonInCodeBlock(string? codeText, string requestId)
+    {
+        if (string.IsNullOrWhiteSpace(codeText)) return null;
+        var trimmed = codeText.Trim();
+        var fence = new string((char)96, 3);
+        if (trimmed.StartsWith(fence, StringComparison.Ordinal))
+        {
+            var newline = trimmed.IndexOf('\n');
+            if (newline < 0 || !trimmed[..newline].Contains("json", StringComparison.OrdinalIgnoreCase))
+                return null;
+            trimmed = trimmed[(newline + 1)..].Trim();
+            if (!trimmed.EndsWith(fence, StringComparison.Ordinal)) return null;
+            trimmed = trimmed[..^3].Trim();
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(trimmed);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object ||
+                !IsStringValue(doc.RootElement, "zerovideo_request_id", requestId) ||
+                !IsStringValue(doc.RootElement, "zerovideo_end_marker", "ZV_END_" + requestId))
+                return null;
+            return trimmed;
+        }
+        catch (JsonException) { return null; }
+    }
+
+    /// <summary>
+    /// If ChatGPT ignores the fence format and writes malformed *bare* JSON,
+    /// extract only a newly emitted tagged object. Do not return the user's
+    /// own prompt or an earlier response as a repair candidate.
+    /// </summary>
+    public static string? FindTaggedCandidateForRepair(string? visibleMain, string requestId)
+    {
+        if (string.IsNullOrWhiteSpace(visibleMain) || string.IsNullOrWhiteSpace(requestId))
+            return null;
+
+        var key = "\"zerovideo_request_id\"";
+        var keyIndex = visibleMain.LastIndexOf(key, StringComparison.Ordinal);
+        if (keyIndex < 0) return null;
+
+        var open = visibleMain.LastIndexOf('{', keyIndex);
+        // The request ID is the FIRST property in the response. The appended
+        // prompt mentions the key but does not place it after an opening brace.
+        if (open < 0 || keyIndex - open > 160 ||
+            !string.IsNullOrWhiteSpace(visibleMain[(open + 1)..keyIndex]))
+            return null;
+
+        var endKey = "\"zerovideo_end_marker\"";
+        var endIndex = visibleMain.IndexOf(endKey, keyIndex, StringComparison.Ordinal);
+        if (endIndex < 0) return null;
+        var expectedValue = "\"ZV_END_" + requestId + "\"";
+        var valueIndex = visibleMain.IndexOf(expectedValue, endIndex, StringComparison.Ordinal);
+        if (valueIndex < 0) return null;
+        var close = visibleMain.IndexOf('}', valueIndex + expectedValue.Length);
+        if (close < 0) return null;
+
+        var candidate = visibleMain[open..(close + 1)];
+        if (!candidate.Contains("\"" + requestId + "\"", StringComparison.Ordinal))
+            return null;
+        return candidate;
+    }
+
+    public static bool HasEndMarker(string? content, string requestId)
+        => !string.IsNullOrWhiteSpace(content) &&
+           content.Contains("\"zerovideo_end_marker\"", StringComparison.Ordinal) &&
+           content.Contains("ZV_END_" + requestId, StringComparison.Ordinal);
 
     public static string? FindJsonForRequest(string? conversationText, string requestId)
     {
