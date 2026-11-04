@@ -13,6 +13,7 @@ public static class VisualStylePresets
         "Cartoon explainer",
         "Editorial Cartoon Explainer",
         "Cinematic Comic Explainer",
+        "Neo-Noir Detective Comic",
         "Comic Book Explainer",
         "Hand-drawn explainer",
         "Whiteboard explainer",
@@ -43,6 +44,9 @@ public static class VisualStylePresets
 
             "Editorial Cartoon Explainer" =>
                 "Polished editorial cartoon documentary style for long-form YouTube storytelling: bold clean black outlines, expressive slightly exaggerated human faces and poses, colorful hand-illustrated environments, simplified but recognizable architecture, technology and props, dynamic perspective, strong foreground/midground/background separation, cinematic composition, warm cel-shaded lighting, and clear story-driven scenes. Keep characters and environments fully illustrated rather than photorealistic or 3D. Do not add thumbnail headlines, captions, logos, UI, watermarks, or readable text unless the scene explicitly requires a historically necessary sign or document.",
+
+            "Neo-Noir Detective Comic" =>
+                "NEO-NOIR DETECTIVE COMIC STYLE: Fully illustrated 2D high-detail cinematic graphic-novel art inspired by a rain-soaked 1940s detective-city composition. Strong clean black ink contours, expressive grounded slightly stylized faces, realistic human proportions with restrained comic exaggeration, sophisticated cel shading and painted light gradients. Nighttime cobalt/slate-blue and black shadows, selective amber gaslamp glow, pink/violet/teal neon reflections, wet pavement, atmospheric depth, soft drifting rain or fog when the narration suits the scene. Layer foreground subjects against richly illustrated architecture and background scenery. Crisp fashion folds, trench coats and period props ONLY when story/era requires them. Preserve the factual location, people, environment, time of day, weather, era and action stated in the narration: DO NOT force every image to contain a detective, city, rain, hat, lamp, or neon. Emphasize dramatic chiaroscuro and controlled blue/amber color contrast while adapting scenery to the scene. One cohesive original illustration, never photorealism, 3D, anime, watercolor, flat vector, blurry concept art, or generic horror. No captions, UI, thumbnail headlines, logos or watermarks; signs only when historically necessary.",
 
             "Cinematic Comic Explainer" =>
                 "CINEMATIC COMIC EXPLAINER STYLE. Create a polished high-detail 2D digital comic illustration for long-form YouTube storytelling. Use bold clean black ink outlines around characters and important objects, expressive slightly exaggerated caricature faces, dynamic believable poses, detailed cel shading blended with smooth painted gradient lighting, cinematic rim light, warm highlights, deep colorful shadows, and vivid controlled color grading. Build strong foreground, midground and background depth with dynamic wide-angle compositions similar to premium illustrated documentary artwork or a modern comic-book movie poster. Keep vehicles, architecture, technology, clothing and environments recognizable and detailed. Fully illustrated, never photorealistic, never 3D, never anime, never watercolor. Do not add thumbnail headlines, captions, logos, UI, watermarks or readable text unless historically essential to the scene.",
