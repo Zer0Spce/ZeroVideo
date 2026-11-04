@@ -1396,7 +1396,8 @@
                                   ToolTip="Include this video in TikTok batch publishing, bulk scheduling and metadata retry."/>
                         <Border Grid.Column="1" Width="78" Height="106" CornerRadius="7" ClipToBounds="True"
                                 Background="#111117" VerticalAlignment="Center">
-                          <Image Source="{Binding ThumbnailPath}" Stretch="UniformToFill"/>
+                          <Image Source="{Binding ThumbnailPreview}" Stretch="UniformToFill"
+                                 ToolTip="Current thumbnail. Regenerate Thumbnail creates a new image and large text."/>
                         </Border>
                         <StackPanel Grid.Column="2" Margin="14,2,16,0" VerticalAlignment="Center">
                           <TextBlock Text="{Binding SeoTitle}" FontSize="15" FontWeight="SemiBold"
@@ -1423,6 +1424,11 @@
                         <Border Grid.Column="3" BorderBrush="{StaticResource Border}"
                                 BorderThickness="1,0,0,0" Padding="14,0,0,0" Margin="0,2,0,2">
                           <StackPanel VerticalAlignment="Center">
+                            <Button Content="Regenerate Thumbnail"
+                                    Style="{StaticResource SecondaryButton}" Margin="0,0,0,8"
+                                    Command="{Binding DataContext.RegeneratePublishThumbnailCommand, RelativeSource={RelativeSource AncestorType={x:Type ItemsControl}}}"
+                                    CommandParameter="{Binding}"
+                                    ToolTip="Regenerate only THIS video's cover with huge click-focused text; preserve MP4, metadata and schedule."/>
                             <CheckBox Content="Schedule on TikTok" IsChecked="{Binding IsScheduled, Mode=TwoWay}"
                                       FontSize="12" Margin="0,0,0,4"/>
                             <StackPanel>
