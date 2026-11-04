@@ -93,8 +93,10 @@ public sealed class FramePackAnimationService(ProcessRunner runner)
             try
             {
                 log?.Invoke($"FramePack: creating {seconds:0.0}s local AI micro-motion (a running FramePack instance is required)...");
+                // Force UTF-8 even if Windows locale uses cp1252/charmap.
+                // Gradio client prints non-ASCII progress text on startup.
                 var result = await runner.RunAsync(python,
-                    $"\"{WorkerPath}\" --job \"{jobPath}\"", Root, ct);
+                    $"-X utf8 -u \"{WorkerPath}\" --job \"{jobPath}\"", Root, ct);
                 if (result.ExitCode != 0 || !File.Exists(path)
                     || new FileInfo(path).Length <= 8192)
                     throw new IOException("Local FramePack adapter failed: " +
