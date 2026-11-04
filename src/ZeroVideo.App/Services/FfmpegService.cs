@@ -98,6 +98,7 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         Directory.CreateDirectory(exportsDir);
 
         var chapterOutputs = new List<string>();
+        var chapterTimings = new List<NarrationTimelineService.ChapterTiming>();
         var effects = new RenderEffectsState();
         foreach (var chapter in project.Chapters)
         {
@@ -107,7 +108,24 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
 
             var audioSeconds = await ProbeDurationAsync(chapter.AudioPath, settings, ct);
             if (audioSeconds <= 0) audioSeconds = Math.Max(1, chapter.TargetSeconds);
-            NormalizeSceneDurations(chapter, audioSeconds);
+            // One authoritative timing plan for the scene visuals, ASS
+            // captions and exported SRT. Distribute scene time based on
+            // actual spoken script and the chapter's detected voice pauses.
+            var voiceActivity = await DetectNarrationSpeechAsync(
+                chapter, settings, audioSeconds, log, ct);
+            var timing = NarrationTimelineService.Plan(
+                chapter, audioSeconds, voiceActivity);
+            chapterTimings.Add(timing);
+            for (var i = 0; i < chapter.Scenes.Count; i++)
+                chapter.Scenes[i].TargetSeconds = timing.Scenes[i].Duration;
+            chapter.TargetSeconds = (int)Math.Round(audioSeconds);
+            if (!NarrationTimelineService.ScriptsMatch(chapter))
+                log?.Invoke($"Chapter {chapter.Number}: saved scene text differs " +
+                    "from the original chapter TTS. Caption text will follow " +
+                    "the actual spoken chapter script rather than mixing scene drafts.");
+            log?.Invoke($"Chapter {chapter.Number}: aligned {timing.Scenes.Count} " +
+                $"scene(s) to {audioSeconds:0.00}s narration with " +
+                $"{timing.Speech.Count} detected speech interval(s).");
 
             var visual = await RenderChapterVisualAsync(project, chapter, settings, renderDir, effects, log, ct);
             var output = Path.Combine(renderDir, $"chapter-{chapter.Number:00}-final.mp4");
@@ -144,12 +162,14 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         }
 
         if (project.Options.GenerateCaptions)
-            await WriteSrtAsync(project, Path.ChangeExtension(finalPath, ".srt"), ct);
+            await WriteSrtAsync(project, Path.ChangeExtension(finalPath, ".srt"),
+                chapterTimings, ct);
 
         if (project.Options.BurnInBoldCaptions && project.AspectRatio == "9:16")
         {
             var captionAss = Path.Combine(renderDir, "styled-video-captions.ass");
-            if (await WriteBoldCaptionAssAsync(project, settings, captionAss, log, ct))
+            if (await WriteBoldCaptionAssAsync(
+                project, chapterTimings, captionAss, log, ct))
             {
                 var captionedMp4 = Path.Combine(renderDir, "video-with-styled-captions.mp4");
                 log?.Invoke("Rendering bold vertical captions: smaller all-white uppercase text, " +
@@ -714,8 +734,9 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
     }
 
     private async Task<bool> WriteBoldCaptionAssAsync(
-        VideoProject project, ZeroVideoSettings settings, string path,
-        Action<string>? log, CancellationToken ct)
+        VideoProject project,
+        IReadOnlyList<NarrationTimelineService.ChapterTiming> timelines,
+        string path, Action<string>? log, CancellationToken ct)
     {
         var sb = new StringBuilder();
         sb.AppendLine("[Script Info]")
@@ -723,150 +744,45 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
           .AppendLine("PlayResX: 1080")
           .AppendLine("PlayResY: 1920")
           .AppendLine("ScaledBorderAndShadow: yes")
-          .AppendLine("WrapStyle: 0")
+          .AppendLine("WrapStyle: 2")
           .AppendLine()
           .AppendLine("[V4+ Styles]")
           .AppendLine("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
-          .AppendLine("Style: Punchy,Arial Black,88,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,7,0,2,105,105,350,1")
+          .AppendLine("Style: Punchy,Arial Black,76,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,6,0,2,145,145,350,1")
           .AppendLine()
           .AppendLine("[Events]")
           .AppendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
 
         var elapsed = 0.0;
         var captions = 0;
-        foreach (var chapter in project.Chapters)
+        for(var chapterIndex=0; chapterIndex<project.Chapters.Count; chapterIndex++)
         {
             ct.ThrowIfCancellationRequested();
-            // The actual duration of the TTS chapter is the only reliable
-            // boundary between concatenated audio chapters.
-            var seconds = !string.IsNullOrWhiteSpace(chapter.AudioPath) &&
-                File.Exists(chapter.AudioPath)
-                ? await ProbeDurationAsync(chapter.AudioPath, settings, ct)
-                : 0;
-            if (seconds <= 0)
-                seconds = Math.Max(0.1, chapter.Scenes.Sum(sc => Math.Max(0.1, sc.TargetSeconds)));
-
-            var active = await DetectNarrationSpeechAsync(chapter, settings, seconds, log, ct);
-            var groups = new List<List<string>>();
-            var current = new List<string>();
-            // Clipchamp TTS uses chapter.Narration as its input, NOT the
-            // individual scene texts. Align exactly that narration first.
-            var script = !string.IsNullOrWhiteSpace(chapter.Narration)
-                ? chapter.Narration
-                : string.Join(" ", chapter.Scenes.Select(scene => scene.Narration));
-            var words = Regex.Matches(script,
-                @"[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*[.!?,;:]?")
-                .Select(m => m.Value).ToList();
-            foreach (var word in words)
+            var chapter = project.Chapters[chapterIndex];
+            var timing = timelines[chapterIndex];
+            var cues = NarrationTimelineService.CaptionCues(chapter,timing);
+            foreach (var cue in cues)
             {
-                var proposedLength = current.Sum(x => x.Length) + current.Count + word.Length;
-                if (current.Count > 0 && (current.Count >= 3 || proposedLength > 19))
-                {
-                    groups.Add(current);
-                    current = new List<string>();
-                }
-                current.Add(word);
-                // A caption must never straddle a sentence ending. This
-                // prevents fragments like "COMPANY APART. WHEN".
-                if (Regex.IsMatch(word, @"[.!?;:]$"))
-                {
-                    groups.Add(current);
-                    current = new List<string>();
-                }
-            }
-            if (current.Count > 0) groups.Add(current);
-
-            var chapterWeight = groups.Sum(g => g.Sum(CaptionWordWeight));
-            var used = 0.0;
-            foreach (var group in groups)
-            {
-                var groupWeight = group.Sum(CaptionWordWeight);
-                var from = elapsed + SpeechPosition(active, used / Math.Max(0.001, chapterWeight));
-                used += groupWeight;
-                var to = elapsed + SpeechPosition(active, used / Math.Max(0.001, chapterWeight));
-                if (to - from < 0.08) continue;
-                var caption = FitCaptionToSafeArea(group);
+                var caption = CaptionLayoutService.Format(cue.Words);
+                if(string.IsNullOrWhiteSpace(caption)) continue;
                 sb.Append("Dialogue: 0,")
-                  .Append(AssCaptionTime(from)).Append(',')
-                  .Append(AssCaptionTime(to))
+                  .Append(AssCaptionTime(elapsed+cue.Time.Start)).Append(',')
+                  .Append(AssCaptionTime(elapsed+cue.Time.End))
                   .Append(",Punchy,,0,0,0,,")
-                  .AppendLine(caption); // All text stays white: no color overrides.
+                  .AppendLine(caption);
                 captions++;
             }
-            elapsed += seconds;
+            log?.Invoke($"Captions chapter {chapter.Number}: {cues.Count} " +
+                "script phrases locked to the same scene timing as visuals.");
+            elapsed += timing.Duration;
         }
 
         if (captions == 0) return false;
         await File.WriteAllTextAsync(path, sb.ToString(), new UTF8Encoding(false), ct);
-        log?.Invoke($"Audio-aware captions written: {captions} short phrases, " +
-            "white only, auto-fit 70-88pt within safe margins; speech/pause timing preserved.");
+        log?.Invoke($"Narration-synced captions written: {captions} " +
+            "non-overlapping scene-bound phrases; all white, maximum 2 lines, " +
+            "42–76pt with protected side margins and no automatic line wraps.");
         return true;
-    }
-
-    // Estimate actual broad-face uppercase glyph widths in units of font size.
-    // ASS styles are rendered using 1080x1920 reference coordinates. We reserve
-    // >100px on each side and outline padding instead of letting libass crop
-    // lengthy phrases at the edges of the vertical frame.
-    private static double CaptionVisualUnits(string phrase)
-    {
-        double units = 0;
-        foreach (var c in phrase.ToUpperInvariant())
-        {
-            if (c == ' ') units += 0.32;
-            else if ("MW@%".Contains(c)) units += 0.95;
-            else if ("OQGHN".Contains(c)) units += 0.78;
-            else if ("IJL".Contains(c)) units += 0.46;
-            else if (".,!:;'’".Contains(c)) units += 0.23;
-            else if ("()-".Contains(c)) units += 0.42;
-            else units += 0.69;
-        }
-        return Math.Max(1, units);
-    }
-
-    private static string FitCaptionToSafeArea(IReadOnlyList<string> group)
-    {
-        var words = group.Select(EscapeAssCaptionWord).ToList();
-        var oneLine = string.Join(" ", words);
-        const int targetWidth = 795; // 1080px minus 2x105px margin + outline/safety.
-        var units = CaptionVisualUnits(oneLine);
-        var singleLineFont = (int)Math.Floor(targetWidth / units);
-        if (singleLineFont >= 73 || words.Count == 1)
-        {
-            var font = Math.Clamp(singleLineFont, 66, 88);
-            // Additional horizontal scaling protects unusually long words.
-            var scaling = Math.Min(100,
-                (int)Math.Floor(targetWidth * 100.0 / (units * font)));
-            return "{\\fs" + font + "\\fscx" + Math.Max(40, scaling) + "}" + oneLine;
-        }
-
-        // For longer phrases choose the most balanced word-boundary wrap;
-        // never break a word or leave its remainder clipped off-frame.
-        var bestIndex = 1;
-        var bestWidth = double.MaxValue;
-        for (var split = 1; split < words.Count; split++)
-        {
-            var left = CaptionVisualUnits(string.Join(" ", words.Take(split)));
-            var right = CaptionVisualUnits(string.Join(" ", words.Skip(split)));
-            var largest = Math.Max(left, right);
-            if (largest < bestWidth)
-            {
-                bestWidth = largest;
-                bestIndex = split;
-            }
-        }
-        var fittedSize = Math.Clamp((int)Math.Floor(targetWidth / bestWidth), 70, 88);
-        var lineScale = Math.Min(100,
-            (int)Math.Floor(targetWidth * 100.0 / (bestWidth * fittedSize)));
-        var first = string.Join(" ", words.Take(bestIndex));
-        var second = string.Join(" ", words.Skip(bestIndex));
-        return "{\\fs" + fittedSize + "\\fscx" + Math.Max(40, lineScale) +
-            "}" + first + "\\N" + second;
-    }
-
-    private static string EscapeAssCaptionWord(string value)
-    {
-        var upper = value.ToUpperInvariant();
-        return upper.Replace("\\", "").Replace("{", "").Replace("}", "");
     }
 
     private static string AssCaptionTime(double seconds)
@@ -879,24 +795,32 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         return string.Format(CultureInfo.InvariantCulture, "{0}:{1:00}:{2:00}.{3:00}", hh, mm, ss, cc);
     }
 
-    private static async Task WriteSrtAsync(VideoProject project, string path, CancellationToken ct)
+    private static async Task WriteSrtAsync(
+        VideoProject project,string path,
+        IReadOnlyList<NarrationTimelineService.ChapterTiming> timelines,
+        CancellationToken ct)
     {
-        var sb = new StringBuilder();
-        var index = 1;
-        double cursor = 0;
-
-        foreach (var chapter in project.Chapters)
-        foreach (var scene in chapter.Scenes)
+        var sb=new StringBuilder();
+        var index=1;
+        var chapterOffset=0.0;
+        for(var chapterIndex=0;chapterIndex<project.Chapters.Count;chapterIndex++)
         {
-            var end = cursor + scene.TargetSeconds;
-            sb.AppendLine(index++.ToString())
-              .AppendLine($"{Timestamp(cursor)} --> {Timestamp(end)}")
-              .AppendLine(scene.Narration.Trim())
-              .AppendLine();
-            cursor = end;
+            var chapter=project.Chapters[chapterIndex];
+            var timing=timelines[chapterIndex];
+            var spoken=NarrationTimelineService.SpokenSceneWords(chapter);
+            for(var i=0;i<chapter.Scenes.Count;i++)
+            {
+                var beat=timing.Scenes[i];
+                sb.AppendLine(index++.ToString())
+                  .AppendLine($"{Timestamp(chapterOffset+beat.Start)} --> " +
+                    $"{Timestamp(chapterOffset+beat.End)}")
+                  .AppendLine(string.Join(" ",spoken[i]).Trim())
+                  .AppendLine();
+            }
+            chapterOffset+=timing.Duration;
         }
-
-        await File.WriteAllTextAsync(path, sb.ToString(), ct);
+        await File.WriteAllTextAsync(path,sb.ToString(),
+            new UTF8Encoding(false),ct);
     }
 
     private static string Timestamp(double sec)
