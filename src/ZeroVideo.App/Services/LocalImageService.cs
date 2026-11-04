@@ -879,7 +879,10 @@ public sealed class LocalImageService
         ProjectScene scene,ZeroVideoSettings settings,Action<string>? log,CancellationToken ct)
     {
         var target=ProjectMedia.GeneratedImagePath(project,chapter,scene);
-        var cast=CharacterConsistencyService.Match(project,scene);
+        var identity=RealPersonIdentityService.Match(project,scene);
+        IReadOnlyList<ProjectCharacter> cast=identity is null
+            ? CharacterConsistencyService.Match(project,scene)
+            : [];
         var main=cast.FirstOrDefault();
         var descriptions=cast.Count==0?"":string.Join("; ",cast.Select(character=>
             character.Name+": "+CharacterConsistencyService.IdentityDescription(character)));
@@ -891,6 +894,10 @@ public sealed class LocalImageService
         var seed=CharacterConsistencyService.StableSeed(
             project.Id+"|shot|"+chapter.Number+"|"+scene.Number+
             "|"+(main?.Seed.ToString()??"no-character"));
+        if(identity is not null)
+            log?.Invoke("Real Person Identity Lock: "+identity.Name+
+                " is visibly depicted; applying approved face references, " +
+                "with a separate independent scene seed.");
         if(main is not null)
             log?.Invoke("Character Bible "+main.Name+": identity guidance only; "+
                 (reference is not null?"approved imported portrait selected. "
@@ -929,7 +936,8 @@ public sealed class LocalImageService
                         project.Title,project.Topic,"Vintage Comic Panel",
                         project.AspectRatio,chapter.Title,scene.Narration,
                         directions[i]+scene.ImagePrompt,scene.VisualQuery,
-                        panel,settings,log,ct,panelSeed,reference,descriptions);
+                        panel,settings,log,ct,panelSeed,reference,descriptions,identity,
+                        project.Options.RealPersonIdentityStrength);
                 }
                 // Do not auto-capture a full panel as a character reference.
                 // An approved imported portrait is the only image anchor.
@@ -944,7 +952,8 @@ public sealed class LocalImageService
         }
         await GenerateToPathAsync(project.Title,project.Topic,project.Style,project.AspectRatio,
             chapter.Title,scene.Narration,scene.ImagePrompt,scene.VisualQuery,
-            target,settings,log,ct,seed,reference,descriptions);
+            target,settings,log,ct,seed,reference,descriptions,identity,
+            project.Options.RealPersonIdentityStrength);
         scene.MediaPath=target;
         return target;
     }
@@ -1049,17 +1058,90 @@ public sealed class LocalImageService
             "consistent style, clear subject and recognizable setting"
     };
 
+    private async Task<object> ApplyPuLidIdentityAsync(
+        Dictionary<string,object> graph, RealPersonIdentity identity,
+        ZeroVideoSettings settings, Action<string>? log,
+        CancellationToken ct, double strength)
+    {
+        var portraits = RealPersonIdentityService.ApprovedReferences(identity);
+        if (portraits.Count == 0)
+            throw new LocalImageSetupException(
+                "Real Person Identity Lock is ON for " + identity.Name +
+                ", but no approved local face photo exists. Import 1–3 " +
+                "clear photos in Local Images → Real Person Identity Lock.");
+        await TestPulidIdentityAdapterAsync(log, ct);
+        static object Ref(string id,int n) => new object[]{id,n};
+
+        // Each source photo is used as FACE identity conditioning, NOT as
+        // a VAEEncode source latent. Scene layout and action stay independent.
+        object imageBatch=Ref("50",0);
+        for(var i=0;i<portraits.Count;i++)
+        {
+            var id=(40+i).ToString();
+            var scaled=(50+i).ToString();
+            var uploaded=await UploadCharacterReferenceAsync(portraits[i],ct);
+            graph[id]=new{class_type="LoadImage",inputs=new{image=uploaded}};
+            graph[scaled]=new{class_type="ImageScale",inputs=new
+            {
+                image=Ref(id,0),upscale_method="lanczos",
+                width=512,height=512,crop="center"
+            }};
+            if(i==0)
+                imageBatch=Ref(scaled,0);
+            else
+            {
+                var combo=(60+i).ToString();
+                graph[combo]=new{class_type="ImageBatch",inputs=new
+                {
+                    image1=imageBatch,image2=Ref(scaled,0)
+                }};
+                imageBatch=Ref(combo,0);
+            }
+        }
+        graph["30"]=new {class_type="PulidFluxModelLoader",inputs=new
+        {
+            pulid_file=PulidFile
+        }};
+        graph["31"]=new {class_type="PulidFluxEvaClipLoader",inputs=new{}};
+        graph["32"]=new {class_type="PulidFluxFaceNetLoader",inputs=new
+        {
+            provider="CPU"
+        }};
+        graph["36"]=new {class_type="ApplyPulidFlux",inputs=new
+        {
+            model=Ref("4",0),
+            pulid_flux=Ref("30",0),
+            eva_clip=Ref("31",0),
+            face_analysis=Ref("32",0),
+            image=imageBatch,
+            weight=Math.Clamp(strength,0.35,1.1),
+            start_at=0.0,end_at=0.95
+        }};
+        log?.Invoke("Real Person Identity Lock: feeding "+
+            portraits.Count+" approved face photo(s) to PuLID-FLUX " +
+            "with FaceNet CPU analysis. Scene latent/seed stay independent. " +
+            "This requires enough GPU memory for the additional model.");
+        return Ref("36",0);
+    }
+
     public async Task GenerateToPathAsync(string title,string topic,string style,
         string ratio,string chapter,string narration,string direction,string query,
         string destination,ZeroVideoSettings settings,Action<string>? log,CancellationToken ct,
         long? fixedSeed=null,string? characterReferenceImage=null,
-        string? characterDescription=null)
+        string? characterDescription=null,RealPersonIdentity? realPersonIdentity=null,
+        double realPersonIdentityStrength=0.75)
     {
         if(!await IsOnlineAsync(ct))
             await StartAsync(log,ct);
         var checkpoint=string.IsNullOrWhiteSpace(settings.LocalImageCheckpointFile)?
             SdxlFileName:Path.GetFileName(settings.LocalImageCheckpointFile);
         var isFlux=checkpoint==FluxGgufFileName;
+        if(realPersonIdentity is not null && !isFlux)
+            throw new LocalImageSetupException(
+                "Real Person Identity Lock requires a compatible FLUX local image " +
+                "checkpoint. Select FLUX.1-schnell Q4 under Local Images, " +
+                "or disable Identity Lock for this project.");
+
         // Exact file name only. Never accept arbitrary local/network paths in
         // the ComfyUI checkpoint loader.
         if(isFlux)
@@ -1085,6 +1167,12 @@ public sealed class LocalImageService
         // Most important text first, then the action and props. A previous
         // verbose prompt buried the main character in hundreds of words.
         var positive=string.Join(". ",new[]{
+            realPersonIdentity is null ? "" :
+                "REAL PERSON IDENTITY: depict " +
+                CompactLocalText(realPersonIdentity.Name,90) +
+                " as the visible human subject. Face identity is supplied " +
+                "by an approved reference photo, NOT by duplicating " +
+                "the photo's background or clothing. Keep this scene distinct",
             styleCue,
             !string.IsNullOrWhiteSpace(characterDescription)?
                 "LOCKED RECURRING CHARACTERS: "+CompactLocalText(characterDescription,460):"",
@@ -1168,12 +1256,20 @@ public sealed class LocalImageService
                 "Higher denoise prioritizes the current scene composition; "+
                 "facial identity is not guaranteed.");
         }
+        object modelSource=Ref("4",0);
+        if(realPersonIdentity is not null)
+        {
+            // Face-only identity conditioning is not equivalent to img2img.
+            // Reference photos must not replace the scene's latent or camera.
+            modelSource=await ApplyPuLidIdentityAsync(graph,realPersonIdentity,
+                settings, log, ct, realPersonIdentityStrength);
+        }
         if(isFlux)
             graph["3"]=new {class_type="KSampler",inputs=new
             {
                 seed,steps=4,cfg=1.0,sampler_name="euler",scheduler="simple",
                 denoise=hasReference?0.89:1.0,
-                model=Ref("4",0),positive=Ref("13",0),negative=Ref("12",0),
+                model=modelSource,positive=Ref("13",0),negative=Ref("12",0),
                 latent_image=latent
             }};
         else
