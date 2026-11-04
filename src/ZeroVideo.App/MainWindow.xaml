@@ -1407,10 +1407,8 @@
             <TextBox Width="120" Text="{Binding Settings.LivePortraitMaxClipsPerVideo, UpdateSourceTrigger=LostFocus}"/>
             <Label Content="MOTION STRENGTH" Margin="0,8,0,0"/>
             <ComboBox Width="160" HorizontalAlignment="Left"
-                      SelectedItem="{Binding Settings.LivePortraitMotionStrength, Mode=TwoWay}">
-              <ComboBoxItem Content="Low"/>
-              <ComboBoxItem Content="Medium"/>
-            </ComboBox>
+                      ItemsSource="{Binding LivePortraitMotionStrengthOptions}"
+                      SelectedItem="{Binding Settings.LivePortraitMotionStrength, Mode=TwoWay}"/>
             <CheckBox Content="Natural blink (when a face is detected)"
                       IsChecked="{Binding Settings.LivePortraitBlink}" Margin="0,10,0,0"/>
             <CheckBox Content="Fallback to camera motion for unrecognized faces / environments"
