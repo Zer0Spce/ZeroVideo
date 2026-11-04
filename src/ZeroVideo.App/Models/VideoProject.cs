@@ -22,6 +22,13 @@ public sealed class VideoProject
     /// anchor images. References are copied into the project on approval.
     /// </summary>
     public List<ProjectCharacter> Characters { get; set; } = [];
+    /// <summary>
+    /// Opt-in, user-provided references for real, named people. References
+    /// are never collected from the internet or added automatically.
+    /// Separate from the legacy fictional Character Bible.
+    /// </summary>
+    public List<RealPersonIdentity> RealPeople { get; set; } = [];
+
 
     public List<string> Sources { get; set; } = [];
     public ProjectOptions Options { get; set; } = new();
@@ -57,6 +64,12 @@ public sealed class ProjectOptions
     // Opt in only for projects with visibly recurring people. Reusing an
     // entire scene as a reference can otherwise lock its background/layout.
     public bool EnableCharacterConsistency { get; set; } = false;
+    // Identity conditioning only applies to visible, explicitly named people.
+    // Keep default OFF: local FLUX Schnell + PuLID is GPU-intensive and
+    // requires an independently installed compatible ComfyUI identity adapter.
+    public bool EnableRealPersonIdentityLock { get; set; } = false;
+    public double RealPersonIdentityStrength { get; set; } = 0.75;
+
     // Local ComfyUI only: render three distinct vintage panels and assemble a comic page.
     public bool VintageComicPanelComposition { get; set; } = true;
 
@@ -122,4 +135,12 @@ public sealed class ProjectCharacter
     public string ReferenceImagePath { get; set; } = "";
     public bool Enabled { get; set; } = true;
     public long Seed { get; set; } = 0;
+}
+
+public sealed class RealPersonIdentity
+{
+    public string Name { get; set; } = "";
+    // Up to three explicit user-approved local portrait references.
+    public List<string> ReferencePaths { get; set; } = [];
+    public bool Enabled { get; set; } = true;
 }
