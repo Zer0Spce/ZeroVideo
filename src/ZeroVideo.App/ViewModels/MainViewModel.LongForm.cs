@@ -299,7 +299,20 @@ public sealed partial class MainViewModel
                         break;
                     }
                 }
-                else Log("Recovery: existing completed MP4 retained. Resuming thumbnail only.");
+                else
+                {
+                    Log("Recovery: existing completed MP4 retained. Resuming thumbnail only.");
+                    // The previous process could have exited after FFmpeg
+                    // finished but before temporary portrait cleanup.
+                    // Only tracked auto-generated reference PNGs are deleted.
+                    if ((Project.RealPeople ?? []).Any(p =>
+                        p.AutoTemporaryReferencePaths?.Count > 0) ||
+                        Project.AutoIdentityEnabledByVideo)
+                    {
+                        AutoRealPersonIdentityService.Cleanup(Project, Log);
+                        await _store.SaveAsync(Project,Settings.ProjectsRoot);
+                    }
+                }
                 entry.Status="Thumbnail";
                 try
                 {
