@@ -14,6 +14,17 @@
     <PackageReference Include="Microsoft.Playwright" Version="1.63.0" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Resources\omnivoice_worker.py" />
+    <EmbeddedResource Include="Resources\zerovideo_idle_driver.py" />
+    <EmbeddedResource Include="Resources\zerovideo_idle_driver_init.py" />
+    <EmbeddedResource Include="Resources\liveportrait_import_probe.py" />
+    <EmbeddedResource Include="Resources\liveportrait_face_probe.py" />
+    <EmbeddedResource Include="Resources\liveportrait_onnx_probe.py" />
+    <EmbeddedResource Include="Resources\liveportrait_mediapipe_compat.py" />
+    <EmbeddedResource Include="Resources\pulid_import_probe.py" />
+    <EmbeddedResource Include="Resources\pulid_flux_compat.py" />
+  </ItemGroup>
+  <ItemGroup>
     <None Include="..\..\profiles\automation.default.json" Link="profiles\automation.default.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
