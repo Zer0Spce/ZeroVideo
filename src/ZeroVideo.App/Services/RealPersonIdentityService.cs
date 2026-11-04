@@ -41,17 +41,20 @@ public static class RealPersonIdentityService
     public static RealPersonIdentity? Match(
         VideoProject project, ProjectScene scene)
     {
-        if (!project.Options.EnableRealPersonIdentityLock ||
-            !HasVisiblePerson(scene))
+        if (!project.Options.EnableRealPersonIdentityLock)
             return null;
         var people = (project.RealPeople ?? []).Where(p =>
             p.Enabled && !string.IsNullOrWhiteSpace(p.Name)).ToList();
         var visual = (scene.ImagePrompt ?? "") + " " +
                      (scene.VisualQuery ?? "");
         // Visual explicitly naming a person takes priority over narration.
+        // A named subject in the actual visual prompt is strong evidence
+        // even if the prompt says "Zak Bagans in a hallway" without "man".
+        // Explicit empty/evidence-only instructions still override it.
+        if (NoHuman.IsMatch(visual)) return null;
         var inPicture = people.Where(p => Mentions(visual, p.Name.Trim())).ToList();
         if (inPicture.Count == 1) return inPicture[0];
-        if (inPicture.Count > 1) return null;
+        if (inPicture.Count > 1 || !HumanVisual.IsMatch(visual)) return null;
         var narrated = people.Where(p =>
             Mentions(scene.Narration ?? "", p.Name.Trim())).ToList();
         return narrated.Count == 1 ? narrated[0] : null;
