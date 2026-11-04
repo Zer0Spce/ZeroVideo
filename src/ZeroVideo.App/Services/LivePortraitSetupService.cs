@@ -165,6 +165,10 @@ public sealed class LivePortraitSetupService(ProcessRunner runner)
         // exists from an earlier/partially completed installation.
         await InstallCompatibleDependenciesAsync(log, ct);
         EnsureDriver();
+        // A successful pip install is insufficient: ComfyUI must actually
+        // import and register the pinned Kijai extension and ZeroVideo node.
+        var probe = await DiagnoseImportsAsync(ct);
+        log?.Invoke(probe);
         log?.Invoke("LivePortrait and ZeroVideo idle driver installed. " +
             "Restart ComfyUI, then test connection. Model weights will " +
             "download locally the first time LivePortrait runs.");
@@ -216,7 +220,8 @@ public sealed class LivePortraitSetupService(ProcessRunner runner)
             "-s -m pip install --disable-pip-version-check " +
             "--only-binary=:all: --upgrade-strategy only-if-needed " +
             "\"pyyaml\" \"opencv-python\" \"onnxruntime-gpu\" " +
-            "\"pykalman\" \"onnx2torch\" \"" + mediaPipe +
+            "\"pykalman\" \"onnx2torch\" \"kornia\" \"safetensors\" " +
+            "\"huggingface_hub\" \"tqdm\" \"" + mediaPipe +
             "\" \"" + numpy + "\"",
             LocalImageService.PortableRoot, ct);
         if (result.ExitCode != 0)
@@ -233,7 +238,7 @@ public sealed class LivePortraitSetupService(ProcessRunner runner)
             "-s -c \"import mediapipe as mp; " +
             "from mediapipe.tasks import python; " +
             "from mediapipe.tasks.python import vision; " +
-            "import cv2,numpy,onnxruntime,pykalman,onnx2torch; " +
+            "import cv2,numpy,onnxruntime,pykalman,onnx2torch,kornia; " +
             "print('LivePortrait dependencies verified')\"",
             LocalImageService.PortableRoot, ct);
         if (verification.ExitCode != 0)
@@ -244,6 +249,39 @@ public sealed class LivePortraitSetupService(ProcessRunner runner)
                     verification.StdErr[^1400..] : verification.StdErr));
         log?.Invoke("LivePortrait dependency imports verified in ComfyUI Python. " +
             "Restart ComfyUI before running its face nodes.");
+    }
+
+    /// <summary>
+    /// Imports the actual extensions using the installed ComfyUI Python
+    /// without generating frames or changing checkpoints. Unlike a generic
+    /// node-not-found error this returns the real missing module/traceback.
+    /// </summary>
+    public async Task<string> DiagnoseImportsAsync(CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(EmbeddedPython))
+            throw new FileNotFoundException("ComfyUI's bundled Python is missing.");
+        var file = Path.Combine(AppPaths.ManagedToolsDirectory,
+            "liveportrait_import_probe.py");
+        CopyResource("liveportrait_import_probe.py", file);
+        var root = Path.Combine(LocalImageService.PortableRoot, "ComfyUI");
+        var args = "-X utf8 -s -u \"" + file +
+            "\" --comfy-root \"" + root +
+            "\" --liveportrait-root \"" + NodeFolder +
+            "\" --driver-root \"" + DriverFolder + "\"";
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        limit.CancelAfter(TimeSpan.FromSeconds(120));
+        var result = await runner.RunAsync(
+            EmbeddedPython, args, LocalImageService.PortableRoot, limit.Token);
+        if (result.ExitCode != 0)
+        {
+            var error = (result.StdErr + Environment.NewLine + result.StdOut).Trim();
+            if (error.Length > 3500) error = error[^3500..];
+            throw new InvalidOperationException(
+                "LivePortrait extension failed to import into ComfyUI. " +
+                "Actual Python traceback: " + error);
+        }
+        return "LivePortrait Python imports verified: " +
+            result.StdOut.Trim().Replace("\r", "").Replace("\n", " | ");
     }
 
 }
