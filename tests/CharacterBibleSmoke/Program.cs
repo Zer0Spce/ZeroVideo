@@ -491,6 +491,29 @@ try
         ["THE","FINAL","RECORDING"],false),
         "16:9 caption change does not modify Shorts 9:16 safe margins");
 
+    var thumbnailTitles = new[]
+    {
+        ("John Wayne Gacy — The Killer Who Buried Victims Beneath His House", "BURIED VICTIMS"),
+        ("Jeffrey Dahmer — The Serial Killer Who Escaped Police Suspicion", "ESCAPED POLICE SUSPICION"),
+        ("Ted Bundy — The Charming Killer Who Escaped Twice", "ESCAPED TWICE"),
+        ("Zak Bagans — The Ghost Hunter Who Built an Empire Around the Paranormal", "BUILT"),
+        ("The Black Dahlia Murder — Hollywood's Most Haunting Unsolved Mystery", "UNSOLVED MYSTERY")
+    };
+    foreach (var (title, expected) in thumbnailTitles)
+    {
+        var hook=ThumbnailHeadlineService.Hook(title,"",0);
+        Check(hook.Split(' ',StringSplitOptions.RemoveEmptyEntries).Length<=5,
+            "Thumbnail hook limited to five words: "+title);
+        Check(hook.Contains(expected,StringComparison.OrdinalIgnoreCase),
+            "Thumbnail text accurately reflects source title: "+hook);
+        Check(ThumbnailHeadlineService.Lines(hook).Count<=2,
+            "Large thumbnail headline has at most two lines");
+        Check(ThumbnailHeadlineService.Hook(title,"",1).Split(' ').Length<=5,
+            "Alternate regenerated hook remains concise");
+    }
+    Check(!ThumbnailHeadlineService.Hook("The Zodiac Killer","",0)
+        .Contains("CAUGHT",StringComparison.Ordinal),
+        "Unsolved case is never given fabricated caught claim");
     Console.WriteLine("Character Bible regression checks passed.");
 }
 finally
