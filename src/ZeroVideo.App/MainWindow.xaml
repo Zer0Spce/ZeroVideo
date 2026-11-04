@@ -750,15 +750,46 @@
                            Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
               </StackPanel>
             </Border>
+
+          </StackPanel>
+        </ScrollViewer>
+        </DockPanel>
+      </TabItem>
+
+      <TabItem Header="Identity Studio">
+        <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,12,0,0">
+          <StackPanel MaxWidth="990" HorizontalAlignment="Left" Margin="0,0,12,20">
+            <TextBlock Text="Identity Studio" FontSize="24" FontWeight="SemiBold" Margin="0,0,0,7"/>
+            <TextBlock Text="Visible here: Real Person Identity Lock, auto ChatGPT portrait creation, manual photo references, and one-click PuLID-FLUX setup. Settings apply to the active project only. Choose a real person's full name to begin."
+                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,12"/>
             <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
               <StackPanel>
-                <TextBlock Text="6. Real Person Identity Lock (FLUX — optional)" FontSize="18" FontWeight="SemiBold"/>
+                <TextBlock Text="Real Person Identity Lock (FLUX — optional)" FontSize="18" FontWeight="SemiBold"/>
                 <TextBlock Text="Maintain the recognizable face of a real person (Zak Bagans, Jeffrey Dahmer, etc.) from 1–3 approved local portrait photos. Only scenes visibly depicting that named person use identity conditioning. This is separate from Character Bible: background, clothing, framing and scene actions are free to change. OFF by default; no automatic photo scraping."
                            Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,9"/>
                 <CheckBox Content="Enable Real Person Identity Lock for this project"
                           IsChecked="{Binding Project.Options.EnableRealPersonIdentityLock, Mode=TwoWay}"
                           ToolTip="Only applies to explicitly named, visible people with approved reference photos using local FLUX and a PuLID identity adapter."
                           Margin="0,2,0,8"/>
+                <Border Background="{StaticResource AccentSoft}" CornerRadius="10" Padding="10" Margin="0,7,0,14">
+                  <StackPanel>
+                    <TextBlock Text="QUICK START — AUTO REFERENCES" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                    <TextBlock Text="Select a person below, or enter their name (e.g. Zak Bagans). ZeroVideo can send 1–2 portrait prompts to your signed-in ChatGPT, capture each original PNG, and attach the finished illustrations to this project automatically. Uses the current project visual style."
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                    <WrapPanel>
+                      <Button Style="{StaticResource PrimaryButton}"
+                              Content="Auto Generate &amp; Attach ChatGPT Portraits"
+                              Command="{Binding GenerateChatGptIdentityGuidesCommand}"
+                              ToolTip="Generates 1–2 single-face stylized portraits in ChatGPT and saves real PNGs under your project identity references folder."/>
+                      <TextBlock Text="Portraits" VerticalAlignment="Center" Margin="12,0,4,0"/>
+                      <ComboBox Width="64" HorizontalAlignment="Left" VerticalAlignment="Center"
+                                ItemsSource="{Binding IdentityPortraitCountOptions}"
+                                SelectedItem="{Binding IdentityPortraitCount, Mode=TwoWay}"/>
+                    </WrapPanel>
+                    <TextBlock Text="AI-generated references approximate public figures; they are NOT verified historical photos or guaranteed likenesses. For accuracy use Import Approved Face Photo. ZeroVideo never silently scrapes pictures from websites."
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                  </StackPanel>
+                </Border>
                 <TextBlock Text="REAL PERSON REFERENCE PROFILES" FontWeight="SemiBold" Margin="0,4,0,6"/>
                 <DataGrid ItemsSource="{Binding Project.RealPeople}"
                           SelectedItem="{Binding SelectedRealPerson, Mode=TwoWay}"
@@ -767,7 +798,7 @@
                   <DataGrid.Columns>
                     <DataGridCheckBoxColumn Header="Use" Binding="{Binding Enabled, Mode=TwoWay}" Width="55"/>
                     <DataGridTextColumn Header="Real person name" Binding="{Binding Name}" Width="200" IsReadOnly="True"/>
-                    <DataGridTextColumn Header="Reference photos (up to 3)"
+                    <DataGridTextColumn Header="Attached refs (up to 3)"
                                         Binding="{Binding ReferencePaths.Count}" IsReadOnly="True" Width="*"/>
                   </DataGrid.Columns>
                 </DataGrid>
@@ -796,6 +827,10 @@
                 <WrapPanel Margin="0,10,0,0">
                   <Button Style="{StaticResource PrimaryButton}" Content="Save Identity Lock"
                           Command="{Binding SaveIdentityLockCommand}"/>
+                  <Button Style="{StaticResource PrimaryButton}"
+                          Content="Install &amp; Set Up PuLID-FLUX (1 Click)"
+                          Command="{Binding InstallPuLidNodesCommand}"
+                          ToolTip="Installs the pinned PuLID extension and compatible FaceNet dependencies into ZeroVideo's existing local ComfyUI, then downloads verified model weights."/>
                   <Button Style="{StaticResource SecondaryButton}" Content="Download PuLID Identity Models (~2GB)"
                           Command="{Binding DownloadPuLidIdentityModelsCommand}"/>
                   <Button Style="{StaticResource SecondaryButton}" Content="Test PuLID Identity Adapter"
@@ -803,7 +838,7 @@
                 </WrapPanel>
                 <TextBlock Text="{Binding IdentityLockStatus}" Foreground="{StaticResource AccentHover}"
                            TextWrapping="Wrap" Margin="0,10,0,0"/>
-                <TextBlock Text="Requires the lldacing/ComfyUI_PuLID_Flux_ll extension with FaceNet support, plus the PuLID/EVA weights. Install the custom nodes through ComfyUI Manager and restart the local ComfyUI server. Model downloads are opt-in. Works only with Local FLUX; ChatGPT image generation is unchanged."
+                <TextBlock Text="Click Install &amp; Set Up PuLID-FLUX to install the required extension, FaceNet and official model weights automatically into ZeroVideo's existing ComfyUI. Then restart/test the nodes as prompted. Works only with Local FLUX; ChatGPT scene generation is unchanged. Setup requires your consent and network access."
                            Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
                 <TextBlock Text="GPU note: PuLID workflows primarily target FLUX.1-dev and typically require more VRAM than the current 8GB RTX 3060. The installed FLUX.1-schnell Q4 pathway is experimental; do not expect guaranteed likeness or successful inference. Stop other heavy GPU processes before testing. Use photos you have permission to use and clearly label reconstructed imagery when appropriate."
                            Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0"/>
@@ -811,7 +846,6 @@
             </Border>
           </StackPanel>
         </ScrollViewer>
-        </DockPanel>
       </TabItem>
 
       <TabItem Header="Voice Studio">
