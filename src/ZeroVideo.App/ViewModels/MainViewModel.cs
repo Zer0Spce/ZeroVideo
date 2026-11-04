@@ -45,7 +45,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     {
         _chat = new ChatGptBrowserService(_browser, _profiles);
         _clip = new ClipchampTtsService(_browser, _profiles);
-        _ffmpeg = new FfmpegService(_runner, _dependencies);
+        _ffmpeg = new FfmpegService(_runner, _dependencies, _localImages);
         _pipeline = new PipelineService(_chat, _clip, _ffmpeg, _store, _localImages, _omniVoice);
         _preflight = new PreflightService(_runner);
         GeneratePlanCommand = new AsyncCommand(()=>RunManagedJobAsync("Create — Outline and Chapters",GeneratePlanAsync), () => !string.IsNullOrWhiteSpace(Topic) && Duration > 0);
@@ -72,6 +72,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         InitializeContentSeriesCommands();
         InitializeLocalImageCommands();
         InitializeFramePackCommands();
+        InitializeWanVideoCommands();
         InitializeCharacterCommands();
         InitializeOmniVoiceCommands();
         BrowseMusicCommand = new RelayCommand(BrowseMusic);
@@ -84,7 +85,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<string> AspectRatios { get; } = ["16:9", "9:16"];
     public ObservableCollection<string> Styles { get; } = new(VisualStylePresets.Names);
     public ObservableCollection<string> AiImageAnimationEngines { get; } =
-        ["Camera Motion (FFmpeg)", "FramePack (Local)"];
+        ["Camera Motion (FFmpeg)", "Wan2.2 5B (ComfyUI)", "FramePack (Local)"];
 
     public ObservableCollection<string> ClipchampVoices { get; } =
     [
