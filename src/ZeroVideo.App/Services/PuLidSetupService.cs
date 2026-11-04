@@ -35,20 +35,22 @@ public sealed class PuLidSetupService(
     {
         if(result.ExitCode==0) return;
         var detail=(result.StdErr + Environment.NewLine + result.StdOut).Trim();
-        var concise=detail.Split(new[] {'\r','\n'},
+        var lines=detail.Split(new[] {'\r','\n'},
             StringSplitOptions.RemoveEmptyEntries |
-            StringSplitOptions.TrimEntries)
-            .LastOrDefault(line =>
+            StringSplitOptions.TrimEntries);
+        var concise=lines.LastOrDefault(line =>
+                line.StartsWith("PuLID FLUX compatibility repair failed:",
+                    StringComparison.Ordinal) ||
                 line.StartsWith("ModuleNotFoundError:",StringComparison.Ordinal) ||
                 line.StartsWith("ImportError:",StringComparison.Ordinal) ||
                 line.StartsWith("OSError:",StringComparison.Ordinal) ||
                 line.StartsWith("RuntimeError:",StringComparison.Ordinal) ||
                 line.Contains("DLL load failed",StringComparison.OrdinalIgnoreCase))
-            ?? "See Python traceback below";
-        if(detail.Length>2400) detail=detail[^2400..];
+            ?? lines.LastOrDefault() ?? "Python process exited without an error message.";
+        if(detail.Length>1100) detail=detail[^1100..];
         throw new InvalidOperationException(stage+" failed: "+concise+
-            ". Existing models and projects were not removed. "+
-            "Full Python traceback tail: "+detail);
+            Environment.NewLine+"Existing models and projects were not removed."+
+            Environment.NewLine+"Python output (tail): "+detail);
     }
 
     public async Task InstallAndVerifyAsync(
