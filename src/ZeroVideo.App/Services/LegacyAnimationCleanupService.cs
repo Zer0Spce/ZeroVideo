@@ -51,7 +51,7 @@ public static class LegacyAnimationCleanupService
                 try
                 {
                     foreach (var path in Directory.EnumerateFiles(
-                        full, "*", SearchOption.AllDirectories))
+                        full, "*", System.IO.SearchOption.AllDirectories))
                     {
                         // Count contents, but never follow a symlink file.
                         if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0)
