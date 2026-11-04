@@ -54,7 +54,9 @@ public sealed class ProjectOptions
     public bool AddSoundEffects { get; set; }
     public bool AvoidRepeatedVisuals { get; set; } = true;
     public bool GenerateMissingVisuals { get; set; } = true;
-    public bool EnableCharacterConsistency { get; set; } = true;
+    // Opt in only for projects with visibly recurring people. Reusing an
+    // entire scene as a reference can otherwise lock its background/layout.
+    public bool EnableCharacterConsistency { get; set; } = false;
     // Local ComfyUI only: render three distinct vintage panels and assemble a comic page.
     public bool VintageComicPanelComposition { get; set; } = true;
 
