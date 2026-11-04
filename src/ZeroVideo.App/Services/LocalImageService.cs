@@ -423,6 +423,12 @@ public sealed class LocalImageService
         if (!await IsOnlineAsync(ct))
             throw new LocalImageSetupException(
                 "ComfyUI is not running. Start or restart the local image engine.");
+        if (PuLidSetupService.NeedsComfyFluxCompatibilityRepair())
+            throw new LocalImageSetupException(
+                "PuLID is installed but its old FLUX forward_orig wrapper is " +
+                "incompatible with the current ComfyUI timestep_zero_index API. " +
+                "Click Identity Studio > Install & Set Up PuLID-FLUX again " +
+                "(existing models are reused), then restart ComfyUI.");
         foreach (var node in new[] {
             "PulidFluxModelLoader", "PulidFluxEvaClipLoader",
             "PulidFluxFaceNetLoader", "ApplyPulidFlux"})
@@ -1352,9 +1358,21 @@ public sealed class LocalImageService
             if(entry.TryGetProperty("status",out var status) &&
                status.TryGetProperty("status_str",out var state) &&
                state.GetString()=="error")
+            {
+                var error=ExplainLocalImageError(entry);
+                if(realPersonIdentity is not null &&
+                   error.Contains("timestep_zero_index",
+                       StringComparison.OrdinalIgnoreCase))
+                    throw new LocalImageSetupException(
+                        "PuLID FLUX forward_orig compatibility error: "+
+                        "ComfyUI is still using the old PuLID wrapper. " +
+                        "Click Identity Studio > Install & Set Up PuLID-FLUX, "+
+                        "restart the ComfyUI Python server, then resume. "+
+                        "This is not a transient scene error; no retries "+
+                        "were attempted. "+error);
                 throw new InvalidOperationException(
-                    "ComfyUI image generation failed: "+
-                    ExplainLocalImageError(entry));
+                    "ComfyUI image generation failed: "+error);
+            }
             if(!entry.TryGetProperty("outputs",out var outputs) ||
                !outputs.TryGetProperty("9",out var output) ||
                !output.TryGetProperty("images",out var images) ||
