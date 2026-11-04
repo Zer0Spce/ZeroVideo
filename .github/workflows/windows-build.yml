@@ -28,6 +28,8 @@ jobs:
           python src/ZeroVideo.App/Resources/framepack_bridge.py --self-test
       - name: Restore
         run: dotnet restore ZeroVideo.sln
+      - name: Character Bible scene-variety regression tests
+        run: dotnet run --project tests/CharacterBibleSmoke/CharacterBibleSmoke.csproj --configuration Release
       - name: Publish portable x64
         shell: pwsh
         run: .\tools\build-portable.ps1
