@@ -260,7 +260,9 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
                 }
                 else
                 {
-                    motion = settings.AiImageAnimationEngine == "Off"
+                    motion = settings.AiImageAnimationEngine == "Off" ||
+                        (settings.AiImageAnimationEngine == "LivePortrait (Local)" &&
+                         !settings.LivePortraitFallbackToCamera)
                         ? "static" : ChooseMotionPreset(project, scene, effects);
                     args = BuildStillRenderArgs(media, output, renderSeconds, w, h, motion, project);
                 }
@@ -272,7 +274,9 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
                     // An AI clip may decode but still be incompatible with
                     // the main renderer. Retry against the source still.
                     log?.Invoke("AI video render failed; falling back to original illustrated image.");
-                    motion = settings.AiImageAnimationEngine == "Off"
+                    motion = settings.AiImageAnimationEngine == "Off" ||
+                        (settings.AiImageAnimationEngine == "LivePortrait (Local)" &&
+                         !settings.LivePortraitFallbackToCamera)
                         ? "static" : ChooseMotionPreset(project, scene, effects);
                     args = BuildStillRenderArgs(media, output, renderSeconds, w, h, motion, project);
                     result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
