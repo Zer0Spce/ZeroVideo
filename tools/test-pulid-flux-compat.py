@@ -63,6 +63,41 @@ class PuLidFluxCompatibilityTests(unittest.TestCase):
             self.plugin, self.flux, verify_only=True
         ))
 
+    def test_recover_partially_patched_hook_assignments(self):
+        # An interrupted previous repair may leave the three hook callbacks
+        # in a mixed old/new state. Repair must be resumable rather than
+        # rejecting the folder as damaged.
+        old = self.hooks.read_text()
+        partial = old.replace(
+            compat.OLD_OPTIONS, compat.NEW_OPTIONS, 1
+        )
+        self.hooks.write_text(partial, encoding="utf-8")
+        compat.repair(self.plugin, self.flux)
+        self.assertEqual(self.hooks.read_text().count(compat.NEW_OPTIONS), 3)
+        self.assertEqual(self.hooks.read_text().count(compat.OLD_OPTIONS), 0)
+
+    def test_recover_when_main_already_patched(self):
+        self.main.write_text(
+            self.main.read_text().replace(
+                compat.OLD_WRAPPER, compat.NEW_WRAPPER
+            ), encoding="utf-8"
+        )
+        compat.repair(self.plugin, self.flux)
+        self.assertEqual(self.hooks.read_text().count(compat.NEW_OPTIONS), 3)
+        self.assertEqual(self.main.read_text().count(compat.NEW_WRAPPER), 1)
+
+    def test_unknown_hook_count_reports_actionable_counts(self):
+        self.hooks.write_text(
+            self.hooks.read_text().replace(
+                compat.OLD_OPTIONS, "", 1
+            ), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(
+            compat.CompatibilityError,
+            "expected 3 transformer_options hook assignments"
+        ):
+            compat.repair(self.plugin, self.flux)
+
     def test_idempotent_does_not_overwrite_backup(self):
         compat.repair(self.plugin, self.flux)
         original_backup = self.main.with_name(
