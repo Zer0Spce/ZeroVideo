@@ -1,6 +1,7 @@
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -20,6 +21,78 @@ public sealed class LivePortraitService(LocalImageService localImages)
     {
         Timeout = Timeout.InfiniteTimeSpan
     };
+
+    /// <summary>
+    /// Avoid submitting landscape / object-only illustrations to LivePortrait.
+    /// Uses the existing ComfyUI Python and MediaPipe model on CPU only.
+    /// A face failure never interrupts video production.
+    /// </summary>
+    public async Task<bool> CanAnimateAsync(
+        string original, Action<string>? log, CancellationToken ct)
+    {
+        if (!File.Exists(original))
+        {
+            log?.Invoke("LivePortrait skipped: scene image is missing.");
+            return false;
+        }
+        try
+        {
+            var python = LivePortraitSetupService.BundledPythonExecutable;
+            var model = Path.Combine(LivePortraitSetupService.NodeFolder,
+                "media_pipe", "mp_models",
+                "face_landmarker_v2_with_blendshapes.task");
+            if (string.IsNullOrWhiteSpace(python) || !File.Exists(python) ||
+                !File.Exists(model))
+                throw new FileNotFoundException(
+                    "LivePortrait Python or MediaPipe face landmarks missing. " +
+                    "Use Install LivePortrait to repair the setup.");
+
+            var script = Path.Combine(AppPaths.ManagedToolsDirectory,
+                "liveportrait_face_probe.py");
+            using (var source = Assembly.GetExecutingAssembly()
+                .GetManifestResourceStream(
+                    "ZeroVideo.App.Resources.liveportrait_face_probe.py"))
+            {
+                if (source is null)
+                    throw new FileNotFoundException(
+                        "The embedded LivePortrait face-check script is missing.");
+                Directory.CreateDirectory(Path.GetDirectoryName(script)!);
+                var temporary = script + ".partial";
+                using (var destination = File.Create(temporary))
+                    source.CopyTo(destination);
+                File.Move(temporary, script, overwrite:true);
+            }
+            var result = await new ProcessRunner().RunAsync(python,
+                "-X utf8 -s -u \"" + script + "\" --image \"" +
+                Path.GetFullPath(original) + "\" --landmarks \"" + model + "\"",
+                LivePortraitSetupService.NodeFolder, ct);
+            if (result.ExitCode == 0)
+            {
+                log?.Invoke("LivePortrait face check passed: " +
+                    result.StdOut.Trim());
+                return true;
+            }
+            if (result.ExitCode == 3)
+            {
+                log?.Invoke("LivePortrait skipped scene: " +
+                    result.StdOut.Trim() + ". Using lightweight camera motion.");
+                return false;
+            }
+            var details = (result.StdErr + " " + result.StdOut).Trim();
+            log?.Invoke("LivePortrait face check failed (" +
+                result.ExitCode + "): " +
+                (details.Length > 850 ? details[^850..] : details) +
+                ". Using camera motion.");
+            return false;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            log?.Invoke("LivePortrait face detection unavailable: " +
+                ex.Message + ". Using camera motion.");
+            return false;
+        }
+    }
 
     private static readonly string[] RequiredNodes =
     [
@@ -246,6 +319,51 @@ public sealed class LivePortraitService(LocalImageService localImages)
         return false;
     }
 
+    /// <summary>
+    /// ComfyUI stores node-specific Python exceptions in status.messages.
+    /// Surface the actual failure rather than labeling every failure
+    /// "unrecognizable face" (which hid model download, VRAM and node errors).
+    /// </summary>
+    private static string ExplainExecutionError(JsonElement history)
+    {
+        if (history.TryGetProperty("status", out var status) &&
+            status.TryGetProperty("messages", out var messages) &&
+            messages.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var pair in messages.EnumerateArray())
+            {
+                if (pair.ValueKind != JsonValueKind.Array ||
+                    pair.GetArrayLength() < 2 ||
+                    pair[0].ValueKind != JsonValueKind.String ||
+                    pair[0].GetString() != "execution_error" ||
+                    pair[1].ValueKind != JsonValueKind.Object)
+                    continue;
+                var info = pair[1];
+                static string Get(JsonElement node, string name) =>
+                    node.TryGetProperty(name, out var value) &&
+                    value.ValueKind == JsonValueKind.String
+                        ? value.GetString() ?? "" : "";
+                var nodeId = Get(info, "node_id");
+                var nodeType = Get(info, "node_type");
+                var error = Get(info, "exception_message");
+                var errorType = Get(info, "exception_type");
+                var text = $"Node {nodeId} ({nodeType}): {errorType}: {error}";
+                if (info.TryGetProperty("traceback", out var trace) &&
+                    trace.ValueKind == JsonValueKind.Array)
+                {
+                    var lines = trace.EnumerateArray()
+                        .Where(item => item.ValueKind == JsonValueKind.String)
+                        .Select(item => item.GetString() ?? "")
+                        .TakeLast(4);
+                    text += " | " + string.Join(" ", lines);
+                }
+                return text.Length > 1600 ? text[^1600..] : text;
+            }
+        }
+        return "ComfyUI returned an error but did not include node details; " +
+            "inspect its Python console for the failure.";
+    }
+
     private static async Task DownloadResultAsync(
         string promptId, string target, CancellationToken ct)
     {
@@ -264,8 +382,8 @@ public sealed class LivePortraitService(LocalImageService localImages)
                 status.TryGetProperty("status_str", out var state) &&
                 state.GetString() == "error")
                 throw new InvalidOperationException(
-                    "ComfyUI failed to animate a recognizable face; " +
-                    "check its logs or use camera motion.");
+                    "ComfyUI LivePortrait execution failed: " +
+                    ExplainExecutionError(history));
             if (!history.TryGetProperty("outputs", out var outputs) ||
                 !outputs.TryGetProperty("9", out var result) ||
                 !FindMp4(result, out var name, out var folder))
