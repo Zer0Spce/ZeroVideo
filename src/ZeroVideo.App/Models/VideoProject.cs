@@ -142,5 +142,7 @@ public sealed class RealPersonIdentity
     public string Name { get; set; } = "";
     // Up to three explicit user-approved local portrait references.
     public List<string> ReferencePaths { get; set; } = [];
+    // Synthetic guides are never treated as verified photo likenesses.
+    public List<string> AiApproximateReferencePaths { get; set; } = [];
     public bool Enabled { get; set; } = true;
 }
