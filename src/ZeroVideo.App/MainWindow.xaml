@@ -705,10 +705,11 @@
             <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
               <StackPanel>
                 <TextBlock Text="5. Character Bible — Consistent recurring cast" FontSize="18" FontWeight="SemiBold"/>
-                <TextBlock Text="Automatically detect recurring people from your written script, or define characters and choose a master image. For LOCAL generation, later scenes reuse each character's appearance description, stable seed family and reference image. This is guidance, not a perfect facial-identity guarantee. ChatGPT image generation is unchanged."
+                <TextBlock Text="OFF by default for varied documentary scenes. Enable only when the SAME PERSON appears visibly across multiple shots. ZeroVideo keeps a person's identity description, but changes the scene seed, background, camera angle and composition. Import an isolated character portrait if needed; it will NEVER reuse an automatically generated trailer, house or landscape as a portrait. ChatGPT image generation is unchanged."
                            Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,10"/>
-                <CheckBox Content="Enable character reference guidance for this project"
+                <CheckBox Content="Enable Character Bible (visible people only — OFF recommended for scenery)"
                           IsChecked="{Binding Project.Options.EnableCharacterConsistency, Mode=TwoWay}"
+                          ToolTip="OFF: independent scene compositions. ON: only visible named people receive identity guidance; an approved imported portrait is optional. Click Save Character Bible after changing."
                           Margin="0,0,0,9"/>
                 <WrapPanel Margin="0,0,0,8">
                   <Button Style="{StaticResource SecondaryButton}" Content="Detect Recurring Characters from Script"
@@ -745,7 +746,7 @@
                 </WrapPanel>
                 <TextBlock Text="{Binding CharacterStatus}" Foreground="{StaticResource Muted}"
                            TextWrapping="Wrap" Margin="0,9,0,0"/>
-                <TextBlock Text="After writing the script, click Detect Recurring Characters. Without an imported reference, ZeroVideo saves the first generated local scene as the character's visual anchor. Later scenes reuse that image for guidance. Use single-character references where possible."
+                <TextBlock Text="Tip: for environments, buildings, vehicles, nature and evidence shots, leave Character Bible OFF. For recurring human subjects, enable it and import a tightly cropped face/character reference. Old auto-generated full-scene references are now ignored. Changing this setting affects newly generated images, not PNGs already saved; regenerate a scene to see a different composition."
                            Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
               </StackPanel>
             </Border>
