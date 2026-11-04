@@ -71,6 +71,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         InitializeLocalImageCommands();
         InitializeLivePortraitCommands();
         InitializeCharacterCommands();
+        InitializeRealPersonIdentityCommands();
         InitializeOmniVoiceCommands();
         BrowseMusicCommand = new RelayCommand(BrowseMusic);
     }
@@ -177,7 +178,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 Style = Style,
                 Voice = Project.Voice,
                 Options = Project.Options,
-                Characters = Project.Characters ?? []
+                Characters = Project.Characters ?? [],
+                RealPeople = Project.RealPeople ?? []
             };
 
             var requestedChapters = Math.Clamp(seed.Options.HowManyChapters, 1, 40);
@@ -198,6 +200,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
             generated!.Characters ??= seed.Characters;
             if(generated.Characters.Count==0) generated.Characters=seed.Characters;
+            generated.RealPeople = seed.RealPeople;
+            generated.Options = seed.Options;
             Project = generated;
             ProjectDirectory = await _store.SaveAsync(Project, Settings.ProjectsRoot);
             Progress = 5;
