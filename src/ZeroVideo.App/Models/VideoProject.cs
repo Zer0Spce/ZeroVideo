@@ -28,6 +28,10 @@ public sealed class VideoProject
     /// Separate from the legacy fictional Character Bible.
     /// </summary>
     public List<RealPersonIdentity> RealPeople { get; set; } = [];
+    // Per-video auto identity lifecycle, persisted for interrupted-job resume.
+    // Never points to another project's temporary identity folder.
+    public string ActiveAutoIdentityPerson { get; set; } = "";
+    public bool AutoIdentityEnabledByVideo { get; set; } = false;
 
 
     public List<string> Sources { get; set; } = [];
@@ -69,6 +73,11 @@ public sealed class ProjectOptions
     // requires an independently installed compatible ComfyUI identity adapter.
     public bool EnableRealPersonIdentityLock { get; set; } = false;
     public double RealPersonIdentityStrength { get; set; } = 0.75;
+    // Default ON for new projects: automatically handle clear real-person
+    // titles when Local FLUX plus its PuLID adapter are ready. Never
+    // interrupt normal video creation for an unavailable identity adapter.
+    public bool AutoRealPersonIdentity { get; set; } = true;
+    public int AutoIdentityPortraitCount { get; set; } = 2;
 
     // Local ComfyUI only: render three distinct vintage panels and assemble a comic page.
     public bool VintageComicPanelComposition { get; set; } = true;
@@ -144,5 +153,9 @@ public sealed class RealPersonIdentity
     public List<string> ReferencePaths { get; set; } = [];
     // Synthetic guides are never treated as verified photo likenesses.
     public List<string> AiApproximateReferencePaths { get; set; } = [];
+    // These references were created automatically for THIS project's
+    // current video only. Cleanup is limited to these exact paths.
+    public List<string> AutoTemporaryReferencePaths { get; set; } = [];
+    public bool AutoCreatedForVideo { get; set; } = false;
     public bool Enabled { get; set; } = true;
 }
