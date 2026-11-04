@@ -207,33 +207,44 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
             var mediaItems = ProjectMedia.FindAll(project, chapter, scene).ToList();
             if (mediaItems.Count == 0)
             {
-                var fallback = FindNearestTimelineMedia(project, chapter, scene);
+                var fallback = FindScriptAlignedTimelineMedia(project, chapter, scene);
                 if (fallback is not null)
                 {
                     mediaItems.Add(fallback.Path);
-                    log?.Invoke($"Scene {chapter.Number}.{scene.Number}: no direct media; reusing nearby scene {fallback.ChapterNumber}.{fallback.SceneNumber} instead of rendering an empty frame.");
+                    log?.Invoke($"Scene {chapter.Number}.{scene.Number}: missing direct media. " +
+                        $"Reusing script-relevant visual {fallback.ChapterNumber}.{fallback.SceneNumber} " +
+                        "based on matching subject, location and evidence.");
                 }
             }
 
             if (mediaItems.Count == 0)
             {
-                var seconds = Math.Max(1.0, scene.TargetSeconds);
-                var duration = F(seconds);
+                var seconds = Math.Max(0.25, scene.TargetSeconds);
+                var hasNextScene = !ReferenceEquals(scene, chapter.Scenes[^1]);
+                var renderSeconds = seconds + (hasNextScene ? configuredTransition : 0);
+                var duration = F(renderSeconds);
                 var output = Path.Combine(renderDir, $"c{chapter.Number:00}-s{scene.Number:000}.mp4");
                 log?.Invoke($"Scene {chapter.Number}.{scene.Number}: no media exists anywhere in the project; using the branded project backdrop.");
                 var args = $"-y -f lavfi -i \"color=c=0x241C30:s={w}x{h}:r=30:d={duration}\" -vf \"drawbox=x=0:y=0:w=iw:h=ih/3:color=0x34254A@0.75:t=fill,drawbox=x=0:y=ih*0.72:w=iw:h=ih*0.28:color=0x17151F@0.82:t=fill\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
                 var result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
                 if (result.ExitCode != 0) throw new InvalidOperationException($"Scene render failed ({chapter.Number}.{scene.Number}): {result.StdErr}");
-                clips.Add(new RenderedClip(output, seconds, "fade"));
+                clips.Add(new RenderedClip(output, renderSeconds, "fade"));
                 continue;
             }
 
-            var perVisualSeconds = Math.Max(1.0, scene.TargetSeconds / mediaItems.Count);
+            var perVisualSeconds = Math.Max(0.25, scene.TargetSeconds / mediaItems.Count);
             for (var mediaIndex = 0; mediaIndex < mediaItems.Count; mediaIndex++)
             {
                 var media = mediaItems[mediaIndex];
                 var transition = ChooseTransitionPreset(project, effects);
-                var renderSeconds = perVisualSeconds + configuredTransition;
+                // Every scene/visual receives only the transition overlap
+                // that will be consumed by the next clip. The final clip
+                // has NO extra frames; this keeps the chapter aligned with
+                // exactly its TTS audio duration.
+                var isLast = ReferenceEquals(scene, chapter.Scenes[^1]) &&
+                    mediaIndex == mediaItems.Count - 1;
+                var renderSeconds = perVisualSeconds +
+                    (isLast ? 0 : configuredTransition);
                 var duration = F(renderSeconds);
                 var suffix = mediaItems.Count > 1 ? $"-v{mediaIndex + 1:00}" : "";
                 var output = Path.Combine(renderDir, $"c{chapter.Number:00}-s{scene.Number:000}{suffix}.mp4");
@@ -353,16 +364,58 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
             return chapterVisual;
         }
 
-        log?.Invoke($"Chapter {chapter.Number}: advanced transition render failed; falling back to safe concatenation. {result.StdErr}");
-        return await ConcatRenderedClipsAsync(chapter, settings, renderDir, clips, chapterVisual, ct);
+        log?.Invoke($"Chapter {chapter.Number}: advanced transition render failed; " +
+            "rebuilding a cut-only scene timeline without the extra " +
+            "crossfade frames, preserving audio/visual boundaries. " + result.StdErr);
+        return await ConcatRenderedClipsAsync(chapter, settings, renderDir,
+            clips, chapterVisual, ct, configuredTransition);
     }
 
-    private async Task<string> ConcatRenderedClipsAsync(ProjectChapter chapter, ZeroVideoSettings settings, string renderDir, List<RenderedClip> clips, string chapterVisual, CancellationToken ct)
+    private async Task<string> ConcatRenderedClipsAsync(
+        ProjectChapter chapter, ZeroVideoSettings settings, string renderDir,
+        List<RenderedClip> clips, string chapterVisual, CancellationToken ct,
+        double removeTransitionOverlap = 0)
     {
-        var list = Path.Combine(renderDir, $"chapter-{chapter.Number:00}-visuals.txt");
-        await File.WriteAllLinesAsync(list, clips.Select(p => $"file '{p.Path.Replace("'", "'\\''")}'"), ct);
-        var concat = await runner.RunAsync(settings.FfmpegPath, $"-y -f concat -safe 0 -i \"{list}\" -c copy \"{chapterVisual}\"", renderDir, ct);
-        if (concat.ExitCode != 0) throw new InvalidOperationException($"Chapter visual concat failed: {concat.StdErr}");
+        if (removeTransitionOverlap <= 0)
+        {
+            var list = Path.Combine(renderDir,
+                $"chapter-{chapter.Number:00}-visuals.txt");
+            await File.WriteAllLinesAsync(list, clips.Select(p =>
+                $"file '{p.Path.Replace("'", "'\\''")}'"), ct);
+            var concat = await runner.RunAsync(settings.FfmpegPath,
+                $"-y -f concat -safe 0 -i \"{list}\" -c copy \"{chapterVisual}\"",
+                renderDir, ct);
+            if (concat.ExitCode != 0)
+                throw new InvalidOperationException(
+                    $"Chapter visual concat failed: {concat.StdErr}");
+            return chapterVisual;
+        }
+
+        // Advanced xfade failed. If we simply concatenate original clips,
+        // every clip still contains its unused 0.35s transition tail:
+        // scene N's audio then plays over scene N-1's image. Trim each
+        // crossfade pad before rebuilding a cut-only 30fps timeline.
+        var args = new StringBuilder("-y");
+        var filter = new StringBuilder();
+        for (var i = 0; i < clips.Count; i++)
+        {
+            args.Append($" -i \"{clips[i].Path}\"");
+            var duration = Math.Max(0.10, clips[i].DurationSeconds -
+                (i < clips.Count - 1 ? removeTransitionOverlap : 0));
+            filter.Append($"[{i}:v]trim=duration={F(duration)},")
+                  .Append($"setpts=PTS-STARTPTS,fps=30[v{i}];");
+        }
+        for (var i = 0; i < clips.Count; i++)
+            filter.Append($"[v{i}]");
+        filter.Append($"concat=n={clips.Count}:v=1:a=0[outv]");
+        args.Append($" -filter_complex \"{filter}\" -map \"[outv]\"")
+            .Append($" -an -c:v libx264 -preset medium -crf 18")
+            .Append($" -pix_fmt yuv420p \"{chapterVisual}\"");
+        var built = await runner.RunAsync(settings.FfmpegPath,
+            args.ToString(), renderDir, ct);
+        if (built.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"Scene-aligned fallback concat failed: {built.StdErr}");
         return chapterVisual;
     }
 
@@ -604,36 +657,50 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
 
     private static string F(double value) => value.ToString("0.#####", CultureInfo.InvariantCulture);
 
-    private static TimelineMedia? FindNearestTimelineMedia(VideoProject project, ProjectChapter currentChapter, ProjectScene currentScene)
+    private static TimelineMedia? FindScriptAlignedTimelineMedia(
+        VideoProject project, ProjectChapter currentChapter,
+        ProjectScene currentScene)
     {
-        var timeline = project.Chapters
-            .SelectMany(chapter => chapter.Scenes.Select(scene => (Chapter: chapter, Scene: scene)))
-            .ToList();
-
-        var currentIndex = timeline.FindIndex(x =>
-            ReferenceEquals(x.Chapter, currentChapter) && ReferenceEquals(x.Scene, currentScene));
-
-        if (currentIndex < 0)
-            currentIndex = timeline.FindIndex(x => x.Chapter.Number == currentChapter.Number && x.Scene.Number == currentScene.Number);
-        if (currentIndex < 0) return null;
-
-        // Prefer the previous scene so a missing visual naturally holds the last real image.
-        for (var i = currentIndex - 1; i >= 0; i--)
+        // A missing scene visual must not silently become an unrelated
+        // image merely because it came immediately before in the queue.
+        // Prefer an existing visual illustrating the same specific subject,
+        // evidence or location. If none matches, use the neutral backdrop.
+        var target = SceneVisualPlanService.Keywords(currentScene);
+        if(target.Count==0) return null;
+        var bestScore = 0.0;
+        TimelineMedia? best = null;
+        var timeline = project.Chapters.SelectMany(ch =>
+            ch.Scenes.Select(sc => (Chapter:ch,Scene:sc))).ToList();
+        var current = timeline.FindIndex(x =>
+            ReferenceEquals(x.Chapter,currentChapter) &&
+            ReferenceEquals(x.Scene,currentScene));
+        for (var i = 0; i < timeline.Count; i++)
         {
-            var media = ProjectMedia.FindAll(project, timeline[i].Chapter, timeline[i].Scene);
-            if (media.Count > 0)
-                return new TimelineMedia(media[^1], timeline[i].Chapter.Number, timeline[i].Scene.Number);
+            var item = timeline[i];
+            if (ReferenceEquals(item.Scene,currentScene) &&
+                ReferenceEquals(item.Chapter,currentChapter)) continue;
+            var media = ProjectMedia.FindAll(project,item.Chapter,item.Scene);
+            if(media.Count==0) continue;
+            var found=SceneVisualPlanService.Keywords(item.Scene);
+            var shared=target.Count(w=>found.Contains(w));
+            // A single generic shared word like "investigation" is
+            // insufficient evidence that the visual matches narration.
+            if(shared<2 && target.Count>2)continue;
+            var relevance=SceneVisualPlanService.Relevance(
+                currentScene,item.Scene);
+            if(relevance<0.22)continue;
+            var distance=current<0?20:Math.Abs(current-i);
+            var score=relevance+
+                (item.Chapter.Number==currentChapter.Number?0.12:0)-
+                Math.Min(distance*0.012,0.30);
+            if(score>bestScore)
+            {
+                bestScore=score;
+                best=new TimelineMedia(media[0],item.Chapter.Number,
+                    item.Scene.Number);
+            }
         }
-
-        // At the beginning of a project/chapter, borrow the next available visual.
-        for (var i = currentIndex + 1; i < timeline.Count; i++)
-        {
-            var media = ProjectMedia.FindAll(project, timeline[i].Chapter, timeline[i].Scene);
-            if (media.Count > 0)
-                return new TimelineMedia(media[0], timeline[i].Chapter.Number, timeline[i].Scene.Number);
-        }
-
-        return null;
+        return best;
     }
 
     private static bool IsVideo(string path)
