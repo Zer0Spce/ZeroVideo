@@ -20,6 +20,7 @@ public sealed partial class MainViewModel
     public ICommand RemoveLongFormRowCommand { get; private set; } = null!;
     public ICommand StartLongFormCommand { get; private set; } = null!;
     public ICommand ResumeLongFormCommand { get; private set; } = null!;
+    public ICommand RepairLongFormCaptionsCommand { get; private set; } = null!;
     public ICommand CheckAllLongFormCommand { get; private set; } = null!;
     public ICommand DeleteCheckedLongFormCommand { get; private set; } = null!;
     public bool AllLongFormChecked
@@ -72,6 +73,10 @@ public sealed partial class MainViewModel
         });
         StartLongFormCommand = new AsyncCommand(()=>RunManagedJobAsync("Long Form Automation",RunLongFormQueueAsync), () => !LongFormRunning);
         ResumeLongFormCommand = new AsyncCommand(()=>RunManagedJobAsync("Long Form Automation — Resume",RunLongFormQueueAsync), () => !LongFormRunning);
+        RepairLongFormCaptionsCommand = new AsyncCommand(()=>
+            RunManagedJobAsync("Repair completed Long Form captions",
+                RepairSelectedLongFormCaptionsAsync),
+            () => !LongFormRunning);
         CheckAllLongFormCommand = new RelayCommand(() =>
         {
             if (LongFormRunning) { LongFormRecoveryStatus="Cannot change selection while automation is running."; return; }
@@ -173,6 +178,57 @@ public sealed partial class MainViewModel
         {
             LongFormRecoveryStatus="Automation checkpoint couldn't be loaded: "+ex.Message;
         }
+    }
+
+    private async Task RepairSelectedLongFormCaptionsAsync()
+    {
+        if(LongFormRunning)
+            throw new InvalidOperationException(
+                "Stop Long Form Automation before repairing existing videos.");
+        var selected=LongFormQueue.Where(x=>x.IsChecked &&
+            !string.IsNullOrWhiteSpace(x.ProjectFile) &&
+            File.Exists(x.ProjectFile)).ToList();
+        if(selected.Count==0)
+        {
+            LongFormRecoveryStatus="Check a completed Longform queue row "+
+                "with an existing project file before clicking Repair Captions.";
+            Log(LongFormRecoveryStatus);
+            return;
+        }
+        Log("Long Form caption repair: "+selected.Count+
+            " selected project(s). Will NOT regenerate scripts, images, "+
+            "narration, thumbnails or publish videos.");
+        var repaired=0;
+        foreach(var row in selected)
+        {
+            _cts.Token.ThrowIfCancellationRequested();
+            var project=await _store.LoadAsync(row.ProjectFile);
+            if(project.AspectRatio!="16:9")
+                throw new InvalidOperationException(
+                    "The selected row is not a 16:9 Longform project: "+
+                    project.Title);
+            var exports=Path.Combine(project.ProjectDirectory,"exports");
+            if(!Directory.Exists(exports))
+                throw new DirectoryNotFoundException(
+                    "This row has no completed exported video: "+exports);
+            var candidates=Directory.GetFiles(exports,"*.mp4",
+                SearchOption.TopDirectoryOnly)
+                .OrderByDescending(File.GetLastWriteTimeUtc).ToList();
+            if(candidates.Count==0)
+                throw new FileNotFoundException(
+                    "No finished MP4 found for the selected Longform project.",
+                    exports);
+            var path=await _ffmpeg.RepairExistingLongFormCaptionsAsync(
+                project,candidates[0],Settings,Log,_cts.Token);
+            repaired++;
+            LongFormRecoveryStatus="Caption repair "+repaired+"/"+selected.Count+
+                " completed: "+Path.GetFileName(path);
+            Log(LongFormRecoveryStatus);
+        }
+        LongFormRecoveryStatus="Captions repaired on "+repaired+
+            " completed 16:9 video(s). Original MP4 backups were kept "+
+            "inside each project's render folder.";
+        Log(LongFormRecoveryStatus);
     }
 
     private async Task RunLongFormQueueAsync()
