@@ -471,11 +471,11 @@ try
         "Landscape and portrait margins are distinct and safe");
     var widescreenCaptions = new List<string[]>
     {
-        ["THE","CASE","BEGAN"],
-        ["JEFFREY","DAHMER","INVESTIGATORS"],
-        ["EXTRAORDINARILYLONGWORD","LONGEST","INTERVIEW"],
-        ["EVIDENCE","POINTED","SOMEWHERE"],
-        ["ZAK","BAGANS","DISAPPEARED"]
+        new[] {"THE","CASE","BEGAN"},
+        new[] {"JEFFREY","DAHMER","INVESTIGATORS"},
+        new[] {"EXTRAORDINARILYLONGWORD","LONGEST","INTERVIEW"},
+        new[] {"EVIDENCE","POINTED","SOMEWHERE"},
+        new[] {"ZAK","BAGANS","DISAPPEARED"}
     };
     foreach(var words in widescreenCaptions)
     {
