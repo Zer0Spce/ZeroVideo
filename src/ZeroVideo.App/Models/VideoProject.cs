@@ -17,6 +17,12 @@ public sealed class VideoProject
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
     public List<ProjectChapter> Chapters { get; set; } = [];
+    /// <summary>
+    /// Optional local-image character identities. No cloud service receives
+    /// anchor images. References are copied into the project on approval.
+    /// </summary>
+    public List<ProjectCharacter> Characters { get; set; } = [];
+
     public List<string> Sources { get; set; } = [];
     public ProjectOptions Options { get; set; } = new();
     [JsonIgnore] public string ProjectDirectory { get; set; } = "";
@@ -25,10 +31,17 @@ public sealed class VideoProject
 public sealed class ProjectOptions
 {
     public bool GenerateCaptions { get; set; } = true;
+    // Burn large outlined uppercase captions into vertical MP4s. Separate from SRT export.
+    public bool BurnInBoldCaptions { get; set; } = true;
     public bool AddMotion { get; set; } = true;
     public bool ContinuousMotion { get; set; } = true;
     public double MotionCycleSeconds { get; set; } = 5.0;
     public string MotionStyle { get; set; } = "Automatic";
+    // A lightweight, GPU-free, periodic image motion for every generated
+    // still. It does not pretend to synthesize AI facial/limb animation.
+    // Short cycles are repeated to match each full narration scene.
+    public bool SubtleImageAnimation { get; set; } = true;
+    public double SubtleImageAnimationSeconds { get; set; } = 4.0;
     public bool SceneTransitions { get; set; } = true;
     public string TransitionStyle { get; set; } = "Automatic";
     public double TransitionDurationSeconds { get; set; } = 0.35;
@@ -41,6 +54,10 @@ public sealed class ProjectOptions
     public bool AddSoundEffects { get; set; }
     public bool AvoidRepeatedVisuals { get; set; } = true;
     public bool GenerateMissingVisuals { get; set; } = true;
+    public bool EnableCharacterConsistency { get; set; } = true;
+    // Local ComfyUI only: render three distinct vintage panels and assemble a comic page.
+    public bool VintageComicPanelComposition { get; set; } = true;
+
 
     /// <summary>
     /// Exact chapter count requested from ChatGPT for the master outline.
@@ -94,4 +111,13 @@ public sealed class ProjectScene
     public string? MediaPath { get; set; }
     public List<string> MediaPaths { get; set; } = [];
     public string? SoundEffectPath { get; set; }
+}
+
+public sealed class ProjectCharacter
+{
+    public string Name { get; set; } = "";
+    public string Appearance { get; set; } = "";
+    public string ReferenceImagePath { get; set; } = "";
+    public bool Enabled { get; set; } = true;
+    public long Seed { get; set; } = 0;
 }
