@@ -83,6 +83,24 @@ Check(ChatGptResponseRecovery.FindFreshJsonInMainText(
     "History", publishPrompt) == publishJson,
     "Plain-main-text fallback validates fresh Publishing metadata JSON");
 
+// Browser completion: a "Stop" control can remain visible after the
+// response is done on some ChatGPT UI builds. Do not block on it forever.
+Check(ChatGptResponseRecovery.CanAcceptStableJson(false, 2,
+    TimeSpan.Zero, false),
+    "Normal completed JSON is accepted without a Stop control");
+Check(!ChatGptResponseRecovery.CanAcceptStableJson(true, 2,
+    TimeSpan.FromSeconds(11), true),
+    "Visible Stop control keeps a not-yet-stable reply pending");
+Check(ChatGptResponseRecovery.CanAcceptStableJson(true, 2,
+    TimeSpan.FromSeconds(12), true),
+    "Valid complete reply recovers after 12 seconds despite stuck Stop control");
+Check(!ChatGptResponseRecovery.CanAcceptStableJson(true, 2,
+    TimeSpan.FromSeconds(30), false),
+    "Stop-control fallback cannot accept absent or partial JSON");
+Check(!ChatGptResponseRecovery.CanAcceptStableJson(true, 1,
+    TimeSpan.FromSeconds(30), true),
+    "Stop-control fallback requires repeated complete JSON observations");
+
 Check(!new ProjectOptions().EnableCharacterConsistency,
     "New projects keep Character Bible disabled by default");
 

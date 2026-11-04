@@ -492,12 +492,21 @@ copyrighted photograph.
         var reportedPlainTextFallback = false;
         int stableJson = 0, stableRaw = 0;
         var started = DateTime.UtcNow;
+        var lastHeartbeat = started;
+        var lastVisibleMainText = "";
+        var unchangedMainSince = started;
 
         while (!ct.IsCancellationRequested && DateTime.UtcNow - started < TimeSpan.FromMinutes(12))
         {
             ct.ThrowIfCancellationRequested();
             var generating = await AnyVisibleAsync(page, stopSelectors);
             var candidates = await ReadAssistantCandidatesAsync(page);
+            var visibleMain = await ReadMainConversationTextAsync(page);
+            if (!string.Equals(visibleMain, lastVisibleMainText, StringComparison.Ordinal))
+            {
+                lastVisibleMainText = visibleMain;
+                unchangedMainSince = DateTime.UtcNow;
+            }
             var freshJson = ChatGptResponseRecovery.FindFreshJson(
                 candidates, baselineCount, baselineAssistant, baseline);
 
@@ -511,7 +520,6 @@ copyrighted photograph.
                 freshJson = null;
             if (freshJson is null)
             {
-                var visibleMain = await ReadMainConversationTextAsync(page);
                 freshJson = ChatGptResponseRecovery.FindFreshJsonInMainText(
                     visibleMain, baselineMainText, sentPrompt);
                 if (freshJson is not null && !reportedPlainTextFallback)
@@ -526,9 +534,17 @@ copyrighted photograph.
                 stableJson = string.Equals(freshJson, lastJson, StringComparison.Ordinal)
                     ? stableJson + 1 : 0;
                 lastJson = freshJson;
-                if (!generating && stableJson >= 2)
+                if (ChatGptResponseRecovery.CanAcceptStableJson(
+                    generating,
+                    stableJson,
+                    DateTime.UtcNow - unchangedMainSince,
+                    !string.IsNullOrWhiteSpace(visibleMain) &&
+                        visibleMain.Contains(freshJson, StringComparison.Ordinal)))
                 {
-                    log?.Invoke("ChatGPT: newest assistant JSON detected and stable.");
+                    if (generating)
+                        log?.Invoke("ChatGPT: Stop control still visible, but completed JSON and full conversation text remained unchanged for 12 seconds; recovering reply.");
+                    else
+                        log?.Invoke("ChatGPT: newest assistant JSON detected and stable.");
                     return freshJson;
                 }
             }
@@ -567,6 +583,13 @@ copyrighted photograph.
                 }
             }
 
+            if (DateTime.UtcNow - lastHeartbeat >= TimeSpan.FromSeconds(20))
+            {
+                lastHeartbeat = DateTime.UtcNow;
+                log?.Invoke($"ChatGPT: awaiting response — visible characters: {visibleMain.Length}, " +
+                    $"complete new JSON: {freshJson is not null}, Stop control visible: {generating}, " +
+                    $"stable JSON polls: {stableJson}.");
+            }
             await Task.Delay(1200, ct);
         }
 

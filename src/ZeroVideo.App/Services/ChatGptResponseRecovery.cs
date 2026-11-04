@@ -8,6 +8,22 @@ namespace ZeroVideo.App.Services;
 /// </summary>
 public static class ChatGptResponseRecovery
 {
+    /// <summary>
+    /// Stop controls are not a reliable completion signal in every ChatGPT UI.
+    /// Accept a fully parsed new JSON only once it is stable, and if the Stop
+    /// button still appears, require the entire visible response to remain
+    /// unchanged for 12 seconds as a second independent completion signal.
+    /// </summary>
+    public static bool CanAcceptStableJson(
+        bool stopControlVisible,
+        int stableJsonSamples,
+        TimeSpan unchangedVisibleTextDuration,
+        bool visibleTextContainsCompleteJson)
+        => stableJsonSamples >= 2 &&
+           (!stopControlVisible ||
+            (visibleTextContainsCompleteJson &&
+             unchangedVisibleTextDuration >= TimeSpan.FromSeconds(12)));
+
     public static string? FindFreshJson(
         IReadOnlyList<string> assistantCandidates,
         int baselineCount,
