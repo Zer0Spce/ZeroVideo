@@ -58,8 +58,9 @@ public sealed partial class MainViewModel
         RestartLocalEngineCommand=new AsyncCommand(()=>RunManagedJobAsync(
             "Restart ComfyUI",async ()=>
         {
-            await _localImages.RestartOwnedServerAsync(LocalProgress,_cts.Token);
-            LocalImageStatus="Engine restart requested. Test connection before generation.";
+            LocalImageStatus=await _localImages.RestartForLivePortraitAsync(
+                LocalProgress,ConfirmComfyUiProcessRestart,_cts.Token);
+            Log(LocalImageStatus);
         }));
 
         UseBaseModelCommand=new RelayCommand(() =>
