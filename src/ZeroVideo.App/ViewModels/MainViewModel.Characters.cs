@@ -11,7 +11,7 @@ public sealed partial class MainViewModel
     private ProjectCharacter? _selectedCharacter;
     private string _newCharacterName="";
     private string _newCharacterAppearance="";
-    private string _characterStatus="Character Lock is local-only. Detect a recurring cast or add a character and an optional master reference.";
+    private string _characterStatus="Character Bible is OFF by default. Use it only for visible recurring people; buildings and vehicles never need identity locking.";
     public string NewCharacterName
     {
         get=>_newCharacterName;set=>Set(ref _newCharacterName,value);
@@ -55,13 +55,19 @@ public sealed partial class MainViewModel
             CharacterStatus="Generate or load a script before detecting recurring characters.";
             return;
         }
+        if(!Project.Options.EnableCharacterConsistency)
+        {
+            CharacterStatus="Character Bible is OFF. Enable it above if your video has visible recurring people; leave it OFF for scenery or vehicles.";
+            return;
+        }
         var before=Project.Characters?.Count??0;
         CharacterConsistencyService.EnsureProfiles(Project);
         await _store.SaveAsync(Project,Settings.ProjectsRoot);
         Raise(nameof(Project));
         CharacterStatus=$"Character Bible has {Project.Characters.Count} profile(s). "+
-            $"{Project.Characters.Count-before} recurring cast member(s) found in multiple scenes. "+
-            "Edit appearances and optionally attach an approved reference image.";
+            $"{Project.Characters.Count-before} visibly recurring person(s) detected. "+
+            "Only identity descriptions and deliberately imported portraits are reused, "+
+            "never automatic copies of earlier complete scenes.";
     }
 
     private async Task AddCharacterAsync()
@@ -94,8 +100,9 @@ public sealed partial class MainViewModel
         SelectedCharacter=character;
         await _store.SaveAsync(Project,Settings.ProjectsRoot);
         Raise(nameof(Project));
-        CharacterStatus="Added "+name+". The character will be matched by name "+
-            "in scene scripts and prompts; import a master image for stronger identity retention.";
+        CharacterStatus="Added "+name+". This profile is only used when a person "+
+            "is visibly depicted in a scene. You can optionally import a cropped "+
+            "character portrait; no previous full-scene images will be reused.";
     }
 
     private async Task ImportCharacterImageAsync()
@@ -133,7 +140,8 @@ public sealed partial class MainViewModel
         await _store.SaveAsync(Project,Settings.ProjectsRoot);
         Raise(nameof(Project));
         CharacterStatus="Reference imported locally for "+profile.Name+
-            ". ZeroVideo will guide the character's later local scenes with this image.";
+            ". ZeroVideo will guide the person's identity while generating new "+
+            "backgrounds and camera angles. A cropped character-only photo works best.";
     }
 
     private async Task DeleteCharacterAsync()
@@ -161,7 +169,9 @@ public sealed partial class MainViewModel
         }
         await _store.SaveAsync(Project,Settings.ProjectsRoot);
         Raise(nameof(Project));
-        CharacterStatus="Character Bible saved with the project. "+
-            "Later local scenes reuse exact descriptions, seeds and reference images.";
+        CharacterStatus="Character Bible "+(Project.Options.EnableCharacterConsistency?
+            "ON":"OFF")+" and saved for this project. Local images now use "+
+            "independent scene seeds; only approved character portraits may "+
+            "guide recurring people's identity. Already saved PNGs are unchanged.";
     }
 }
