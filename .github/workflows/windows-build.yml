@@ -16,8 +16,40 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: OmniVoice worker smoke tests (offline)
+        shell: pwsh
+        run: |
+          python -m py_compile src/ZeroVideo.App/Resources/omnivoice_worker.py
+          python tools/test-omnivoice-worker.py
+          python -m py_compile src/ZeroVideo.App/Resources/zerovideo_idle_driver.py
+          python -m py_compile src/ZeroVideo.App/Resources/zerovideo_idle_driver_init.py
+          python -m py_compile src/ZeroVideo.App/Resources/liveportrait_import_probe.py
+          python -m py_compile src/ZeroVideo.App/Resources/liveportrait_face_probe.py
+          python -m py_compile src/ZeroVideo.App/Resources/pulid_import_probe.py
+          python -m py_compile src/ZeroVideo.App/Resources/pulid_flux_compat.py
+          python tools/test-pulid-flux-compat.py
+      - name: Python 3.13 LivePortrait dependency compatibility
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: MediaPipe Tasks API smoke test (Windows Python 3.13)
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check --only-binary=:all: "mediapipe==0.10.35" "numpy>=2,<3"
+          python -c "import mediapipe as mp; from mediapipe.tasks import python; from mediapipe.tasks.python import vision; import numpy; print('MediaPipe Tasks OK:', numpy.__version__)"
+      - name: InsightFace ONNX dependency smoke test (Windows Python 3.13)
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check --only-binary=:all: --upgrade-strategy only-if-needed "onnx>=1.17,<2" scipy scikit-image scikit-learn requests tqdm onnxruntime
+          python -m pip install --disable-pip-version-check --only-binary=:all: --no-deps "insightface==2.1"
+          python -c "import onnx, onnxruntime, scipy, skimage, sklearn, insightface; from insightface.utils import face_align; from insightface.utils.download import download_file; from insightface.utils.storage import BASE_REPO_URL; print('InsightFace ONNX dependency imports OK:', insightface.__version__)"
       - name: Restore
         run: dotnet restore ZeroVideo.sln
+      - name: Character Bible scene-variety regression tests
+        run: dotnet run --project tests/CharacterBibleSmoke/CharacterBibleSmoke.csproj --configuration Release
       - name: Publish portable x64
         shell: pwsh
         run: .\tools\build-portable.ps1
