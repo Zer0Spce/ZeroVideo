@@ -29,6 +29,8 @@ jobs:
           python -m py_compile src/ZeroVideo.App/Resources/liveportrait_import_probe.py
           python -m py_compile src/ZeroVideo.App/Resources/liveportrait_face_probe.py
           python -m py_compile src/ZeroVideo.App/Resources/pulid_import_probe.py
+          python -m py_compile src/ZeroVideo.App/Resources/pulid_flux_compat.py
+          python tools/test-pulid-flux-compat.py
       - name: Python 3.13 LivePortrait dependency compatibility
         uses: actions/setup-python@v5
         with:
