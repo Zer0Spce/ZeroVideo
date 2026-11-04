@@ -165,30 +165,31 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
             await WriteSrtAsync(project, Path.ChangeExtension(finalPath, ".srt"),
                 chapterTimings, ct);
 
-        if (project.Options.BurnInBoldCaptions && project.AspectRatio == "9:16")
+        // Longform is 16:9; the previous 9:16-only condition wrote .srt
+        // but NEVER burned captions into its MP4. Use aspect-appropriate
+        // ASS for both automation modes, retaining the existing opt-out.
+        if (CaptionRenderPolicy.ShouldBurn(project.Options,project.AspectRatio))
         {
-            var captionAss = Path.Combine(renderDir, "styled-video-captions.ass");
+            var captionAss = Path.Combine(renderDir,"styled-video-captions.ass");
             if (await WriteBoldCaptionAssAsync(
-                project, chapterTimings, captionAss, log, ct))
+                project,chapterTimings,captionAss,log,ct))
             {
-                var captionedMp4 = Path.Combine(renderDir, "video-with-styled-captions.mp4");
-                log?.Invoke("Rendering bold vertical captions: smaller all-white uppercase text, " +
-                    "black outline, timed to detected narration speech and pauses.");
-                // 'ass' supports color override spans; use a short relative
-                // filename to avoid Windows drive-letter filter escaping.
-                var renderArgs = $"-y -i \"{finalPath}\" -vf \"ass=styled-video-captions.ass\" " +
-                    $"-map 0:v:0 -map 0:a:0 -c:v libx264 -preset medium -crf 20 " +
-                    $"-pix_fmt yuv420p -c:a copy -movflags +faststart \"{captionedMp4}\"";
-                var burn = await runner.RunAsync(settings.FfmpegPath, renderArgs, renderDir, ct);
-                if (burn.ExitCode != 0 || !File.Exists(captionedMp4))
-                    throw new InvalidOperationException("Bold caption burn-in failed. " +
-                        "Check that FFmpeg has the libass subtitle filter. " +
-                        (burn.StdErr.Length > 1000 ? burn.StdErr[^1000..] : burn.StdErr));
-                File.Copy(captionedMp4, finalPath, true);
-                File.Delete(captionedMp4);
-                log?.Invoke("Bold captions embedded in final vertical MP4.");
+                var candidate = Path.Combine(renderDir,
+                    "video-with-styled-captions.mp4");
+                await BurnCaptionAssAsync(
+                    finalPath,captionAss,candidate,settings,renderDir,log,ct);
+                File.Copy(candidate,finalPath,true);
+                File.Delete(candidate);
+                log?.Invoke("Visible narration-synced captions embedded " +
+                    "in final "+project.AspectRatio+" MP4.");
             }
+            else
+                log?.Invoke("Caption burn was selected but no script words " +
+                    "were available. Check the saved chapter narration.");
         }
+        else
+            log?.Invoke("Burned captions disabled for this project; "+
+                (project.Options.GenerateCaptions?"SRT sidecar only.":"no captions selected."));
 
         await ValidateAudibleAudioAsync(finalPath, settings, "Final video", log, ct);
         return finalPath;
@@ -800,6 +801,149 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         return Math.Clamp(clean.Length / 4.2, 0.85, 3.4);
     }
 
+    /// <summary>
+    /// Encodes only the finished video frames with ASS. Existing narration,
+    /// chapter visuals, audio codecs and project images remain untouched.
+    /// Source and output paths are distinct; a failed FFmpeg run cannot
+    /// overwrite the user's original completed video.
+    /// </summary>
+    private async Task BurnCaptionAssAsync(
+        string sourceMp4,string captionAss,string outputMp4,
+        ZeroVideoSettings settings,string renderDir,
+        Action<string>? log,CancellationToken ct)
+    {
+        if(!File.Exists(sourceMp4))
+            throw new FileNotFoundException(
+                "Caption source video does not exist.",sourceMp4);
+        if(!File.Exists(captionAss))
+            throw new FileNotFoundException(
+                "Caption ASS file was not created.",captionAss);
+        var assName=Path.GetFileName(captionAss);
+        // The filter uses only a relative script name to avoid Windows
+        // FFmpeg parsing the drive colon as an ASS filter argument.
+        // The generated ASS is always placed in renderDir.
+        if(!Path.GetFullPath(Path.GetDirectoryName(captionAss)!)
+            .Equals(Path.GetFullPath(renderDir),
+                StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                "Caption ASS file must be inside the project's render folder.");
+        log?.Invoke("Burning synchronized captions with FFmpeg/libass: "+
+            assName+" (video encode only; audio copied unchanged)...");
+        var args=$"-y -nostdin -i \\"{sourceMp4}\\" "+
+            $"-vf \\"ass={assName}\\" "+
+            "-map 0:v:0 -map 0:a:0 -c:v libx264 -preset medium -crf 20 "+
+            $"-pix_fmt yuv420p -c:a copy -movflags +faststart \\"{outputMp4}\\"";
+        var burn=await runner.RunAsync(settings.FfmpegPath,args,renderDir,ct);
+        if(burn.ExitCode!=0 ||
+            !File.Exists(outputMp4) ||
+            new FileInfo(outputMp4).Length<64*1024)
+            throw new InvalidOperationException(
+                "Caption burn-in failed (FFmpeg requires the libass filter). "+
+                (burn.StdErr.Length>1200?
+                    burn.StdErr[^1200..]:burn.StdErr));
+    }
+
+    /// <summary>
+    /// Repair a finished widescreen Longform MP4 without remaking images,
+    /// narration, transitions, thumbnails or metadata. Creates a one-time
+    /// original-video backup under this project's render folder, then
+    /// re-burns synchronized captions from saved chapter audio and script.
+    /// A failed attempt always leaves the export MP4 intact.
+    /// </summary>
+    public async Task<string> RepairExistingLongFormCaptionsAsync(
+        VideoProject project,string exportedMp4,
+        ZeroVideoSettings settings,Action<string>? log=null,
+        CancellationToken ct=default)
+    {
+        if(project.AspectRatio!="16:9")
+            throw new InvalidOperationException(
+                "This caption repair is for 16:9 Longform projects only.");
+        if(project.Chapters.Count==0)
+            throw new InvalidOperationException(
+                "No scripted chapters found for caption repair.");
+        var exports=Path.GetFullPath(Path.Combine(
+            project.ProjectDirectory,"exports"))+
+            Path.DirectorySeparatorChar;
+        var fullMp4=Path.GetFullPath(exportedMp4);
+        if(!fullMp4.StartsWith(exports,
+            StringComparison.OrdinalIgnoreCase) ||
+            !fullMp4.EndsWith(".mp4",StringComparison.OrdinalIgnoreCase) ||
+            !File.Exists(fullMp4))
+            throw new FileNotFoundException(
+                "Select a completed Longform MP4 within this project's exports folder.",
+                fullMp4);
+        await ValidateAsync(settings,log,ct);
+        var renderDir=Path.Combine(project.ProjectDirectory,"render");
+        Directory.CreateDirectory(renderDir);
+        var safeName=Path.GetFileNameWithoutExtension(fullMp4);
+        var original=Path.Combine(renderDir,
+            safeName+".before-longform-captions.mp4");
+        var temporary=Path.Combine(renderDir,
+            "longform-caption-repair-"+Guid.NewGuid().ToString("N")+".mp4");
+        var captionAss=Path.Combine(renderDir,
+            "longform-captions-repair.ass");
+        if(!File.Exists(original))
+        {
+            log?.Invoke("Preserving the original finished MP4 for repeatable "+
+                "caption repair: "+original);
+            var partial=original+".partial";
+            try
+            {
+                File.Copy(fullMp4,partial,true);
+                File.Move(partial,original,true);
+            }
+            finally
+            {
+                if(File.Exists(partial))File.Delete(partial);
+            }
+        }
+        var timelines=new List<NarrationTimelineService.ChapterTiming>();
+        foreach(var chapter in project.Chapters)
+        {
+            ct.ThrowIfCancellationRequested();
+            if(string.IsNullOrWhiteSpace(chapter.AudioPath) ||
+                !File.Exists(chapter.AudioPath))
+                throw new FileNotFoundException(
+                    "Caption repair needs the saved narration audio for "+
+                    "chapter "+chapter.Number+".",chapter.AudioPath);
+            var seconds=await ProbeDurationAsync(
+                chapter.AudioPath,settings,ct);
+            if(seconds<=0)
+                throw new InvalidDataException(
+                    "Cannot determine narration duration for chapter "+
+                    chapter.Number+".");
+            var activity=await DetectNarrationSpeechAsync(
+                chapter,settings,seconds,log,ct);
+            timelines.Add(NarrationTimelineService.Plan(
+                chapter,seconds,activity));
+        }
+        if(!await WriteBoldCaptionAssAsync(
+            project,timelines,captionAss,log,ct))
+            throw new InvalidOperationException(
+                "No script words available for Longform captions.");
+        if(project.Options.GenerateCaptions)
+            await WriteSrtAsync(project,
+                Path.ChangeExtension(fullMp4,".srt"),timelines,ct);
+        try
+        {
+            await BurnCaptionAssAsync(
+                original,captionAss,temporary,settings,renderDir,log,ct);
+            await ValidateAudibleAudioAsync(
+                temporary,settings,"Repaired captioned Longform",log,ct);
+            File.Copy(temporary,fullMp4,true);
+            log?.Invoke("16:9 Longform captions repaired in the EXISTING "+
+                "exported MP4; no AI images, narration, scenes or thumbnails "+
+                "were regenerated. Original uncaptioned backup retained at: "+
+                original);
+            return fullMp4;
+        }
+        finally
+        {
+            try {if(File.Exists(temporary))File.Delete(temporary);}
+            catch(IOException){}
+        }
+    }
+
     private async Task<bool> WriteBoldCaptionAssAsync(
         VideoProject project,
         IReadOnlyList<NarrationTimelineService.ChapterTiming> timelines,
@@ -808,14 +952,13 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         var sb = new StringBuilder();
         sb.AppendLine("[Script Info]")
           .AppendLine("ScriptType: v4.00+")
-          .AppendLine("PlayResX: 1080")
-          .AppendLine("PlayResY: 1920")
+          .AppendLine(CaptionRenderPolicy.AssCanvas(project.AspectRatio))
           .AppendLine("ScaledBorderAndShadow: yes")
           .AppendLine("WrapStyle: 2")
           .AppendLine()
           .AppendLine("[V4+ Styles]")
           .AppendLine("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
-          .AppendLine("Style: Punchy,Arial Black,76,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,6,0,2,145,145,350,1")
+          .AppendLine(CaptionRenderPolicy.AssStyle(project.AspectRatio))
           .AppendLine()
           .AppendLine("[Events]")
           .AppendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
@@ -830,7 +973,8 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
             var cues = NarrationTimelineService.CaptionCues(chapter,timing);
             foreach (var cue in cues)
             {
-                var caption = CaptionLayoutService.Format(cue.Words);
+                var caption = CaptionLayoutService.Format(cue.Words,
+                    CaptionRenderPolicy.IsLandscape(project.AspectRatio));
                 if(string.IsNullOrWhiteSpace(caption)) continue;
                 sb.Append("Dialogue: 0,")
                   .Append(AssCaptionTime(elapsed+cue.Time.Start)).Append(',')
@@ -846,9 +990,9 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
 
         if (captions == 0) return false;
         await File.WriteAllTextAsync(path, sb.ToString(), new UTF8Encoding(false), ct);
-        log?.Invoke($"Narration-synced captions written: {captions} " +
-            "non-overlapping scene-bound phrases; all white, maximum 2 lines, " +
-            "42–76pt with protected side margins and no automatic line wraps.");
+        log?.Invoke($"Narration-synced {project.AspectRatio} captions written: "+
+            $"{captions} non-overlapping scene-bound phrases; all white, "+
+            "at most 2 lines, protected side margins and no automatic wrapping.");
         return true;
     }
 
