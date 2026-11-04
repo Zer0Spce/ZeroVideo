@@ -750,6 +750,65 @@
                            Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
               </StackPanel>
             </Border>
+            <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+              <StackPanel>
+                <TextBlock Text="6. Real Person Identity Lock (FLUX — optional)" FontSize="18" FontWeight="SemiBold"/>
+                <TextBlock Text="Maintain the recognizable face of a real person (Zak Bagans, Jeffrey Dahmer, etc.) from 1–3 approved local portrait photos. Only scenes visibly depicting that named person use identity conditioning. This is separate from Character Bible: background, clothing, framing and scene actions are free to change. OFF by default; no automatic photo scraping."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,9"/>
+                <CheckBox Content="Enable Real Person Identity Lock for this project"
+                          IsChecked="{Binding Project.Options.EnableRealPersonIdentityLock, Mode=TwoWay}"
+                          ToolTip="Only applies to explicitly named, visible people with approved reference photos using local FLUX and a PuLID identity adapter."
+                          Margin="0,2,0,8"/>
+                <TextBlock Text="REAL PERSON REFERENCE PROFILES" FontWeight="SemiBold" Margin="0,4,0,6"/>
+                <DataGrid ItemsSource="{Binding Project.RealPeople}"
+                          SelectedItem="{Binding SelectedRealPerson, Mode=TwoWay}"
+                          AutoGenerateColumns="False" CanUserAddRows="False"
+                          CanUserDeleteRows="False" Height="147" MinWidth="600">
+                  <DataGrid.Columns>
+                    <DataGridCheckBoxColumn Header="Use" Binding="{Binding Enabled, Mode=TwoWay}" Width="55"/>
+                    <DataGridTextColumn Header="Real person name" Binding="{Binding Name}" Width="200" IsReadOnly="True"/>
+                    <DataGridTextColumn Header="Reference photos (up to 3)"
+                                        Binding="{Binding ReferencePaths.Count}" IsReadOnly="True" Width="*"/>
+                  </DataGrid.Columns>
+                </DataGrid>
+                <Label Content="FULL NAME (MATCHED AGAINST VISIBLE SCENES)" Margin="0,8,0,0"/>
+                <TextBox Width="360" HorizontalAlignment="Left"
+                         Text="{Binding NewRealPersonName, UpdateSourceTrigger=PropertyChanged}"/>
+                <WrapPanel Margin="0,9,0,0">
+                  <Button Style="{StaticResource PrimaryButton}" Content="Add Named Person"
+                          Command="{Binding AddRealPersonCommand}"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Import Approved Face Photo"
+                          Command="{Binding ImportRealPersonPhotoCommand}"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Clear Selected Photos"
+                          Command="{Binding ClearRealPersonPhotosCommand}"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Remove Person"
+                          Command="{Binding RemoveRealPersonCommand}"/>
+                </WrapPanel>
+                <Label Content="IDENTITY CONDITIONING STRENGTH (0.35–1.10)" Margin="0,12,0,0"/>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                  <Slider Width="260" Minimum="0.35" Maximum="1.10"
+                          TickFrequency="0.05" IsSnapToTickEnabled="True"
+                          Value="{Binding Project.Options.RealPersonIdentityStrength, Mode=TwoWay}"
+                          VerticalAlignment="Center"/>
+                  <TextBlock Text="{Binding Project.Options.RealPersonIdentityStrength, StringFormat=F2}"
+                             Margin="12,0,0,0" VerticalAlignment="Center"/>
+                </StackPanel>
+                <WrapPanel Margin="0,10,0,0">
+                  <Button Style="{StaticResource PrimaryButton}" Content="Save Identity Lock"
+                          Command="{Binding SaveIdentityLockCommand}"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Download PuLID Identity Models (~2GB)"
+                          Command="{Binding DownloadPuLidIdentityModelsCommand}"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Test PuLID Identity Adapter"
+                          Command="{Binding TestIdentityAdapterCommand}"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding IdentityLockStatus}" Foreground="{StaticResource AccentHover}"
+                           TextWrapping="Wrap" Margin="0,10,0,0"/>
+                <TextBlock Text="Requires the lldacing/ComfyUI_PuLID_Flux_ll extension with FaceNet support, plus the PuLID/EVA weights. Install the custom nodes through ComfyUI Manager and restart the local ComfyUI server. Model downloads are opt-in. Works only with Local FLUX; ChatGPT image generation is unchanged."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                <TextBlock Text="GPU note: PuLID workflows primarily target FLUX.1-dev and typically require more VRAM than the current 8GB RTX 3060. The installed FLUX.1-schnell Q4 pathway is experimental; do not expect guaranteed likeness or successful inference. Stop other heavy GPU processes before testing. Use photos you have permission to use and clearly label reconstructed imagery when appropriate."
+                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+              </StackPanel>
+            </Border>
           </StackPanel>
         </ScrollViewer>
         </DockPanel>
