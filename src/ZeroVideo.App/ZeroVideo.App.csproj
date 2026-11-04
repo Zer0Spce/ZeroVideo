@@ -18,6 +18,7 @@
     <EmbeddedResource Include="Resources\zerovideo_idle_driver.py" />
     <EmbeddedResource Include="Resources\zerovideo_idle_driver_init.py" />
     <EmbeddedResource Include="Resources\liveportrait_import_probe.py" />
+    <EmbeddedResource Include="Resources\liveportrait_face_probe.py" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\profiles\automation.default.json" Link="profiles\automation.default.json" CopyToOutputDirectory="PreserveNewest" />
