@@ -28,6 +28,8 @@ jobs:
           python -m py_compile src/ZeroVideo.App/Resources/zerovideo_idle_driver_init.py
           python -m py_compile src/ZeroVideo.App/Resources/liveportrait_import_probe.py
           python -m py_compile src/ZeroVideo.App/Resources/liveportrait_face_probe.py
+          python -m py_compile src/ZeroVideo.App/Resources/liveportrait_onnx_probe.py
+          python tools/test-liveportrait-onnx-preflight.py
           python -m py_compile src/ZeroVideo.App/Resources/pulid_import_probe.py
           python -m py_compile src/ZeroVideo.App/Resources/pulid_flux_compat.py
           python tools/test-pulid-flux-compat.py
