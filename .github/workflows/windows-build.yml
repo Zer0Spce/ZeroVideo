@@ -30,6 +30,8 @@ jobs:
           python -m py_compile src/ZeroVideo.App/Resources/liveportrait_face_probe.py
           python -m py_compile src/ZeroVideo.App/Resources/liveportrait_onnx_probe.py
           python tools/test-liveportrait-onnx-preflight.py
+          python -m py_compile src/ZeroVideo.App/Resources/liveportrait_mediapipe_compat.py
+          python tools/test-liveportrait-mediapipe-compat.py
           python -m py_compile src/ZeroVideo.App/Resources/pulid_import_probe.py
           python -m py_compile src/ZeroVideo.App/Resources/pulid_flux_compat.py
           python tools/test-pulid-flux-compat.py
@@ -58,6 +60,20 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check --only-binary=:all: "mediapipe==0.10.35" "numpy>=2,<3"
           python -c "import mediapipe as mp; from mediapipe.tasks import python; from mediapipe.tasks.python import vision; import numpy; print('MediaPipe Tasks OK:', numpy.__version__)"
+      - name: Fetch pinned original Kijai LivePortrait nodes for compatibility test
+        uses: actions/checkout@v4
+        with:
+          repository: kijai/ComfyUI-LivePortraitKJ
+          ref: 4d9dc6205b793ffd0fb319816136d9b8c0dbfdff
+          path: _liveportrait_vendor_test
+          persist-credentials: false
+      - name: Validate modern MediaPipe patch against actual upstream Kijai node
+        shell: pwsh
+        run: |
+          python src/ZeroVideo.App/Resources/liveportrait_mediapipe_compat.py --extension _liveportrait_vendor_test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python src/ZeroVideo.App/Resources/liveportrait_mediapipe_compat.py --extension _liveportrait_vendor_test --verify-only
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: InsightFace ONNX dependency smoke test (Windows Python 3.13)
         shell: pwsh
         run: |
