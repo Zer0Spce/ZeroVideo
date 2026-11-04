@@ -35,10 +35,10 @@ UNUSED_DETECTOR = """        det_base_options = python.BaseOptions(model_asset_p
 UNUSED_DETECTOR_MARKER = ("        # ZeroVideo: removed redundant FaceDetector; "
                           "FaceLandmarker already detects faces.\n")
 OLD_RETURN = "        return detection_result.face_landmarks"
-NEW_RETURN = ("        return detection_result.face_landmarks "
-              "if detection_result.face_landmarks else None")
+NEW_RETURN = ("        faces = detection_result.face_landmarks\n"
+              "        return faces if faces else None")
 OLD_NUMPY = "import mediapipe as mp\n"
-NEW_NUMPY = "import mediapipe as mp\nimport numpy as np\n"
+NEW_NUMPY = "import numpy as np\nimport mediapipe as mp  # ZeroVideo Tasks API\n"
 
 
 class RepairError(RuntimeError):
