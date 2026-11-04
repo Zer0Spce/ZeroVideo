@@ -7,6 +7,27 @@ static void Check(bool condition, string description)
     Console.WriteLine("PASS: " + description);
 }
 
+const string oldChatJson = """{"number":1,"scenes":[{"narration":"old"}]}""";
+const string newChatJson = """{"number":2,"scenes":[{"narration":"new"}]}""";
+Check(ChatGptResponseRecovery.FindFreshJson(
+    [oldChatJson, newChatJson], 1, oldChatJson, oldChatJson) == newChatJson,
+    "ChatGPT recovery selects new chapter JSON, never the prior completed response");
+Check(ChatGptResponseRecovery.FindFreshJson(
+    [oldChatJson, """{"number":2,"scenes":[ """], 1, oldChatJson, oldChatJson) is null,
+    "ChatGPT recovery never accepts old JSON while a new reply is incomplete");
+Check(ChatGptResponseRecovery.FindFreshJson(
+    [oldChatJson], 1, oldChatJson, oldChatJson) is null,
+    "ChatGPT recovery does not mistake an unchanged prior turn for a new one");
+Check(ChatGptResponseRecovery.FindFreshJson(
+    [oldChatJson, newChatJson], 2, oldChatJson, oldChatJson) == newChatJson,
+    "ChatGPT recovery handles a DOM-reused response with no new block");
+Check(ChatGptResponseRecovery.ExtractLastValidJsonObject(
+    "partial prefix\n" + newChatJson + "\nfinal text") == newChatJson,
+    "ChatGPT recovery extracts an entire response through wrapper text");
+Check(ChatGptResponseRecovery.FindFreshJson(
+    [oldChatJson, "Temporary ChatGPT error"], 1, oldChatJson, oldChatJson) is null,
+    "ChatGPT recovery will not use stale JSON when the newest response is prose");
+
 Check(!new ProjectOptions().EnableCharacterConsistency,
     "New projects keep Character Bible disabled by default");
 

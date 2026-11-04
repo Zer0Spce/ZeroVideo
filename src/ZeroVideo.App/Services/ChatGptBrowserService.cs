@@ -236,8 +236,13 @@ copyrighted photograph.
         log?.Invoke("ChatGPT: waiting for the live composer...");
         await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, prompt, ct);
 
-        var baseline = await TryReadLatestResponseAsync(page, profile.ChatGpt.AssistantMessages) ?? "";
-        var baselineAssistant = await TryReadLatestAssistantTextAsync(page) ?? "";
+        // Record the assistant output BEFORE sending, so old chapter JSON
+        // cannot be mistaken for the result of this request.
+        var baselineCandidates = await ReadAssistantCandidatesAsync(page);
+        var baselineCount = baselineCandidates.Length;
+        var baseline = baselineCandidates.Select(ChatGptResponseRecovery.ExtractLastValidJsonObject)
+            .LastOrDefault(value => value is not null) ?? "";
+        var baselineAssistant = baselineCandidates.LastOrDefault() ?? "";
         await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
         log?.Invoke("ChatGPT: prompt sent; waiting for the finished response...");
 
@@ -245,6 +250,7 @@ copyrighted photograph.
             page,
             profile.ChatGpt.AssistantMessages,
             profile.ChatGpt.StopButtons,
+            baselineCount,
             baseline,
             baselineAssistant,
             log,
@@ -469,219 +475,145 @@ copyrighted photograph.
         IPage page,
         IEnumerable<string> configuredResponseSelectors,
         IEnumerable<string> stopSelectors,
+        int baselineCount,
         string baseline,
         string baselineAssistant,
         Action<string>? log,
         CancellationToken ct)
     {
-        string last = "";
-        string lastAssistant = "";
-        var rawStableSamples = 0;
-        var stableSamples = 0;
-        var sawGeneration = false;
+        string lastJson = "", lastRaw = "";
+        int stableJson = 0, stableRaw = 0;
         var started = DateTime.UtcNow;
 
         while (!ct.IsCancellationRequested && DateTime.UtcNow - started < TimeSpan.FromMinutes(12))
         {
-            var isGenerating = await AnyVisibleAsync(page, stopSelectors);
-            sawGeneration |= isGenerating;
+            ct.ThrowIfCancellationRequested();
+            var generating = await AnyVisibleAsync(page, stopSelectors);
+            var candidates = await ReadAssistantCandidatesAsync(page);
+            var freshJson = ChatGptResponseRecovery.FindFreshJson(
+                candidates, baselineCount, baselineAssistant, baseline);
 
-            var current = await TryReadLatestResponseAsync(page, configuredResponseSelectors);
-            if (!string.IsNullOrWhiteSpace(current) &&
-                !string.Equals(current, baseline, StringComparison.Ordinal))
+            if (freshJson is not null)
             {
-                if (string.Equals(current, last, StringComparison.Ordinal))
-                    stableSamples++;
-                else
+                stableJson = string.Equals(freshJson, lastJson, StringComparison.Ordinal)
+                    ? stableJson + 1 : 0;
+                lastJson = freshJson;
+                if (!generating && stableJson >= 2)
                 {
-                    last = current;
-                    stableSamples = 0;
+                    log?.Invoke("ChatGPT: newest assistant JSON detected and stable.");
+                    return freshJson;
                 }
-
-                if (!isGenerating && stableSamples >= 1)
-                    return current;
             }
+            else { lastJson = ""; stableJson = 0; }
 
-            if (sawGeneration && !isGenerating && !string.IsNullOrWhiteSpace(last))
+            // If ChatGPT produced non-JSON prose, hand that NEW response to
+            // existing validation + retry, not an earlier completed chapter.
+            if (!generating && DateTime.UtcNow - started > TimeSpan.FromSeconds(30))
             {
-                await Task.Delay(1000, ct);
-                var finalRead = await TryReadLatestResponseAsync(page, configuredResponseSelectors);
-                if (!string.IsNullOrWhiteSpace(finalRead) &&
-                    !string.Equals(finalRead, baseline, StringComparison.Ordinal))
-                    return finalRead;
-            }
+                var freshText = candidates.Length > baselineCount
+                    ? string.Join("\n", candidates.Skip(baselineCount))
+                    : candidates.Length > 0 &&
+                      !string.Equals(candidates[^1], baselineAssistant, StringComparison.Ordinal)
+                        ? candidates[^1] : null;
 
-            // If ChatGPT returned normal prose, a structured content block, or
-            // code the old selectors cannot parse as JSON, do not spin for 12
-            // minutes. Detect a newly completed assistant message and hand it
-            // to the existing outline/chapter validation + one-time repair path.
-            // Never use the USER's JSON schema prompt as the assistant output.
-            if (!isGenerating && DateTime.UtcNow - started > TimeSpan.FromSeconds(30))
-            {
-                var assistant = await TryReadLatestAssistantTextAsync(page);
-                if (!string.IsNullOrWhiteSpace(assistant) &&
-                    !string.Equals(assistant, baselineAssistant, StringComparison.Ordinal))
+                if (!string.IsNullOrWhiteSpace(freshText))
                 {
-                    if (string.Equals(assistant, lastAssistant, StringComparison.Ordinal))
-                        rawStableSamples++;
-                    else
+                    stableRaw = string.Equals(freshText, lastRaw, StringComparison.Ordinal)
+                        ? stableRaw + 1 : 0;
+                    lastRaw = freshText;
+                    if (stableRaw >= 10)
                     {
-                        lastAssistant = assistant;
-                        rawStableSamples = 0;
-                    }
-
-                    if (rawStableSamples >= 6)
-                    {
-                        var recovered = TryExtractLastValidJsonObject(assistant);
-                        if (recovered is not null && !string.Equals(recovered, baseline, StringComparison.Ordinal))
+                        var json = ChatGptResponseRecovery.ExtractLastValidJsonObject(freshText);
+                        if (json is not null &&
+                            (candidates.Length > baselineCount || json != baseline))
                         {
-                            log?.Invoke("ChatGPT: recovered JSON from the latest assistant turn.");
-                            return recovered;
+                            log?.Invoke("ChatGPT: completed answer recovered from fallback text.");
+                            return json;
                         }
+
                         await SaveChatGptResponseDiagnosticAsync(page,
-                            "Completed-NonJson", assistant, log);
-                        log?.Invoke("ChatGPT: new assistant reply completed but is not valid JSON. " +
-                            "Returning it to the existing validation/retry flow.");
-                        return assistant;
+                            "Completed-NonJson", freshText, log);
+                        log?.Invoke("ChatGPT: response is not valid JSON; requesting repair.");
+                        return freshText;
                     }
                 }
             }
+
             await Task.Delay(1200, ct);
         }
 
-        if (!string.IsNullOrWhiteSpace(last) &&
-            !string.Equals(last, baseline, StringComparison.Ordinal))
+        ct.ThrowIfCancellationRequested();
+        var finalCandidates = await ReadAssistantCandidatesAsync(page);
+        var recovered = ChatGptResponseRecovery.FindFreshJson(
+            finalCandidates, baselineCount, baselineAssistant, baseline);
+        if (recovered is not null)
         {
-            log?.Invoke("ChatGPT: completion controls were inconclusive, but a new valid JSON response was visible; using it.");
-            return last;
+            log?.Invoke("ChatGPT: finished JSON recovered on final check.");
+            return recovered;
         }
 
-        var lastVisible = await TryReadLatestAssistantTextAsync(page) ?? "";
-        await SaveChatGptResponseDiagnosticAsync(page, "Json-NotFound", lastVisible, log);
-        throw new TimeoutException("ZeroVideo could not find a new ChatGPT assistant response in the browser. " +
-            "A local diagnostic was saved in %LOCALAPPDATA%\\ZeroVideo\\diagnostics. " +
-            "Check the diagnostic TXT and PNG to see whether ChatGPT generated a reply, displayed a sign-in prompt, or changed its page structure.");
+        await SaveChatGptResponseDiagnosticAsync(page,
+            "Json-NotFound", finalCandidates.LastOrDefault() ?? "", log);
+        throw new TimeoutException(
+            "ZeroVideo could not locate a NEW completed ChatGPT assistant reply. " +
+            "Diagnostics were saved in %LOCALAPPDATA%\\ZeroVideo\\diagnostics. " +
+            "Your saved conversation and completed video work are preserved; " +
+            "retry with Resume Unfinished once the browser is ready.");
     }
 
-    private static async Task<string?> TryReadLatestResponseAsync(IPage page, IEnumerable<string> configuredSelectors)
+    // The ChatGPT page can have new assistant markdown without stable role
+    // attributes. Read all visible output blocks in DOM order, excluding
+    // user turns. Never favor an older JSON just because it matches a selector.
+    private static async Task<string[]> ReadAssistantCandidatesAsync(IPage page)
     {
-        var fallbacks = new[]
-        {
-            "[data-message-author-role='assistant']",
-            "main article[data-testid^='conversation-turn-']",
-            "main [data-testid^='conversation-turn-']",
-            "main .markdown",
-            "main [class*='markdown']"
-        };
-
-        foreach (var selector in configuredSelectors.Concat(fallbacks).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct())
-        {
-            try
-            {
-                var items = page.Locator(selector);
-                var count = await items.CountAsync();
-                for (var i = count - 1; i >= 0; i--)
-                {
-                    var item = items.Nth(i);
-                    if (!await item.IsVisibleAsync()) continue;
-
-                    try
-                    {
-                        if (await item.Locator("[data-message-author-role='user']").CountAsync() > 0 &&
-                            await item.Locator("[data-message-author-role='assistant']").CountAsync() == 0)
-                            continue;
-                    }
-                    catch { }
-
-                    var text = (await item.InnerTextAsync()).Trim();
-                    var json = TryExtractLastValidJsonObject(text);
-                    if (json is not null) return json;
-                }
+        const string script = """
+            () => {
+              const main=document.querySelector('main') ||
+                document.querySelector('[role="main"]');
+              if(!main)return [];
+              const assistant='[data-message-author-role="assistant"],' +
+                '[data-testid="conversation-turn-assistant"],' +
+                '[data-testid*="assistant-response"],[data-role="assistant"]';
+              const blocks='.markdown,[class*="markdown"],pre';
+              const user=n=>!!n.closest(
+                '[data-message-author-role="user"],[data-role="user"],' +
+                '[data-testid*="conversation-turn-user"]');
+              const visible=n=>{const st=getComputedStyle(n);
+                return st.display!=='none' && st.visibility!=='hidden';};
+              const roots=[...main.querySelectorAll(assistant)].filter(n=>!user(n));
+              const records=[],seen=new Set();
+              const add=n=>{
+                if(seen.has(n)||user(n)||!visible(n))return;
+                const text=(n.innerText||n.textContent||'').trim();
+                if(!text)return; seen.add(n);
+                records.push({n,text:text.slice(0,500000)});
+              };
+              roots.forEach(n=>{
+                if(!roots.some(p=>p!==n&&p.contains(n)))add(n);
+              });
+              for(const n of main.querySelectorAll(blocks)){
+                if(roots.some(p=>p.contains(n)))continue;
+                if(n.matches('pre')&&n.closest('.markdown,[class*="markdown"]'))continue;
+                if(n.matches('.markdown,[class*="markdown"]') &&
+                   n.parentElement?.closest('.markdown,[class*="markdown"]'))continue;
+                add(n);
+              }
+              for(const n of main.querySelectorAll('[data-testid^="conversation-turn-"]')){
+                if(user(n)||roots.some(p=>p.contains(n)))continue;
+                const id=(n.getAttribute('data-testid')||'').toLowerCase();
+                if(id.includes('assistant')||n.querySelector(blocks))add(n);
+              }
+              records.sort((a,b)=>{
+                const pos=a.n.compareDocumentPosition(b.n);
+                return pos&Node.DOCUMENT_POSITION_FOLLOWING?-1:
+                  pos&Node.DOCUMENT_POSITION_PRECEDING?1:0;
+              });
+              // Deduplicate outer assistant turn + nested content nodes.
+              return records.filter((e,i)=>
+                !records.some((p,j)=>i!==j&&p.n.contains(e.n))
+              ).map(e=>e.text);
             }
-            catch
-            {
-                // ChatGPT can replace conversation turns while streaming; always re-query.
-            }
-        }
-
-        try
-        {
-            var main = page.Locator("main").First;
-            if (await main.CountAsync() > 0 && await main.IsVisibleAsync())
-            {
-                var text = await main.InnerTextAsync();
-                var json = TryExtractLastValidJsonObject(text);
-                if (json is not null) return json;
-            }
-        }
-        catch { }
-
-        return null;
-    }
-
-    // The DOM of ChatGPT can vary across accounts and updates. Collect only
-    // assistant-authored turns; never accept a JSON schema example in a user
-    // prompt or sidebar as if it were a fresh ChatGPT answer.
-    private static async Task<string?> TryReadLatestAssistantTextAsync(IPage page)
-    {
-        const string script = @"
-() => {
-  const getText = n => {
-    const raw = (n.innerText || n.textContent || '').trim();
-    const code = [...n.querySelectorAll('pre code,pre,code,textarea')]
-       .map(e => e instanceof HTMLTextAreaElement ? e.value :
-         (e.innerText || e.textContent || '')).filter(Boolean).join('\n');
-    // Prefer the full assistant response; retain embedded JSON/markup blocks.
-    return (raw.length >= code.length ? raw : code).trim();
-  };
-  const visible = n => {
-    const st = getComputedStyle(n);
-    return st.visibility !== 'hidden' && st.display !== 'none';
-  };
-  const selectors = [
-    '[data-message-author-role=""assistant""]',
-    '[data-testid=""conversation-turn-assistant""]',
-    '[data-testid*=""assistant-response""]',
-    '[data-role=""assistant""]',
-    'article[data-message-author-role=""assistant""]'
-  ];
-  let found = [];
-  for(const selector of selectors) {
-    try {
-      for(const n of document.querySelectorAll(selector)) {
-        if(!visible(n))continue;
-        if(n.closest('[data-message-author-role=""user""]'))continue;
-        const t=getText(n);
-        if(t.length)found.push({n,t});
-      }
-    }catch{}
-  }
-  if(found.length) {
-    // DOM order over selector order prevents returning an old answer.
-    found.sort((a,b) => {
-      const v=a.n.compareDocumentPosition(b.n);
-      return (v&Node.DOCUMENT_POSITION_FOLLOWING)?-1:
-        (v&Node.DOCUMENT_POSITION_PRECEDING)?1:0;
-    });
-    return found[found.length-1].t.slice(0,200000);
-  }
-  // Fallback: modern ChatGPT turns may lose the author-role attributes.
-  // Only accept a turn with explicit assistant-like markup; reject user turns.
-  let turns=[...document.querySelectorAll(
-     '[data-testid^=""conversation-turn-""], [data-testid*=""assistant-turn""]')];
-  for(let i=turns.length-1;i>=0;i--){
-    const n=turns[i],tag=(n.getAttribute('data-testid')||'').toLowerCase();
-    const role=n.getAttribute('data-message-author-role')||
-      n.querySelector('[data-message-author-role]')?.getAttribute('data-message-author-role')||'';
-    if(role.toLowerCase()==='user'||n.querySelector('[data-message-author-role=""user""]'))continue;
-    const assistantLike=role.toLowerCase()==='assistant'||tag.includes('assistant')||
-      n.querySelector('[data-testid*=""assistant""], [data-role=""assistant""]')!==null;
-    if(!assistantLike)continue;
-    const t=getText(n);
-    if(t.length)return t.slice(0,200000);
-  }
-  return null;
-}";
+            """;
         foreach (var frame in page.Frames)
         {
             try
@@ -689,12 +621,12 @@ copyrighted photograph.
                 if (frame != page.MainFrame &&
                     !frame.Url.Contains("chatgpt.com", StringComparison.OrdinalIgnoreCase))
                     continue;
-                var text = await frame.EvaluateAsync<string?>(script);
-                if (!string.IsNullOrWhiteSpace(text)) return text;
+                var values = await frame.EvaluateAsync<string[]?>(script);
+                if (values is { Length: > 0 }) return values;
             }
-            catch (PlaywrightException) { }
+            catch (PlaywrightException) { /* retry after DOM rerender */ }
         }
-        return null;
+        return [];
     }
 
     private static async Task SaveChatGptResponseDiagnosticAsync(
