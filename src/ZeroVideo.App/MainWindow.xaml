@@ -306,6 +306,9 @@
                   <Button Style="{StaticResource PrimaryButton}" Command="{Binding StartLongFormCommand}" Content="Start automation"/>
                   <Button Style="{StaticResource SecondaryButton}" Command="{Binding ResumeLongFormCommand}"
                           Content="Resume Unfinished" ToolTip="Continue previously saved scripts, images, audio and unfinished video jobs."/>
+                  <Button Style="{StaticResource PrimaryButton}" Command="{Binding RepairLongFormCaptionsCommand}"
+                          Content="Repair Captions on Checked Videos"
+                          ToolTip="Check completed 16:9 rows, then burn captions into their existing MP4 exports using saved audio/script. No image, TTS or scene regeneration. A backup of each original MP4 is preserved."/>
                 </WrapPanel>
                 <TextBlock Text="{Binding LongFormRecoveryStatus}" Foreground="{StaticResource Muted}"
                            TextWrapping="Wrap" Margin="0,7,0,0"/>
@@ -360,8 +363,12 @@
                 <TextBox Text="{Binding Project.Options.ImagesPerChapter, UpdateSourceTrigger=LostFocus}"/>
                 <Label Content="SAFETY TOTAL IMAGE CAP"/>
                 <TextBox Text="{Binding Project.Options.MaxGeneratedVisuals, UpdateSourceTrigger=LostFocus}"/>
-                <CheckBox Content=".SRT captions" IsChecked="{Binding Project.Options.GenerateCaptions}" Margin="0,8,0,0"/>
-                <TextBlock Text="16:9 exports retain SRT captions. Bold burned-in captions currently apply only to 9:16 videos; the existing renderer is unchanged."
+                <CheckBox Content="Export .SRT captions (optional sidecar)"
+                          IsChecked="{Binding Project.Options.GenerateCaptions}" Margin="0,8,0,0"/>
+                <CheckBox Content="Burn synchronized captions directly into the 16:9 MP4 (recommended)"
+                          IsChecked="{Binding Project.Options.BurnInBoldCaptions, Mode=TwoWay}" Margin="0,7,0,0"
+                          ToolTip="Default ON. Makes captions visible in the finished 1920×1080 Longform video on any player. Independent of .SRT export."/>
+                <TextBlock Text="Longform captions are now permanently embedded when enabled: bold white with black outline, widescreen safe margins, 1–2 lines, aligned to narration. .SRT remains separately available. To fix already completed videos, check their queue rows and click Repair Captions on Checked Videos; only the MP4 is re-encoded."
                            Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,6"/>
                 <CheckBox Content="Visual motion" IsChecked="{Binding Project.Options.AddMotion}"/>
                 <CheckBox Content="Subtle image animation (4-second gentle loops)" IsChecked="{Binding Project.Options.SubtleImageAnimation}"
