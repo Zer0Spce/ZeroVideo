@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Input;
@@ -18,7 +19,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly AutomationProfileService _profiles = new();
     private readonly ProcessRunner _runner = new();
     private readonly DependencyService _dependencies = new();
-    private readonly CancellationTokenSource _cts = new();
+    private readonly LocalImageService _localImages = new();
+    private readonly OmniVoiceService _omniVoice = new();
+    private CancellationTokenSource _cts = new();
     private readonly ChatGptBrowserService _chat;
     private readonly ClipchampTtsService _clip;
     private readonly FfmpegService _ffmpeg;
@@ -42,24 +45,36 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     {
         _chat = new ChatGptBrowserService(_browser, _profiles);
         _clip = new ClipchampTtsService(_browser, _profiles);
-        _ffmpeg = new FfmpegService(_runner, _dependencies);
-        _pipeline = new PipelineService(_chat, _clip, _ffmpeg, _store);
+        _ffmpeg = new FfmpegService(_runner, _dependencies, _localImages);
+        _pipeline = new PipelineService(_chat, _clip, _ffmpeg, _store, _localImages, _omniVoice);
         _preflight = new PreflightService(_runner);
-        GeneratePlanCommand = new AsyncCommand(GeneratePlanAsync, () => !string.IsNullOrWhiteSpace(Topic) && Duration > 0);
-        ContinueWritingCommand = new AsyncCommand(ContinueWritingAsync, CanContinueWriting);
-        RunPipelineCommand = new AsyncCommand(RunPipelineAsync, CanBuildVideo);
+        GeneratePlanCommand = new AsyncCommand(()=>RunManagedJobAsync("Create — Outline and Chapters",GeneratePlanAsync), () => !string.IsNullOrWhiteSpace(Topic) && Duration > 0);
+        ContinueWritingCommand = new AsyncCommand(()=>RunManagedJobAsync("Create — Continue Writing",ContinueWritingAsync), CanContinueWriting);
+        RunPipelineCommand = new AsyncCommand(()=>RunManagedJobAsync("Create — Video Pipeline",RunPipelineAsync), CanBuildVideo);
         ContinueTtsCommand = new RelayCommand(ContinueTts);
         OpenChatGptCommand = new AsyncCommand(() => _chat.OpenAsync(Settings));
         OpenClipchampCommand = new AsyncCommand(() => _clip.OpenAsync(Settings));
-        InstallFfmpegCommand = new AsyncCommand(InstallFfmpegAsync);
+        InstallFfmpegCommand = new AsyncCommand(()=>RunManagedJobAsync("Dependency installation",InstallFfmpegAsync));
         SaveSettingsCommand = new AsyncCommand(SaveSettingsAsync);
-        RunPreflightCommand = new AsyncCommand(RunPreflightAsync);
+        RunPreflightCommand = new AsyncCommand(()=>RunManagedJobAsync("System preflight",RunPreflightAsync));
+        TestFramePackConnectionCommand = new AsyncCommand(()=>
+            RunManagedJobAsync("Test FramePack Connection",ProbeFramePackConnectionAsync));
         OpenProjectFolderCommand = new AsyncCommand(OpenProjectFolderAsync, () => Directory.Exists(ProjectDirectory));
         LoadProjectCommand = new AsyncCommand(LoadProjectAsync);
-        CancelCommand = new RelayCommand(() => _cts.Cancel());
+        CancelCommand = new RelayCommand(RequestStopJob);
+        InitializeJobControls();
         InitializeShortsCommands();
+        InitializeLongFormCommands();
         InitializeIdeasCommands();
         InitializePublishingCommands();
+        InitializeTikTokIntelligenceCommands();
+        InitializeLibraryAndCalendarCommands();
+        InitializeContentSeriesCommands();
+        InitializeLocalImageCommands();
+        InitializeFramePackCommands();
+        InitializeWanVideoCommands();
+        InitializeCharacterCommands();
+        InitializeOmniVoiceCommands();
         BrowseMusicCommand = new RelayCommand(BrowseMusic);
     }
 
@@ -69,6 +84,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<int> Durations { get; } = [5, 10, 15, 20, 30, 45, 60, 90, 120];
     public ObservableCollection<string> AspectRatios { get; } = ["16:9", "9:16"];
     public ObservableCollection<string> Styles { get; } = new(VisualStylePresets.Names);
+    public ObservableCollection<string> AiImageAnimationEngines { get; } =
+        ["Camera Motion (FFmpeg)", "Wan2.2 5B (ComfyUI)", "FramePack (Local)"];
+
     public ObservableCollection<string> ClipchampVoices { get; } =
     [
         "Andrew", "Ava", "Brian", "Emma", "Aria", "Christopher", "Eric", "Guy", "Jenny", "Michelle", "Roger", "Steffan"
@@ -85,7 +103,32 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public string ProjectDirectory { get => _projectDirectory; set { if (Set(ref _projectDirectory, value)) RefreshCommands(); } }
     public VideoProject Project { get => _project; private set { Set(ref _project, value); Raise(nameof(Chapters)); RefreshCommands(); } }
     public IEnumerable<ProjectChapter> Chapters => Project.Chapters;
-    public ZeroVideoSettings Settings { get => _settings; private set => Set(ref _settings, value); }
+    public ZeroVideoSettings Settings
+    {
+        get => _settings;
+        private set
+        {
+            if (ReferenceEquals(_settings, value)) return;
+            _settings.PropertyChanged -= SettingsPropertyChanged;
+            if (Set(ref _settings, value))
+            {
+                _settings.PropertyChanged += SettingsPropertyChanged;
+                RefreshNarrationVoiceDisplay();
+            }
+        }
+    }
+    private void SettingsPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(ZeroVideoSettings.TextToSpeechEngine)
+            or nameof(ZeroVideoSettings.OmniVoiceProfileId))
+            RefreshNarrationVoiceDisplay();
+    }
+
+    private void RefreshNarrationVoiceDisplay()
+    {
+        Raise(nameof(IsCustomVoiceActive));
+        Raise(nameof(ActiveNarrationVoiceName));
+    }
 
     public ICommand GeneratePlanCommand { get; }
     public ICommand ContinueWritingCommand { get; }
@@ -96,6 +139,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public ICommand InstallFfmpegCommand { get; }
     public ICommand SaveSettingsCommand { get; }
     public ICommand RunPreflightCommand { get; }
+    public ICommand TestFramePackConnectionCommand { get; }
     public ICommand OpenProjectFolderCommand { get; }
     public ICommand LoadProjectCommand { get; }
     public ICommand BrowseMusicCommand { get; }
@@ -104,11 +148,19 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public async Task InitializeAsync()
     {
         Settings = await _settingsService.LoadAsync();
+        LoadTikTokIntelligence();
+        LoadShortsRecovery();
+        LoadLongFormRecovery();
+        LoadOmniVoiceProfiles();
+        RefreshPublishingCalendar();
+        RefreshVideoLibrary();
         if (string.IsNullOrWhiteSpace(Project.Voice)) Project.Voice = Settings.ClipchampVoice;
         Raise(nameof(Project));
         Log("ZeroVideo initialized.");
         Log("Use Automation > Open ChatGPT / Open Clipchamp to sign in normally. Generation automatically hands that dedicated Edge profile over to automation.");
         Raise(nameof(Settings));
+        RefreshNarrationVoiceDisplay();
+        Raise(nameof(LocalImageAvailability));
     }
 
     private async Task GeneratePlanAsync()
@@ -126,7 +178,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 AspectRatio = AspectRatio,
                 Style = Style,
                 Voice = Project.Voice,
-                Options = Project.Options
+                Options = Project.Options,
+                Characters = Project.Characters ?? []
             };
 
             var requestedChapters = Math.Clamp(seed.Options.HowManyChapters, 1, 40);
@@ -145,7 +198,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 outlinePrompt += $"\nCORRECTION: Return EXACTLY {requestedChapters} chapters. Your previous outline had {generated.Chapters.Count}. Do not change the requested count.";
             }
 
-            Project = generated!;
+            generated!.Characters ??= seed.Characters;
+            if(generated.Characters.Count==0) generated.Characters=seed.Characters;
+            Project = generated;
             ProjectDirectory = await _store.SaveAsync(Project, Settings.ProjectsRoot);
             Progress = 5;
             Log($"Outline checkpoint saved to {ProjectDirectory}");
@@ -258,7 +313,26 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 }
             }
             if (needsTts) await _store.SaveAsync(Project, Settings.ProjectsRoot);
-            if (needsTts && !_shortsTtsConfirmed)
+            if(needsTts && Settings.TextToSpeechEngine=="OmniVoice (Local)")
+            {
+                if(!Settings.OmniVoiceNonCommercialAcknowledged)
+                    throw new InvalidOperationException(
+                        "OmniVoice pretrained model weights are CC BY-NC "+
+                        "(non-commercial). Open Voice Studio and acknowledge "+
+                        "the evaluation-only license before using this engine.");
+                if(!_omniVoice.IsInstalled)
+                    throw new InvalidOperationException(
+                        "OmniVoice is not installed. Open Voice Studio > "+
+                        "Install OmniVoice before generating local narration.");
+                if(!_omniVoice.LoadProfiles().Any(x=>
+                    x.Id==Settings.OmniVoiceProfileId))
+                    throw new InvalidOperationException(
+                        "Select an approved saved voice in Voice Studio first.");
+                Log("OmniVoice local narration selected. "+
+                    "No Clipchamp voice-selection checkpoint is required.");
+            }
+            if (needsTts && !_shortsTtsConfirmed &&
+                Settings.TextToSpeechEngine!="OmniVoice (Local)")
             {
                 _ttsContinueGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 WaitingForTtsContinue = true;
@@ -268,7 +342,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 await _ttsContinueGate.Task.WaitAsync(_cts.Token);
                 WaitingForTtsContinue = false;
                 _clip.ConfirmManualVoiceSelection();
-                if (ShortsRunning) _shortsTtsConfirmed = true;
+                if (ShortsRunning || LongFormRunning) _shortsTtsConfirmed = true;
                 Log("Manual Clipchamp voice confirmed. ZeroVideo will paste narration and continue without changing your voice.");
             }
 
@@ -280,8 +354,20 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             Progress = 100;
             Log($"FINAL VIDEO: {output}");
             QueueCompletedVideo(output);
-            if (ShortsRunning)
-                Log("Shorts automation: video finished and queued for Publishing; continuing to the next video.");
+            // A finished MP4 is immediately queued. Metadata is generated
+            // automatically for BOTH platforms, independent of publishing.
+            // Failures are logged and the finished video stays in the queue.
+            var finishedItem = PublishingQueue.FirstOrDefault(x =>
+                x.VideoPath.Equals(output, StringComparison.OrdinalIgnoreCase));
+            if (finishedItem is not null)
+            {
+                Status = "Finished video; generating YouTube/TikTok SEO metadata...";
+                await TryGenerateMetadataForItemAsync(finishedItem, force: false);
+                Status = "Finished";
+            }
+            if (ShortsRunning || LongFormRunning)
+                Log((LongFormRunning ? "Long Form" : "Shorts") +
+                    " automation: finished video queued for Publishing; continuing to next row.");
             else
             MessageBox.Show($"Video finished:\n{output}", "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Information);
         }
@@ -319,6 +405,24 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         _chat.RequestNewChat();
         NewChat = false;
         Log("New Chat requested: the next ChatGPT operation will start fresh, then ZeroVideo will reuse that chat for all following work.");
+    }
+
+    private async Task ProbeFramePackConnectionAsync()
+    {
+        Status = "Checking local FramePack endpoint...";
+        try
+        {
+            Status = await new FramePackAnimationService(_runner)
+                .ProbeAsync(Settings, _cts.Token);
+            Log(Status);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Status = "FramePack not ready: " + ex.Message;
+            Log(Status);
+            throw;
+        }
     }
 
     private async Task RunPreflightAsync()
@@ -423,6 +527,13 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         WaitingForTtsContinue = false;
         _ttsContinueGate?.TrySetCanceled();
         _ttsContinueGate = null;
+        if (_cts.IsCancellationRequested || ex is OperationCanceledException)
+        {
+            Status = "Stopped by user. Saved stages and completed files remain intact.";
+            Log(Status);
+            RefreshCommands();
+            return;
+        }
         Status = "Stopped: " + ex.Message;
         Log("ERROR: " + ex);
         MessageBox.Show(ex.Message, "ZeroVideo", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -433,6 +544,10 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     {
         _cts.Cancel();
         _cts.Dispose();
+        _omniPreviewPlayer.Stop();
+        _omniPreviewPlayer.Close();
+        _omniVoice.StopActiveProcesses();
+        FramePackSetupService.StopOwnedServer();
         await _browser.DisposeAsync();
     }
 
