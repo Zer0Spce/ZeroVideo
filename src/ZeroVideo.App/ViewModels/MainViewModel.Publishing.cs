@@ -1,6 +1,9 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows;
 using System.Windows.Input;
 using ZeroVideo.App.Infrastructure;
@@ -12,7 +15,44 @@ public sealed class PublishQueueItem : ObservableObject
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string VideoPath { get; set; } = "";
-    public string ThumbnailPath { get; set; } = "";
+    private string _thumbnailPath = "";
+    public string ThumbnailPath
+    {
+        get => _thumbnailPath;
+        set { if(Set(ref _thumbnailPath,value)) RefreshThumbnailPreview(); }
+    }
+    private ImageSource? _thumbnailPreview;
+    [JsonIgnore]
+    public ImageSource? ThumbnailPreview
+    {
+        get => _thumbnailPreview;
+        private set => Set(ref _thumbnailPreview,value);
+    }
+    public int ThumbnailRegenerationCount { get; set; }
+    public void RefreshThumbnailPreview()
+    {
+        if(string.IsNullOrWhiteSpace(ThumbnailPath) ||
+            !File.Exists(ThumbnailPath))
+        { ThumbnailPreview=null; return; }
+        try
+        {
+            // Stream-based OnLoad avoids WPF BitmapImage's URI cache: the
+            // card updates immediately even when thumbnail.png is replaced.
+            using var file=File.OpenRead(ThumbnailPath);
+            var bitmap=new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption=BitmapCacheOption.OnLoad;
+            bitmap.StreamSource=file;
+            bitmap.EndInit();
+            bitmap.Freeze();
+            ThumbnailPreview=bitmap;
+        }
+        catch(Exception ex) when(ex is IOException or
+            InvalidDataException or NotSupportedException)
+        {
+            ThumbnailPreview=null;
+        }
+    }
     public string Title { get; set; } = "";
     public string Description { get; set; } = "";
     public string Hashtags { get; set; } = "";
@@ -125,6 +165,7 @@ public sealed partial class MainViewModel
     public ICommand SchedulePublishQueueCommand { get; private set; } = null!;
     public ICommand SmartSchedulePublishQueueCommand { get; private set; } = null!;
     public ICommand GeneratePublishMetadataCommand { get; private set; } = null!;
+    public ICommand RegeneratePublishThumbnailCommand { get; private set; } = null!;
     public ICommand OpenYouTubeStudioCommand { get; private set; } = null!;
     public ICommand OpenTikTokStudioCommand { get; private set; } = null!;
     public ICommand BrowserPublishCommand { get; private set; } = null!;
@@ -186,6 +227,7 @@ public sealed partial class MainViewModel
                     if (!string.IsNullOrWhiteSpace(item.YouTubeTitle) && !string.IsNullOrWhiteSpace(item.TikTokCaption))
                         item.MetadataStatus = "Ready";
                     TrackPublishingItem(item);
+                    item.RefreshThumbnailPreview();
                     PublishingQueue.Add(item);
                 }
             Raise(nameof(AllPublishItemsChecked));
@@ -205,7 +247,8 @@ public sealed partial class MainViewModel
                 Raise(nameof(AllPublishItemsChecked));
             if (args.PropertyName == nameof(PublishQueueItem.IsScheduled) && !item.IsScheduled)
                 item.ScheduledAt = null;
-            SavePublishingQueue();
+            if(args.PropertyName!=nameof(PublishQueueItem.ThumbnailPreview))
+                SavePublishingQueue();
             if(args.PropertyName==nameof(PublishQueueItem.IsScheduled) ||
                args.PropertyName==nameof(PublishQueueItem.ScheduleDateText))
                 RefreshPublishingCalendar();
@@ -252,9 +295,74 @@ public sealed partial class MainViewModel
         foreach (var item in PublishingQueue.Where(x => x.VideoPath.StartsWith(Project.ProjectDirectory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)))
         {
             item.ThumbnailPath = thumbnail;
+            item.RefreshThumbnailPreview();
             if (ReferenceEquals(item, SelectedPublishItem)) PublishThumbnail = thumbnail;
         }
         SavePublishingQueue();
+    }
+
+    private async Task RegeneratePublishCardThumbnailAsync(
+        PublishQueueItem item)
+    {
+        if(IsBatchPublishing)
+            throw new InvalidOperationException(
+                "Wait for the current TikTok publish batch to finish.");
+        if(!PublishingQueue.Contains(item))
+            throw new InvalidOperationException(
+                "The selected publish card is no longer in the queue.");
+        if(!File.Exists(item.VideoPath))
+            throw new FileNotFoundException(
+                "The publish card's video is missing.",item.VideoPath);
+
+        // Use THIS card's saved project, never the active Create tab's
+        // different topic/style/project. A copied standalone MP4 needs a
+        // project.json beside it or one folder above its exports directory.
+        var videoFolder=Path.GetDirectoryName(
+            Path.GetFullPath(item.VideoPath))!;
+        var projectFile=Path.Combine(videoFolder,"project.json");
+        if(!File.Exists(projectFile) &&
+            string.Equals(Path.GetFileName(videoFolder),"exports",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            projectFile=Path.Combine(
+                Directory.GetParent(videoFolder)!.FullName,"project.json");
+        }
+        if(!File.Exists(projectFile))
+            throw new FileNotFoundException(
+                "This video has no saved ZeroVideo project.json. " +
+                "Thumbnail regeneration needs the original project title, " +
+                "style and aspect ratio. The existing thumbnail was left intact.",
+                projectFile);
+
+        var associated=await _store.LoadAsync(projectFile);
+        if(associated.AspectRatio is not ("9:16" or "16:9"))
+            throw new InvalidOperationException(
+                "The saved project's aspect ratio is unsupported: "+
+                associated.AspectRatio);
+
+        var change=item.ThumbnailRegenerationCount+1;
+        PublishStatus="Regenerating "+associated.AspectRatio+
+            " thumbnail for '"+item.Title+
+            "' with a large, click-focused 2–5 word headline.";
+        Log(PublishStatus);
+
+        // All work (ChatGPT image + local typesetting) happens before
+        // replacing thumbnail.png. Errors or Stop preserve the previous
+        // thumbnail, queue metadata and finished MP4.
+        var service=new ThumbnailArtworkService(_chat);
+        var file=await service.RegenerateAsync(
+            associated,Settings,Log,_cts.Token,change);
+        item.ThumbnailRegenerationCount=change;
+        item.ThumbnailPath=file;
+        item.RefreshThumbnailPreview();
+        if(ReferenceEquals(item,SelectedPublishItem))
+            PublishThumbnail=file;
+        SavePublishingQueue();
+        RefreshVideoLibrary();
+        PublishStatus="Thumbnail regenerated for '"+item.Title+
+            "'. Large readable text and updated card preview are ready; "+
+            "video, title, description, tags and publishing schedule were unchanged.";
+        Log(PublishStatus);
     }
 
     private void SchedulePublishingQueue()
@@ -513,6 +621,12 @@ public sealed partial class MainViewModel
             catch (Exception ex) { PublishStatus = "TikTok Studio: " + ex.Message; }
         });
         GeneratePublishMetadataCommand = new AsyncCommand(()=>RunManagedJobAsync("Publishing metadata retry",RetryCheckedMetadataAsync));
+        RegeneratePublishThumbnailCommand =
+            new AsyncItemCommand<PublishQueueItem>(item =>
+                RunManagedJobAsync(
+                    "Publish card: Regenerate Thumbnail — "+item.Title,
+                    () => RegeneratePublishCardThumbnailAsync(item)),
+                item => !IsBatchPublishing && File.Exists(item.VideoPath));
 
         SchedulePublishQueueCommand = new RelayCommand(SchedulePublishingQueue);
         SmartSchedulePublishQueueCommand = new AsyncCommand(()=>RunManagedJobAsync("AI Smart Scheduling",SmartSchedulePublishingQueueAsync));
