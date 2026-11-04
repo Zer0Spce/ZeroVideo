@@ -19,6 +19,19 @@ public sealed class LivePortraitSetupService(ProcessRunner runner)
     private const string ArchiveUrl =
         "https://github.com/kijai/ComfyUI-LivePortraitKJ/archive/" +
         SourceCommit + ".zip";
+    // Official LivePortrait ONNX landmark model. The upstream extension
+    // downloads checkpoints only when its model FOLDER is missing, so an
+    // incomplete folder can leave this file absent indefinitely.
+    private const string LandmarkUrl =
+        "https://huggingface.co/Kijai/LivePortrait_safetensors/resolve/" +
+        "45213bbb94ead0c64a94bcfabb0688dc087d89c9/landmark.onnx";
+    private const long LandmarkModelBytes = 114666491;
+    private const string LandmarkSha256 =
+        "31d22a5041326c31f19b78886939a634a5aedcaa5ab8b9b951a1167595d147db";
+    private static readonly SemaphoreSlim LandmarkDownloadGate = new(1, 1);
+    public static string LandmarkModelPath => Path.Combine(
+        LocalImageService.PortableRoot, "ComfyUI", "models", "liveportrait",
+        "landmark.onnx");
 
     public static string NodeFolder => Path.Combine(
         LocalImageService.PortableRoot, "ComfyUI", "custom_nodes",
@@ -165,6 +178,7 @@ public sealed class LivePortraitSetupService(ProcessRunner runner)
         // Always run compatibility repair even when the extension folder
         // exists from an earlier/partially completed installation.
         await InstallCompatibleDependenciesAsync(log, ct);
+        await EnsureLandmarkModelAsync(log, ct);
         EnsureDriver();
         // A successful pip install is insufficient: ComfyUI must actually
         // import and register the pinned Kijai extension and ZeroVideo node.
@@ -174,6 +188,98 @@ public sealed class LivePortraitSetupService(ProcessRunner runner)
             "Restart ComfyUI, then test connection. Model weights will " +
             "download locally the first time LivePortrait runs.");
     }
+    /// <summary>
+    /// Repair only the missing/corrupt ONNX landmark checkpoint. The pinned
+    /// official 114,666,491-byte file is SHA256 verified before activation.
+    /// Existing successful images, other LivePortrait models and ComfyUI
+    /// dependencies are not modified. Runs only on explicit Install/Repair
+    /// or when LivePortrait is selected for a scene with a detected face.
+    /// </summary>
+    public async Task<string> EnsureLandmarkModelAsync(
+        Action<string>? log, CancellationToken ct)
+    {
+        await LandmarkDownloadGate.WaitAsync(ct);
+        try
+        {
+            var destination = LandmarkModelPath;
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+
+            async Task<bool> ValidAsync(string path)
+            {
+                if (!File.Exists(path) ||
+                    new FileInfo(path).Length != LandmarkModelBytes)
+                    return false;
+                await using var stream = File.OpenRead(path);
+                var actual = await System.Security.Cryptography.SHA256
+                    .HashDataAsync(stream, ct);
+                return Convert.ToHexString(actual).Equals(
+                    LandmarkSha256, StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (await ValidAsync(destination))
+            {
+                log?.Invoke("LivePortrait landmark.onnx verified (115 MB, SHA-256).");
+                return "LivePortrait landmark.onnx verified; no download needed.";
+            }
+
+            log?.Invoke("Repairing LivePortrait landmark.onnx from the official " +
+                "Kijai model repository (~115 MB). Only this file will be replaced.");
+            var partial = destination + ".zerovideo.partial";
+            var existing = File.Exists(partial) ?
+                new FileInfo(partial).Length : 0L;
+            if (existing >= LandmarkModelBytes)
+            {
+                if (await ValidAsync(partial))
+                {
+                    File.Move(partial, destination, overwrite: true);
+                    log?.Invoke("LivePortrait landmark.onnx restored from verified download.");
+                    return "Landmark model ready (115 MB, verified).";
+                }
+                File.Delete(partial);
+                existing = 0;
+            }
+
+            using var http = new HttpClient
+            {
+                Timeout = TimeSpan.FromMinutes(20)
+            };
+            using var request = new HttpRequestMessage(HttpMethod.Get, LandmarkUrl);
+            if (existing > 0)
+                request.Headers.Range =
+                    new System.Net.Http.Headers.RangeHeaderValue(existing, null);
+            using var response = await http.SendAsync(
+                request, HttpCompletionOption.ResponseHeadersRead, ct);
+            response.EnsureSuccessStatusCode();
+            var resumes = existing > 0 &&
+                response.StatusCode == System.Net.HttpStatusCode.PartialContent;
+            if (resumes && response.Content.Headers.ContentRange?.From != existing)
+                throw new InvalidDataException(
+                    "The model server returned an invalid download offset. " +
+                    "Retry the Repair button.");
+            await using (var input = await response.Content.ReadAsStreamAsync(ct))
+            await using (var file = new FileStream(partial,
+                resumes ? FileMode.Append : FileMode.Create,
+                FileAccess.Write, FileShare.None, 131072, useAsync: true))
+                await input.CopyToAsync(file, ct);
+
+            if (!await ValidAsync(partial))
+                throw new InvalidDataException(
+                    "LivePortrait landmark.onnx download is incomplete or " +
+                    "failed the official SHA-256 check. The current model has " +
+                    "not been replaced. Click Repair to retry.");
+
+            // Atomic replacement only after full model checksum verification.
+            File.Move(partial, destination, overwrite: true);
+            log?.Invoke("LivePortrait landmark.onnx repaired and verified " +
+                "(114,666,491 bytes, SHA-256 matches publisher).");
+            return "LivePortrait landmark.onnx is ready (115 MB, verified).";
+        }
+        finally
+        {
+            LandmarkDownloadGate.Release();
+        }
+    }
+
     private async Task InstallCompatibleDependenciesAsync(
         Action<string>? log, CancellationToken ct)
     {
