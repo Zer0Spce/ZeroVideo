@@ -37,6 +37,7 @@ public sealed partial class MainViewModel
     public ICommand RemoveRealPersonCommand { get; private set; } = null!;
     public ICommand SaveIdentityLockCommand { get; private set; } = null!;
     public ICommand TestIdentityAdapterCommand { get; private set; } = null!;
+    public ICommand DownloadPuLidIdentityModelsCommand { get; private set; } = null!;
 
     private void InitializeRealPersonIdentityCommands()
     {
@@ -52,6 +53,9 @@ public sealed partial class MainViewModel
             "Save real-person identity profiles", SaveIdentityLockAsync));
         TestIdentityAdapterCommand = new AsyncCommand(() => RunManagedJobAsync(
             "Check local PuLID identity adapter", TestIdentityAdapterAsync));
+        DownloadPuLidIdentityModelsCommand = new AsyncCommand(() =>
+            RunManagedJobAsync("Download PuLID identity weights",
+                DownloadIdentityAssetsAsync));
     }
 
     private async Task SaveIdentityProjectAsync()
@@ -173,6 +177,20 @@ public sealed partial class MainViewModel
             (Project.Options.EnableRealPersonIdentityLock ? "ENABLED" : "DISABLED") +
             " for this project. Only scenes visibly depicting the approved named " +
             "person use identity conditioning; all other scenes remain independent.";
+        Log(IdentityLockStatus);
+    }
+
+    private async Task DownloadIdentityAssetsAsync()
+    {
+        IdentityLockStatus = "Downloading verified PuLID/FaceNet identity weight files...";
+        await _localImages.InstallPulidIdentityAssetsAsync(message =>
+        {
+            IdentityLockStatus = message;
+            Log(message);
+        }, _cts.Token);
+        IdentityLockStatus = "PuLID and EVA-CLIP identity models verified. " +
+            "Install the lldacing ComfyUI_PuLID_Flux_ll extension with its Python " +
+            "dependencies through ComfyUI Manager, restart ComfyUI, then click Test.";
         Log(IdentityLockStatus);
     }
 
