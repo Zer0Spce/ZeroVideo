@@ -39,6 +39,15 @@ public sealed class SettingsService
             "Camera Motion (FFmpeg)" or "LivePortrait (Local)"))
             settings.AiImageAnimationEngine = "Camera Motion (FFmpeg)";
 
+        // Migrate missing/unrecognized values without changing legacy
+        // projects' 8GB-friendly 1024x576 ComfyUI default.
+        if (!LocalImageResolutionService.IsValidPreset(
+                settings.LocalImageResolutionPreset))
+            settings.LocalImageResolutionPreset = LocalImageResolutionService.Fast;
+        if (!LocalImageResolutionService.IsValidMode(
+                settings.LocalImageResolutionMode))
+            settings.LocalImageResolutionMode = LocalImageResolutionService.Direct;
+
         settings.FfmpegPath = ResolveTool(settings.FfmpegPath, "ffmpeg.exe");
         settings.FfprobePath = ResolveTool(settings.FfprobePath, "ffprobe.exe");
         return settings;
