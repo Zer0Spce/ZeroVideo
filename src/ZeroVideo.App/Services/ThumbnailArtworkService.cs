@@ -26,7 +26,7 @@ public sealed class ThumbnailArtworkService(ChatGptBrowserService chat)
         var ratio=portrait?"9:16 vertical":"16:9 widescreen";
         var title=project.Title;
         var hook=ThumbnailHeadlineService.Hook(title,project.Topic,variation);
-        var look=variation%3 switch
+        var look=(variation%3) switch
         {
             0=>"One dramatic, recognizable subject with clear cinematic depth.",
             1=>"A distinct three-quarter angle with one striking story-specific prop.",
