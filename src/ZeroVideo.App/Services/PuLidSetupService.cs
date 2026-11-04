@@ -173,10 +173,12 @@ public sealed class PuLidSetupService(
     private async Task EnsurePythonDependenciesAsync(
         string python,Action<string>? log,CancellationToken ct)
     {
-        // For ComfyUI portable Python 3.13, InsightFace 0.7.3 requires a
-        // local C++ build. Use the official universal Python 3 InsightFace
-        // wheel instead; no unverified third-party prebuilt Windows binaries.
-        // FaceNet (not pretrained InsightFace) is selected in the workflow.
+        // InsightFace 2.1 is a pure-Python wheel, but its import eagerly
+        // requires ONNX plus image/science dependencies. A previous installer
+        // used --no-deps for insightface without installing those packages.
+        // Repair them explicitly without upgrading the existing PyTorch or
+        // touching any image model weights. FaceNet is selected in the
+        // identity graph, NOT pretrained InsightFace models.
         // --only-binary avoids silently compiling native extensions.
         var steps=new[]
         {
@@ -184,6 +186,12 @@ public sealed class PuLidSetupService(
                 "-s -m pip install --disable-pip-version-check "+
                 "--only-binary=:all: --upgrade-strategy only-if-needed "+
                 "\"ftfy\" \"timm\" \"facexlib\" \"cython\""),
+            ("InsightFace dependency repair (ONNX, science, image toolkit)",
+                "-s -m pip install --disable-pip-version-check "+
+                "--only-binary=:all: --upgrade-strategy only-if-needed "+
+                "\"onnx>=1.17,<2\" \"scipy\" \"scikit-image\" "+
+                "\"scikit-learn\" \"requests\" \"tqdm\" "+
+                "\"onnxruntime-gpu\""),
             ("Current official InsightFace Python module (no model download)",
                 "-s -m pip install --disable-pip-version-check "+
                 "--only-binary=:all: --no-deps \"insightface==2.1\""),
@@ -205,7 +213,8 @@ public sealed class PuLidSetupService(
         string python,Action<string>? log,CancellationToken ct)
     {
         var check=await runner.RunAsync(python,
-            "-s -c \"import torch,torchvision,cv2,insightface,facexlib,"+
+            "-s -c \"import torch,torchvision,cv2,numpy,onnx,onnxruntime,"+
+            "scipy,skimage,sklearn,requests,tqdm,insightface,facexlib,"+
             "facenet_pytorch,ftfy,timm; "+
             "from insightface.utils import face_align; "+
             "from insightface.utils.download import download_file; "+
