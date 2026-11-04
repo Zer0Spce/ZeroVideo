@@ -30,6 +30,15 @@ public sealed class SettingsService
             settings.AutomationProfilePath = AppPaths.BundledAutomationProfile;
         }
 
+        // Legacy animation selection is no longer supported. Do not delete
+        // old model files here: cleanup is an explicit confirmed user action.
+        if (settings.AiImageAnimationEngine is "Wan2.2 5B (ComfyUI)" or
+            "FramePack (Local)" || string.IsNullOrWhiteSpace(settings.AiImageAnimationEngine))
+            settings.AiImageAnimationEngine = "Camera Motion (FFmpeg)";
+        if (settings.AiImageAnimationEngine is not ("Off" or
+            "Camera Motion (FFmpeg)" or "LivePortrait (Local)"))
+            settings.AiImageAnimationEngine = "Camera Motion (FFmpeg)";
+
         settings.FfmpegPath = ResolveTool(settings.FfmpegPath, "ffmpeg.exe");
         settings.FfprobePath = ResolveTool(settings.FfprobePath, "ffprobe.exe");
         return settings;
