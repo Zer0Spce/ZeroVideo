@@ -71,6 +71,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         InitializeLibraryAndCalendarCommands();
         InitializeContentSeriesCommands();
         InitializeLocalImageCommands();
+        InitializeFramePackCommands();
         InitializeCharacterCommands();
         InitializeOmniVoiceCommands();
         BrowseMusicCommand = new RelayCommand(BrowseMusic);
@@ -545,6 +546,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         _omniPreviewPlayer.Stop();
         _omniPreviewPlayer.Close();
         _omniVoice.StopActiveProcesses();
+        FramePackSetupService.StopOwnedServer();
         await _browser.DisposeAsync();
     }
 
