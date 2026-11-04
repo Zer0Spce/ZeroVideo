@@ -139,7 +139,7 @@ QUALITY REQUIREMENTS:
     public async Task<string> GenerateIdentityReferenceAsync(
         VideoProject project, string personName, int variation,
         ZeroVideoSettings settings, Action<string>? log,
-        CancellationToken ct)
+        CancellationToken ct, string? outputDirectory = null)
     {
         if (string.IsNullOrWhiteSpace(personName) || personName.Length > 90 ||
             variation is < 1 or > 3)
@@ -181,7 +181,8 @@ copyrighted photograph.
             page, profile.ChatGpt.SendButtons, ct);
         log?.Invoke($"ChatGPT: generating {personName} approximate identity guide "+
             $"{variation} ({project.Style}); waiting for original image...");
-        var folder = RealPersonIdentityService.ReferenceFolder(project);
+        var folder = outputDirectory ??
+            RealPersonIdentityService.ReferenceFolder(project);
         Directory.CreateDirectory(folder);
         var slug = System.Text.RegularExpressions.Regex.Replace(
             personName.Trim(), "[^A-Za-z0-9_-]", "_");
