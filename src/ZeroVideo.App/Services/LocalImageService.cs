@@ -731,19 +731,33 @@ public sealed class LocalImageService
 
     public async Task RestartOwnedServerAsync(Action<string>? log,CancellationToken ct)
     {
-        // Do not kill an external ComfyUI session. Only restart the server
-        // process ZeroVideo created so its newly installed GGUF nodes load.
+        // Only restart the process this service actually launched. Old
+        // ZeroVideo instances are handled by RestartForLivePortraitAsync with
+        // a process/port check and explicit user approval.
         if(_serverProcess is null)
+            throw new InvalidOperationException(
+                "ComfyUI is running outside this ZeroVideo session. " +
+                "Use the Restart button to inspect its process and approve a safe restart.");
+        var old=_serverProcess;
+        try
         {
-            log?.Invoke("If ComfyUI was launched outside ZeroVideo, restart "+
-                "that server manually to load newly installed GGUF nodes.");
-            return;
+            if(!old.HasExited)
+            {
+                old.Kill(entireProcessTree:true);
+                await old.WaitForExitAsync(ct);
+            }
         }
-        try { if(!_serverProcess.HasExited)_serverProcess.Kill(entireProcessTree:true); }
-        catch { }
-        try { _serverProcess.Dispose(); } catch { }
-        _serverProcess=null;
-        await Task.Delay(800,ct);
+        finally
+        {
+            old.Dispose();
+            _serverProcess=null;
+        }
+        for(var i=0;i<20 && await IsOnlineAsync(ct);i++)
+            await Task.Delay(400,ct);
+        if(await IsOnlineAsync(ct))
+            throw new IOException(
+                "ComfyUI port 8188 remained occupied after stopping this server. " +
+                "Refusing to launch another Python instance until the old port is free.");
         await StartAsync(log,ct);
     }
 
