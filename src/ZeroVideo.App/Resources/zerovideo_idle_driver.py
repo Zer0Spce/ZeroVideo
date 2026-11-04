@@ -28,33 +28,50 @@ class ZeroVideoIdleDriver:
 
     def animate(self, source_image, seconds=4.0, fps=12,
                 blink=True, strength="Low"):
+        # Modern MediaPipe Tasks API works with both old and current
+        # MediaPipe. The removed legacy mp.solutions.face_mesh API does not
+        # exist in the current Python 3.13-compatible wheels.
+        import os
         import mediapipe as mp
+        from mediapipe.tasks import python
+        from mediapipe.tasks.python import vision
 
-        if not hasattr(mp, "solutions") or not hasattr(mp.solutions, "face_mesh"):
-            raise RuntimeError(
-                "ZeroVideo LivePortrait needs mediapipe.solutions.face_mesh "
-                "(install compatible MediaPipe 0.10.x in ComfyUI's Python).")
         frame = (np.clip(source_image[0].cpu().numpy(), 0, 1) *
                  255).astype(np.uint8)
         h, w = frame.shape[:2]
         if h < 64 or w < 64:
             raise ValueError("Source illustration is too small for face animation.")
 
-        # Downscale *detection* only; normalized landmarks still map to the
-        # original image. The full illustrated scene is never regenerated.
+        # Reuse the model bundled by the pinned official Kijai extension,
+        # without downloading another landmark checkpoint.
+        model = os.path.normpath(os.path.join(
+            os.path.dirname(__file__), "..", "ComfyUI-LivePortraitKJ",
+            "media_pipe", "mp_models",
+            "face_landmarker_v2_with_blendshapes.task"))
+        if not os.path.isfile(model):
+            raise FileNotFoundError(
+                "LivePortrait face landmark model is missing. "
+                "Repair/reinstall the official LivePortrait extension.")
         factor = min(1.0, 1024.0 / max(w, h))
         detecting = cv2.resize(frame, None, fx=factor, fy=factor,
                                interpolation=cv2.INTER_AREA) if factor < 1 else frame
-        with mp.solutions.face_mesh.FaceMesh(
-            static_image_mode=True, max_num_faces=1,
-            refine_landmarks=True, min_detection_confidence=0.60
-        ) as detector:
-            result = detector.process(detecting)
-        if not result.multi_face_landmarks:
+
+        base = python.BaseOptions(model_asset_path=model)
+        options = vision.FaceLandmarkerOptions(
+            base_options=base,
+            running_mode=vision.RunningMode.IMAGE,
+            num_faces=1,
+            min_face_detection_confidence=0.60,
+            min_face_presence_confidence=0.60)
+        with vision.FaceLandmarker.create_from_options(options) as detector:
+            result = detector.detect(
+                mp.Image(image_format=mp.ImageFormat.SRGB,
+                         data=np.ascontiguousarray(detecting)))
+        if not result.face_landmarks:
             raise ValueError(
                 "No recognizable frontal face in illustration; "
                 "use camera-motion fallback for this scene.")
-        pts = result.multi_face_landmarks[0].landmark
+        pts = result.face_landmarks[0]
         p = lambda i: (int(pts[i].x * w), int(pts[i].y * h))
         # Use eye-corner distance to reject tiny faces too small for a
         # credible blink; do not distort scenes dominated by background.
