@@ -83,6 +83,9 @@ public sealed partial class MainViewModel
         if (string.IsNullOrWhiteSpace(text)) return null;
         var prefix = System.Text.RegularExpressions.Regex.Split(
             text, @"\s+[—–-]\s+|:\s+|\s+\|\s+")[0].Trim();
+        prefix=System.Text.RegularExpressions.Regex.Replace(
+            prefix, @"\s+(story|documentary|biography)$", "",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         var matches = System.Text.RegularExpressions.Regex.Match(prefix,
             @"^(?<name>[A-Za-z][A-Za-z.'-]*\s+[A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*)?)\s*(?:story|documentary|biography)?$",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
@@ -149,10 +152,11 @@ public sealed partial class MainViewModel
             return;
         }
 
+        var startVariant=person.AiApproximateReferencePaths.Count;
         for(var i=0;i<count;i++)
         {
             _cts.Token.ThrowIfCancellationRequested();
-            var nextIndex=person.AiApproximateReferencePaths.Count+1+i;
+            var nextIndex=startVariant+1+i;
             IdentityLockStatus="ChatGPT generating "+person.Name+
                 " portrait "+(i+1)+" of "+count+
                 " with "+Project.Style+"...";
@@ -198,9 +202,16 @@ public sealed partial class MainViewModel
             IdentityLockStatus=message;
             Log(message);
         },_cts.Token);
-        IdentityLockStatus="PuLID extension, FaceNet requirements and identity " +
-            "weights are installed. Restart ComfyUI (if running), then click " +
-            "Test Identity Adapter. Portrait quality/VRAM still require a test.";
+        IdentityLockStatus="PuLID files installed. Starting/restarting the " +
+            "ZeroVideo-managed ComfyUI server to register new nodes...";
+        Log(IdentityLockStatus);
+        var serverStatus=await _localImages.RestartForLivePortraitAsync(
+            Log,ConfirmComfyUiProcessRestart,_cts.Token);
+        Log(serverStatus);
+        await _localImages.TestPulidIdentityAdapterAsync(Log,_cts.Token);
+        IdentityLockStatus="PuLID nodes are registered and model files exist. " +
+            "You can test generating a recognizable named person using FLUX. " +
+            "Identity quality and GPU memory on 8 GB are not guaranteed.";
         Log(IdentityLockStatus);
     }
 
