@@ -31,6 +31,22 @@ jobs:
           python -m py_compile src/ZeroVideo.App/Resources/pulid_import_probe.py
           python -m py_compile src/ZeroVideo.App/Resources/pulid_flux_compat.py
           python tools/test-pulid-flux-compat.py
+      - name: Fetch pinned original PuLID nodes for compatibility test
+        uses: actions/checkout@v4
+        with:
+          repository: lldacing/ComfyUI_PuLID_Flux_ll
+          ref: 7c7362b806c2c0f4bde8742ada9e7cb05b44d249
+          path: _pulid_vendor_test
+          persist-credentials: false
+      - name: Verify repair against actual upstream PuLID source
+        shell: pwsh
+        run: |
+          $model = Join-Path $env:RUNNER_TEMP "zerovideo_test_flux_model.py"
+          Set-Content -Path $model -Value 'class Flux:`n    def forward_orig(self, timestep_zero_index=None): pass' -NoNewline
+          python src/ZeroVideo.App/Resources/pulid_flux_compat.py --extension _pulid_vendor_test --flux-model $model
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python src/ZeroVideo.App/Resources/pulid_flux_compat.py --extension _pulid_vendor_test --flux-model $model --verify-only
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Python 3.13 LivePortrait dependency compatibility
         uses: actions/setup-python@v5
         with:
