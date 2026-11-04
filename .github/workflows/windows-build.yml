@@ -27,6 +27,7 @@ jobs:
           python -m py_compile src/ZeroVideo.App/Resources/zerovideo_idle_driver.py
           python -m py_compile src/ZeroVideo.App/Resources/zerovideo_idle_driver_init.py
           python -m py_compile src/ZeroVideo.App/Resources/liveportrait_import_probe.py
+          python -m py_compile src/ZeroVideo.App/Resources/liveportrait_face_probe.py
       - name: Python 3.13 LivePortrait dependency compatibility
         uses: actions/setup-python@v5
         with:
