@@ -10,7 +10,17 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from urllib.error import URLError
 from urllib.parse import urlsplit
+from urllib.request import urlopen
+
+
+def configure_utf8_output():
+    """Windows redirected stdout often defaults to cp1252, but Gradio prints Unicode."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
 
 
 def require_loopback(value):
@@ -22,6 +32,41 @@ def require_loopback(value):
     if uri.path not in ("", "/") or uri.query or uri.fragment:
         raise ValueError("Use a plain local FramePack server URL such as http://127.0.0.1:7860.")
     return value.rstrip("/")
+
+
+def find_framepack_api(server):
+    """Fail before GPU work when no LOCAL FramePack UI is listening.
+
+    The official FramePack demo has a named Gradio /process endpoint.
+    Checking the /config dependency list prevents submitting to an unrelated
+    local application that happens to be listening on the same port.
+    """
+    try:
+        with urlopen(server + "/config", timeout=8) as response:
+            config = json.load(response)
+    except (URLError, OSError, ValueError, TimeoutError) as exc:
+        raise ConnectionError(
+            "FramePack server is not running or did not respond at " + server
+            + ". Start FramePack's official demo_gradio.py on this port and "
+              "leave its console open. Check that the URL shown in FramePack "
+              "matches ZeroVideo Settings."
+        ) from exc
+
+    dependencies = config.get("dependencies") or []
+    names = {
+        "/" + str(dep["api_name"]).lstrip("/")
+        for dep in dependencies
+        if isinstance(dep, dict)
+        and isinstance(dep.get("api_name"), str)
+        and dep["api_name"] not in ("", "unnamed")
+    }
+    if "/process" not in names:
+        raise RuntimeError(
+            "Connected to a Gradio server, but its /process endpoint is "
+            "missing. This is not the expected official FramePack demo, "
+            "or the installed FramePack interface has changed."
+        )
+    return "/process"
 
 
 def motion_prompt(shot_direction):
@@ -80,9 +125,11 @@ def run_job(job):
     if target.suffix.lower() != ".mp4":
         raise ValueError("AI motion output must be an MP4 file.")
 
+    api = find_framepack_api(server)
     # Gradio is already a dependency of the official FramePack installation.
+    # Client() prints a Unicode API-ready marker on some versions of Windows.
     from gradio_client import Client, handle_file
-    print("[FramePack] Connecting to local server " + server, flush=True)
+    print("[FramePack] Verified local FramePack /process endpoint at " + server, flush=True)
     client = Client(server)
     # Official demo_gradio.py: process(input_image, prompt, n_prompt, seed,
     # total_second_length, latent_window_size, steps, cfg, gs, rs,
@@ -91,7 +138,7 @@ def run_job(job):
     prompt = motion_prompt(job.get("shot_direction"))
     submission = client.submit(
         handle_file(str(original)), prompt, "", 31337, seconds, 9, 25,
-        1.0, 10.0, 0.0, 6.0, True, 16, api_name="/process"
+        1.0, 10.0, 0.0, 6.0, True, 16, api_name=api
     )
     print("[FramePack] Local diffusion running; first run loads model weights.", flush=True)
     finished = submission.result()
@@ -147,8 +194,9 @@ def main():
 
 
 if __name__ == "__main__":
+    configure_utf8_output()
     try:
         main()
     except Exception as exc:
-        print("[FramePack] ERROR: " + type(exc).__name__ + ": " + str(exc), file=sys.stderr)
+        print("[FramePack] ERROR: " + type(exc).__name__ + ": " + str(exc), file=sys.stderr, flush=True)
         raise SystemExit(1)
