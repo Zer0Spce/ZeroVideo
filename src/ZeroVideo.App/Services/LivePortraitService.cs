@@ -144,10 +144,21 @@ public sealed class LivePortraitService(LocalImageService localImages)
             using var timeout = CancellationTokenSource
                 .CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(120));
-            var result = await new ProcessRunner().RunAsync(
-                python, "-X utf8 -s -u \"" + script +
-                "\" --model \"" + path + "\"",
-                LocalImageService.PortableRoot, timeout.Token);
+            (int ExitCode, string StdOut, string StdErr) result;
+            try
+            {
+                result = await new ProcessRunner().RunAsync(
+                    python, "-X utf8 -s -u \"" + script +
+                    "\" --model \"" + path + "\"",
+                    LocalImageService.PortableRoot, timeout.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new InvalidOperationException(
+                    "LivePortrait landmark.onnx CPU initialization exceeded " +
+                    "120 seconds. Falling back to camera motion rather than " +
+                    "canceling the current video.");
+            }
             if (result.ExitCode != 0)
             {
                 var combined = (result.StdErr + Environment.NewLine +
