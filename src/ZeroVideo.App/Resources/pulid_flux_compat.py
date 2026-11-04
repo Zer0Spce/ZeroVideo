@@ -64,22 +64,39 @@ NEW_OPTIONS_LINE = re.compile(
 
 
 def repair_main_source(content, filename):
-    old = list(OLD_WRAPPER_LINE.finditer(content))
-    new = list(NEW_WRAPPER_LINE.finditer(content))
+    # The upstream file contains TWO outer sampler registrations:
+    #   ApplyPulidFlux   -> legacy _with_override (BROKEN on modern ComfyUI)
+    #   FixPulidFluxPatch -> already native wrapper (MUST NOT touch).
+    # Therefore only count and patch the ApplyPulidFlux class.
+    begin = content.find("class ApplyPulidFlux:")
+    if begin < 0:
+        raise CompatibilityError(
+            f"{filename}: ApplyPulidFlux class missing; source not modified."
+        )
+    end = content.find("class FixPulidFluxPatch:", begin)
+    if end < 0:
+        # Older fork may omit FixPulidFluxPatch; still isolate the Apply
+        # class from unrelated classes beneath it.
+        end = content.find("\nclass ", begin + len("class ApplyPulidFlux:"))
+    if end < 0:
+        end = len(content)
+    before, section, after = content[:begin], content[begin:end], content[end:]
+    old = list(OLD_WRAPPER_LINE.finditer(section))
+    new = list(NEW_WRAPPER_LINE.finditer(section))
     if len(old) + len(new) != 1:
         raise CompatibilityError(
-            f"{filename}: expected one PuLID OUTER_SAMPLE wrapper, "
-            f"found old={len(old)}, compatible={len(new)}. "
-            "This extension differs from the pinned upstream source, "
-            "and your files have NOT been overwritten."
+            f"{filename}: ApplyPulidFlux expected exactly one OUTER_SAMPLE "
+            f"registration; found old={len(old)}, compatible={len(new)}. "
+            "Existing FixPulidFluxPatch registration was intentionally "
+            "excluded from this count. No vendor source was overwritten."
         )
     if not old:
         return content, False
-    updated, count = OLD_WRAPPER_LINE.subn(
-        lambda match: match.group(1) + NEW_WRAPPER, content
+    section, count = OLD_WRAPPER_LINE.subn(
+        lambda match: match.group(1) + NEW_WRAPPER, section
     )
     assert count == 1
-    return updated, True
+    return before + section + after, True
 
 
 def repair_hook_source(content, filename):
