@@ -60,6 +60,19 @@ public sealed class LocalImageService
     private const string FluxVaeHash=
         "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38";
     private const string GgufNodeCommit="6ea2651e7df66d7585f6ffee804b20e92fb38b8a";
+    // Optional face-only PuLID-FLUX identity adapter assets. User explicitly
+    // opts in. These models are separate from all FLUX image checkpoints.
+    private const string PulidFile = "pulid_flux_v0.9.1.safetensors";
+    private const string EvaFile = "EVA02_CLIP_L_336_psz14_s6B.pt";
+    private const string PulidUrl =
+        "https://huggingface.co/guozinan/PuLID/resolve/main/" + PulidFile;
+    private const string EvaUrl =
+        "https://huggingface.co/QuanSun/EVA-CLIP/resolve/main/" + EvaFile;
+    private const string PulidSha256 =
+        "92c41c3af322b02e58e1b32842e4601e08c8f16ec1fe80089dbe957df510f51d";
+    private const string EvaSha256 =
+        "84c3a17a228c567a155259b2245b0b59072bf7da510260a0a02ec54de6d50b05";
+
 
 
 
@@ -77,6 +90,15 @@ public sealed class LocalImageService
         Path.Combine(PortableRoot,"ComfyUI","models","text_encoders",FluxClipFileName);
     public static string FluxVaePath =>
         Path.Combine(PortableRoot,"ComfyUI","models","vae",FluxVaeFileName);
+    public static string PulidModelPath => Path.Combine(
+        PortableRoot, "ComfyUI", "models", "pulid", PulidFile);
+    public static string PulidEvaPath => Path.Combine(
+        PortableRoot, "ComfyUI", "models", "clip", EvaFile);
+    public bool HasPulidIdentityWeights =>
+        File.Exists(PulidModelPath) && File.Exists(PulidEvaPath) &&
+        new FileInfo(PulidModelPath).Length > 1_000_000_000 &&
+        new FileInfo(PulidEvaPath).Length > 800_000_000;
+
     private static string GgufNodeFolder =>
         Path.Combine(PortableRoot,"ComfyUI","custom_nodes","ComfyUI-GGUF");
     public bool HasFluxSchnell =>
@@ -364,6 +386,66 @@ public sealed class LocalImageService
             try{if(Directory.Exists(temporary))Directory.Delete(temporary,true);}catch{}
             throw;
         }
+    }
+
+    /// <summary>
+    /// Download only the two verified official identity models. The optional
+    /// ComfyUI_PuLID_Flux_ll extension/FaceNet dependencies are installed
+    /// separately and validated before any identity rendering starts.
+    /// </summary>
+    public async Task InstallPulidIdentityAssetsAsync(
+        Action<string>? log, CancellationToken ct)
+    {
+        if (!HasComfyUi)
+            throw new InvalidOperationException(
+                "Install the local ComfyUI engine before PuLID assets.");
+        log?.Invoke("Downloading PuLID-FLUX (~1.14 GB) and EVA-CLIP (~856 MB). " +
+            "These verified identity weights are optional. FLUX/SDXL remain untouched.");
+        await EnsureVerifiedModelAsync(PulidUrl, PulidModelPath,
+            PulidSha256, log, ct);
+        await EnsureVerifiedModelAsync(EvaUrl, PulidEvaPath,
+            EvaSha256, log, ct);
+        log?.Invoke("PuLID identity model files verified. Install the compatible " +
+            "ComfyUI_PuLID_Flux_ll custom nodes and FaceNet dependencies, " +
+            "restart ComfyUI, then click Test Identity Adapter. " +
+            "Do not install insightface research-only pretrained face models.");
+    }
+
+    public async Task TestPulidIdentityAdapterAsync(
+        Action<string>? log, CancellationToken ct)
+    {
+        if (!HasPulidIdentityWeights)
+            throw new LocalImageSetupException(
+                "PuLID model files are missing. Click Download Identity Models (~2 GB).");
+        if (!HasFluxSchnell)
+            throw new LocalImageSetupException(
+                "FLUX.1-schnell Q4 is not installed; set up FLUX under Local Images first.");
+        if (!await IsOnlineAsync(ct))
+            throw new LocalImageSetupException(
+                "ComfyUI is not running. Start or restart the local image engine.");
+        foreach (var node in new[] {
+            "PulidFluxModelLoader", "PulidFluxEvaClipLoader",
+            "PulidFluxFaceNetLoader", "ApplyPulidFlux"})
+        {
+            using var response = await Http.GetAsync(
+                new Uri(Server, "object_info/" + node), ct);
+            if (!response.IsSuccessStatusCode)
+                throw new LocalImageSetupException(
+                    "ComfyUI cannot query " + node + ". Install " +
+                    "lldacing/ComfyUI_PuLID_Flux_ll with its dependencies " +
+                    "through ComfyUI Manager, then restart ComfyUI.");
+            using var json = JsonDocument.Parse(
+                await response.Content.ReadAsStringAsync(ct));
+            if (!json.RootElement.TryGetProperty(node, out _))
+                throw new LocalImageSetupException(
+                    "ComfyUI is missing node " + node + ". " +
+                    "Use the lldacing PuLID-FLUX extension with FaceNet support. " +
+                    "Reload the ComfyUI Python server after installing it. " +
+                    "Existing FLUX images remain unaffected.");
+        }
+        log?.Invoke("PuLID face identity nodes and model files are present. " +
+            "FLUX.1-schnell Q4 compatibility and 8 GB GPU memory are experimental; " +
+            "actual identity synthesis is not guaranteed.");
     }
 
     public async Task InstallFluxSchnellAsync(Action<string>? log,CancellationToken ct)
