@@ -180,6 +180,7 @@ public sealed class LivePortraitSetupService(ProcessRunner runner)
         await InstallCompatibleDependenciesAsync(log, ct);
         await EnsureLandmarkModelAsync(log, ct);
         EnsureDriver();
+        await EnsureMediaPipeTasksCompatibilityAsync(log, ct);
         // A successful pip install is insufficient: ComfyUI must actually
         // import and register the pinned Kijai extension and ZeroVideo node.
         var probe = await DiagnoseImportsAsync(ct);
@@ -277,6 +278,86 @@ public sealed class LivePortraitSetupService(ProcessRunner runner)
         finally
         {
             LandmarkDownloadGate.Release();
+        }
+    }
+
+    private static readonly SemaphoreSlim MediaPipeRepairGate = new(1,1);
+    private static string _mediaPipeTasksValidatedStamp = "";
+
+    /// <summary>
+    /// The pinned Kijai LivePortrait extension imports a private 2023
+    /// MediaPipe face_landmark.py incompatible with modern Python 3.13
+    /// wheels. Patch ONLY mp_utils.py to use public Tasks APIs, keeping
+    /// the original source as a namespaced local backup. No pip/downgrade.
+    /// Called during Install and automatically during LivePortrait test.
+    /// </summary>
+    public async Task<string> EnsureMediaPipeTasksCompatibilityAsync(
+        Action<string>? log, CancellationToken ct)
+    {
+        await MediaPipeRepairGate.WaitAsync(ct);
+        try
+        {
+            var file = Path.Combine(NodeFolder,"media_pipe","mp_utils.py");
+            if (!File.Exists(file))
+                throw new FileNotFoundException(
+                    "LivePortrait MediaPipe adapter not installed. " +
+                    "Use Install LivePortrait to restore the official nodes.",file);
+            var metadata = new FileInfo(file);
+            var stamp = file + ":" + metadata.Length + ":" +
+                metadata.LastWriteTimeUtc.Ticks;
+            if (stamp == _mediaPipeTasksValidatedStamp)
+                return "LivePortrait public MediaPipe Tasks compatibility already verified.";
+
+            if (string.IsNullOrWhiteSpace(EmbeddedPython))
+                throw new FileNotFoundException(
+                    "Existing ComfyUI Python interpreter was not found.");
+            var script = Path.Combine(AppPaths.ManagedToolsDirectory,
+                "liveportrait_mediapipe_compat.py");
+            CopyResource("liveportrait_mediapipe_compat.py",script);
+            log?.Invoke("LivePortrait: checking Kijai media_pipe/mp_utils.py " +
+                "compatibility with public MediaPipe Tasks (Python 3.13)...");
+            using var limit=CancellationTokenSource
+                .CreateLinkedTokenSource(ct);
+            limit.CancelAfter(TimeSpan.FromSeconds(120));
+            (int ExitCode,string StdOut,string StdErr) result;
+            try
+            {
+                result=await runner.RunAsync(EmbeddedPython,
+                    "-X utf8 -s -u \"" + script +
+                    "\" --extension \"" + NodeFolder + "\"",
+                    LocalImageService.PortableRoot,limit.Token);
+            }
+            catch(OperationCanceledException) when(!ct.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    "LivePortrait MediaPipe Tasks import check exceeded 120 seconds; " +
+                    "no ComfyUI image models or checkpoints were modified.");
+            }
+            if (result.ExitCode != 0)
+            {
+                var details=(result.StdErr + Environment.NewLine +
+                    result.StdOut).Trim();
+                var first=details.Split(new[] {'\r','\n'},
+                    StringSplitOptions.RemoveEmptyEntries)
+                    .FirstOrDefault(line=>line.Contains(
+                        "LIVEPORTRAIT_MEDIAPIPE_COMPAT_ERROR:",
+                        StringComparison.Ordinal))
+                    ?? "Unknown MediaPipe import or source compatibility failure";
+                if(details.Length>900) details=details[^900..];
+                throw new InvalidOperationException(
+                    "LivePortrait MediaPipe Tasks repair failed: "+first+
+                    " | Python detail: "+details);
+            }
+            var status=result.StdOut.Trim();
+            log?.Invoke(status);
+            metadata.Refresh();
+            _mediaPipeTasksValidatedStamp=file+":"+metadata.Length+
+                ":"+metadata.LastWriteTimeUtc.Ticks;
+            return status;
+        }
+        finally
+        {
+            MediaPipeRepairGate.Release();
         }
     }
 
