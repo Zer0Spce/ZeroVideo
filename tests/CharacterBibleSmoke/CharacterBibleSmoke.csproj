@@ -13,6 +13,7 @@
     <Compile Include="../../src/ZeroVideo.App/Services/SceneVisualPlanService.cs" Link="SceneVisualPlanService.cs"/>
     <Compile Include="../../src/ZeroVideo.App/Services/NarrationTimelineService.cs" Link="NarrationTimelineService.cs"/>
     <Compile Include="../../src/ZeroVideo.App/Services/CaptionLayoutService.cs" Link="CaptionLayoutService.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/CaptionRenderPolicy.cs" Link="CaptionRenderPolicy.cs"/>
     <Compile Include="../../src/ZeroVideo.App/Services/LocalImageResolutionService.cs" Link="LocalImageResolutionService.cs"/>
     <Compile Include="../../src/ZeroVideo.App/Models/ZeroVideoSettings.cs" Link="ZeroVideoSettings.cs"/>
   </ItemGroup>
