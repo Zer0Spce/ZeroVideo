@@ -160,8 +160,11 @@ public sealed class PuLidSetupService(
             await EnsurePythonDependenciesAsync(python,log,ct);
         }
 
-        // Check packages before spending bandwidth on >2GB of weights.
+        // Check the full custom-node import before spending bandwidth
+        // on >2 GB of weights. A generic "import insightface" alone is
+        // insufficient: the pinned PuLID extension eagerly loads many modules.
         await VerifyPythonImportsAsync(python,log,ct);
+        await VerifyComfyUiPulidNodesAsync(python,comfy,log,ct);
         log?.Invoke("Fetching official SHA-256 verified PuLID and EVA-CLIP " +
             "identity weights (~2GB; cached when already installed)...");
         await localImages.InstallPulidIdentityAssetsAsync(log,ct);
@@ -225,4 +228,34 @@ public sealed class PuLidSetupService(
         log?.Invoke("PuLID Python imports verified. "+
             "ComfyUI must restart to load newly installed nodes.");
     }
+    private async Task VerifyComfyUiPulidNodesAsync(
+        string python, string comfy, Action<string>? log, CancellationToken ct)
+    {
+        var script = Path.Combine(AppPaths.ManagedToolsDirectory,
+            "pulid_import_probe.py");
+        Directory.CreateDirectory(Path.GetDirectoryName(script)!);
+        using (var embedded = Assembly.GetExecutingAssembly()
+            .GetManifestResourceStream("ZeroVideo.App.Resources.pulid_import_probe.py"))
+        {
+            if (embedded is null)
+                throw new FileNotFoundException(
+                    "ZeroVideo's embedded PuLID node diagnostic is missing.");
+            var temporary = script + ".partial";
+            using (var output = File.Create(temporary))
+                embedded.CopyTo(output);
+            File.Move(temporary,script,overwrite:true);
+        }
+
+        log?.Invoke("PuLID setup: importing the COMPLETE ComfyUI PuLID " +
+            "extension to verify FaceNet node registration...");
+        var args = "-X utf8 -s -u \"" + script +
+            "\" --comfy-root \"" + comfy +
+            "\" --pulid-root \"" + Folder + "\"";
+        var result = await runner.RunAsync(python,args,
+            LocalImageService.PortableRoot,ct);
+        RequireSuccess(result,
+            "PuLID ComfyUI custom-node import validation");
+        log?.Invoke(result.StdOut.Trim());
+    }
+
 }
