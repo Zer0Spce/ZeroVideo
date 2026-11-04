@@ -1124,6 +1124,39 @@ public sealed class LocalImageService
         return Ref("36",0);
     }
 
+    private static string ExplainLocalImageError(JsonElement history)
+    {
+        if (history.TryGetProperty("status", out var status) &&
+            status.TryGetProperty("messages", out var messages) &&
+            messages.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in messages.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Array ||
+                    item.GetArrayLength() < 2 ||
+                    item[0].GetString() != "execution_error" ||
+                    item[1].ValueKind != JsonValueKind.Object)
+                    continue;
+                var info=item[1];
+                static string Get(JsonElement node,string key) =>
+                    node.TryGetProperty(key,out var part) &&
+                    part.ValueKind == JsonValueKind.String
+                        ? part.GetString()??"" : "";
+                var error="Node "+Get(info,"node_id")+" ("+
+                    Get(info,"node_type")+"): "+
+                    Get(info,"exception_type")+": "+
+                    Get(info,"exception_message");
+                if(info.TryGetProperty("traceback",out var trace) &&
+                   trace.ValueKind == JsonValueKind.Array)
+                    error+=" | "+string.Join(" ",trace.EnumerateArray()
+                        .Where(x=>x.ValueKind==JsonValueKind.String)
+                        .Select(x=>x.GetString()??"").TakeLast(3));
+                return error.Length > 1400 ? error[^1400..] : error;
+            }
+        }
+        return "Inspect the local ComfyUI Python console for the error details.";
+    }
+
     public async Task GenerateToPathAsync(string title,string topic,string style,
         string ratio,string chapter,string narration,string direction,string query,
         string destination,ZeroVideoSettings settings,Action<string>? log,CancellationToken ct,
@@ -1319,8 +1352,9 @@ public sealed class LocalImageService
             if(entry.TryGetProperty("status",out var status) &&
                status.TryGetProperty("status_str",out var state) &&
                state.GetString()=="error")
-                throw new InvalidOperationException("ComfyUI reported an image generation error. "+
-                    "See the local ComfyUI log; try a smaller resolution or a compatible checkpoint.");
+                throw new InvalidOperationException(
+                    "ComfyUI image generation failed: "+
+                    ExplainLocalImageError(entry));
             if(!entry.TryGetProperty("outputs",out var outputs) ||
                !outputs.TryGetProperty("9",out var output) ||
                !output.TryGetProperty("images",out var images) ||
