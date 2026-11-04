@@ -26,6 +26,15 @@ jobs:
           python tools/test-omnivoice-worker.py
           python -m py_compile src/ZeroVideo.App/Resources/zerovideo_idle_driver.py
           python -m py_compile src/ZeroVideo.App/Resources/zerovideo_idle_driver_init.py
+      - name: Python 3.13 LivePortrait dependency compatibility
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: MediaPipe Tasks API smoke test (Windows Python 3.13)
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check --only-binary=:all: "mediapipe==0.10.35" "numpy>=2,<3"
+          python -c "import mediapipe as mp; from mediapipe.tasks import python; from mediapipe.tasks.python import vision; import numpy; print('MediaPipe Tasks OK:', numpy.__version__)"
       - name: Restore
         run: dotnet restore ZeroVideo.sln
       - name: Character Bible scene-variety regression tests
