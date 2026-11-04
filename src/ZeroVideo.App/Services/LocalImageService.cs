@@ -1384,8 +1384,21 @@ public sealed class LocalImageService
             samples=Ref("3",0),
             vae=isFlux?Ref("20",0):Ref("4",2)
         }};
+        // Stable Diffusion and FLUX latent sizes are rounded to multiples
+        // of 8. High = 1600x900 needs an exact-pixel final ImageScale
+        // (900 is not a multiple of 8); keep the 16:9 PNG size exact.
+        object finalImage=Ref("8",0);
+        if(width%8!=0 || height%8!=0)
+        {
+            graph["18"]=new{class_type="ImageScale",inputs=new
+            {
+                image=Ref("8",0),upscale_method="lanczos",
+                width,height,crop="center"
+            }};
+            finalImage=Ref("18",0);
+        }
         graph["9"]=new{class_type="SaveImage",
-            inputs=new{filename_prefix="ZeroVideoLocal",images=Ref("8",0)}};
+            inputs=new{filename_prefix="ZeroVideoLocal",images=finalImage}};
         log?.Invoke("ComfyUI generating "+width+"x"+height+" "+style+" image with "+
             (isFlux?"FLUX.1-schnell Q4":"SDXL illustrated checkpoint")+
             (resolution.CpuUpscale?
