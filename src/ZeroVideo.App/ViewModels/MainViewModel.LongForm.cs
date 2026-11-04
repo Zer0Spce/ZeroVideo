@@ -418,19 +418,13 @@ public sealed partial class MainViewModel
 
     private async Task GenerateLongFormThumbnailAsync()
     {
-        var chapter = new ProjectChapter { Number = 999, Title = "Thumbnail" };
-        var scene = new ProjectScene
-        {
-            Number = 1,
-            ImagePrompt = $"Create a striking, readable 16:9 widescreen video cover image specifically for the title: {Project.Title}. " +
-                          $"Match the project's visual style: {Project.Style}. One compelling focal point, bold composition, " +
-                          "high contrast, clear visual storytelling, no unrelated topics."
-        };
-        var path = await _chat.GenerateSceneImageAsync(Project, chapter, scene, Settings, Log, _cts.Token);
-        if (!File.Exists(path)) throw new IOException("Generated thumbnail image was not saved.");
-        var destination = Path.Combine(Project.ProjectDirectory, "thumbnail.png");
-        File.Copy(path, destination, true);
-        Log($"Long form thumbnail: {destination}");
+        // Full-size 16:9/9:16 artwork is generated in the existing ChatGPT
+        // workflow, then a separate local renderer prints a large, uniform,
+        // correctly spelled 2–5-word hook. This guarantees readable text
+        // on newly created thumbnails as well as later regenerations.
+        var service = new ThumbnailArtworkService(_chat);
+        var saved = await service.RegenerateAsync(
+            Project, Settings, Log, _cts.Token, variation: 0);
+        Log("Thumbnail ready: " + saved);
         UpdateQueuedThumbnail();
-    }
-}
+    }}
