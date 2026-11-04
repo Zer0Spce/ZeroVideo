@@ -948,9 +948,10 @@ public sealed class LocalImageService
                 // Do not auto-capture a full panel as a character reference.
                 // An approved imported portrait is the only image anchor.
             }
-            var width=project.AspectRatio=="9:16"?704:1248;
-            var height=project.AspectRatio=="9:16"?1248:704;
-            VintageComicPageService.Compose(panelPaths,target,width,height);
+            var outputResolution=LocalImageResolutionService.ResolveOutput(
+                project.AspectRatio=="9:16",settings.LocalImageResolutionPreset);
+            VintageComicPageService.Compose(panelPaths,target,
+                outputResolution.Width,outputResolution.Height);
             scene.MediaPath=target;
             log?.Invoke("Vintage comic page assembled with exactly 3 "+
                 "separate illustrated panels and thick gutters.");
@@ -1168,6 +1169,28 @@ public sealed class LocalImageService
         return "Inspect the local ComfyUI Python console for the error details.";
     }
 
+    private static async Task VerifyPngDimensionsAsync(
+        string path,LocalImageResolutionService.Resolution expected,
+        CancellationToken ct)
+    {
+        await using var stream=File.OpenRead(path);
+        var head=new byte[24];
+        if(await stream.ReadAsync(head,ct)!=head.Length ||
+           !head.AsSpan(0,8).SequenceEqual(
+               new byte[]{137,80,78,71,13,10,26,10}) ||
+           !head.AsSpan(12,4).SequenceEqual("IHDR"u8))
+            throw new InvalidDataException(
+                "Local ComfyUI returned an invalid PNG header.");
+        var actualWidth=System.Buffers.Binary.BinaryPrimitives
+            .ReadInt32BigEndian(head.AsSpan(16,4));
+        var actualHeight=System.Buffers.Binary.BinaryPrimitives
+            .ReadInt32BigEndian(head.AsSpan(20,4));
+        if(actualWidth!=expected.Width || actualHeight!=expected.Height)
+            throw new InvalidDataException(
+                "Local image has "+actualWidth+"x"+actualHeight+
+                " pixels, expected "+expected+". Image was not accepted.");
+    }
+
     public async Task GenerateToPathAsync(string title,string topic,string style,
         string ratio,string chapter,string narration,string direction,string query,
         string destination,ZeroVideoSettings settings,Action<string>? log,CancellationToken ct,
@@ -1202,10 +1225,27 @@ public sealed class LocalImageService
         if(checkpoint==IllustratedFileName && !HasIllustratedCheckpoint)
             throw new FileNotFoundException("DreamShaper XL not installed.");
         var portrait=ratio=="9:16";
-        // Reduce FLUX's working resolution to help an 8 GB GPU; default SDXL
-        // dimensions and all other existing generation settings remain intact.
-        var width=portrait?(isFlux?576:704):(isFlux?1024:1248);
-        var height=portrait?(isFlux?1024:1248):(isFlux?576:704);
+        // Resolution settings apply to BOTH FLUX GGUF and SDXL/DreamShaper.
+        // Direct: requested pixel size in the ComfyUI latent (GPU memory).
+        // Upscale: generate 1024x576 (or 576x1024) then scale the real
+        // PNG via CPU FFmpeg; never claim that scaling adds native detail.
+        var resolution=LocalImageResolutionService.Resolve(portrait,
+            settings.LocalImageResolutionPreset,
+            settings.LocalImageResolutionMode);
+        var width=resolution.Working.Width;
+        var height=resolution.Working.Height;
+        if (resolution.CpuUpscale &&
+            (string.IsNullOrWhiteSpace(settings.FfmpegPath) ||
+             !File.Exists(settings.FfmpegPath)))
+            throw new LocalImageSetupException(
+                "The selected image resolution mode needs FFmpeg for CPU " +
+                "Lanczos upscale. Install/configure FFmpeg under Settings " +
+                "or switch the resolution mode to Direct GPU generation.");
+        if(resolution.UsesHighGpuMemory)
+            log?.Invoke("High-resolution direct ComfyUI image generation: " +
+                resolution.Output + ". The 8 GB RTX 3060 may run out of " +
+                "VRAM, especially with PuLID. Use Lanczos CPU Upscale " +
+                "mode for the same output pixel dimensions with lower VRAM.");
         var isComicPage=style=="Comic Book Explainer";
         var styleCue=IllustratedStyleCue(style);
         // The original prompt front-loaded "REAL PERSON IDENTITY" and
@@ -1347,7 +1387,11 @@ public sealed class LocalImageService
         graph["9"]=new{class_type="SaveImage",
             inputs=new{filename_prefix="ZeroVideoLocal",images=Ref("8",0)}};
         log?.Invoke("ComfyUI generating "+width+"x"+height+" "+style+" image with "+
-            (isFlux?"FLUX.1-schnell Q4":"SDXL illustrated checkpoint")+"...");
+            (isFlux?"FLUX.1-schnell Q4":"SDXL illustrated checkpoint")+
+            (resolution.CpuUpscale?
+                "; final PNG will be CPU-upscaled to "+resolution.Output+
+                " using Lanczos (no additional image detail inferred).":
+                "; direct output "+resolution.Output)+"...");
         using var req=new HttpRequestMessage(HttpMethod.Post,new Uri(Server,"prompt"))
         {
             Content=JsonContent.Create(new{prompt=graph,client_id="zerovideo-"+Guid.NewGuid().ToString("N")})
@@ -1413,15 +1457,47 @@ public sealed class LocalImageService
             await using(var from=await img.Content.ReadAsStreamAsync(ct))
             await using(var to=File.Create(temporary))
                 await from.CopyToAsync(to,ct);
-            await using(var verify=File.OpenRead(temporary))
+            // Validate actual dimensions instead of trusting a ComfyUI
+            // file label. Never store an incorrectly sized image as final.
+            await VerifyPngDimensionsAsync(temporary,resolution.Working,ct);
+            if(resolution.CpuUpscale)
             {
-                var png=new byte[8];
-                if(await verify.ReadAsync(png,ct)!=8 ||
-                   !png.SequenceEqual(new byte[]{137,80,78,71,13,10,26,10}))
-                    throw new InvalidDataException("ComfyUI returned an invalid PNG.");
+                var scaled=destination+".upscaled.png";
+                try
+                {
+                    var args="-y -nostdin -hide_banner -loglevel error "+
+                        "-i \""+temporary+"\" -frames:v 1 "+
+                        "-vf \"scale="+resolution.Output.Width+":"+
+                        resolution.Output.Height+":flags=lanczos,setsar=1\" "+
+                        "-pix_fmt rgb24 -f image2 -update 1 "+
+                        "\""+scaled+"\"";
+                    var outcome=await new ProcessRunner().RunAsync(
+                        settings.FfmpegPath,args,
+                        Path.GetDirectoryName(destination)!,ct);
+                    if(outcome.ExitCode!=0)
+                        throw new IOException(
+                            "CPU Lanczos image upscale failed: "+
+                            outcome.StdErr[..Math.Min(650,
+                                outcome.StdErr.Length)]);
+                    await VerifyPngDimensionsAsync(
+                        scaled,resolution.Output,ct);
+                    File.Move(scaled,destination,true);
+                }
+                finally
+                {
+                    try { if(File.Exists(scaled))File.Delete(scaled); }
+                    catch(IOException) { }
+                }
+                try { File.Delete(temporary); } catch(IOException) { }
+                log?.Invoke("Local image upscaled and saved at "+
+                    resolution.Output+": "+destination);
             }
-            File.Move(temporary,destination,true);
-            log?.Invoke("Local image saved: "+destination);
+            else
+            {
+                File.Move(temporary,destination,true);
+                log?.Invoke("Local image saved at "+
+                    resolution.Output+": "+destination);
+            }
             return;
         }
         throw new TimeoutException("ComfyUI generation exceeded 14 minutes.");
