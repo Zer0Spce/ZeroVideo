@@ -48,6 +48,14 @@ public sealed class ZeroVideoSettings : INotifyPropertyChanged
     // "Local ComfyUI" and "Hybrid" opt in to a separate local backend.
     public string ImageGenerationEngine { get; set; } = "ChatGPT";
     public string LocalImageCheckpointFile { get; set; } = "sd_xl_base_1.0.safetensors";
+    // Local ComfyUI image resolution; affects newly generated images only.
+    // Keep Fast as the default to avoid surprising existing 8 GB GPU users.
+    // Higher presets can be generated directly or upscaled on the CPU.
+    public string LocalImageResolutionPreset { get; set; } = "Fast";
+    // Direct: full resolution in ComfyUI (higher VRAM).
+    // Upscale: render fast resolution, then Lanczos-scale final PNG with FFmpeg.
+    public string LocalImageResolutionMode { get; set; } = "Direct";
+
     // Independent optional AI image-to-video backend. The zero-install
     // lightweight FFmpeg motion remains the safe default.
     public string AiImageAnimationEngine { get; set; } = "Camera Motion (FFmpeg)";
