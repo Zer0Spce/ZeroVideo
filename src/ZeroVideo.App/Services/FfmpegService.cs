@@ -7,8 +7,7 @@ namespace ZeroVideo.App.Services;
 
 public sealed class FfmpegService(ProcessRunner runner, DependencyService dependencies, LocalImageService? localImages = null)
 {
-    private readonly WanVideoService _wan = new(localImages ?? new LocalImageService());
-    private readonly FramePackAnimationService _framePack = new(runner);
+    private readonly LivePortraitService _livePortrait = new(localImages ?? new LocalImageService());
     public async Task ValidateAsync(ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
         await EnsureToolsAsync(settings, log, ct);
@@ -221,37 +220,30 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
                 string args;
                 string motion;
 
-                // Opt-in true AI image-to-video through local FramePack.
-                // The original image remains untouched; FFmpeg micro-motion
-                // handles missing server, GPU failures, and capacity limits.
+                // LivePortrait animates only detected faces. No generative
+                // full-scene video diffusion, and no Wan/FramePack service.
+                // Scenes with no face gracefully use existing FFmpeg motion.
                 string? aiClip = null;
-                var selectedEngine = settings.AiImageAnimationEngine;
-                var wantsWan = selectedEngine == "Wan2.2 5B (ComfyUI)";
-                var wantsFramePack = selectedEngine == "FramePack (Local)";
-                var maxAiClips = Math.Clamp(settings.FramePackMaxClipsPerVideo, 0, 30);
-                // Never run multiple heavy video generators concurrently. A
-                // limited number of attempts prevents repeated scene stalls
-                // when the optional engine is missing or not yet initialized.
-                if (!IsVideo(media) && (wantsWan || wantsFramePack) &&
-                    effects.AiAttemptCount < maxAiClips)
+                var wantsPortrait = settings.AiImageAnimationEngine == "LivePortrait (Local)";
+                var maxClips = Math.Clamp(settings.LivePortraitMaxClipsPerVideo, 0, 30);
+                if (!IsVideo(media) && wantsPortrait &&
+                    effects.AiAttemptCount < maxClips)
                 {
                     effects.AiAttemptCount++;
-                    aiClip = wantsWan
-                        ? await _wan.TryAnimateAsync(media, project, scene, settings, log, ct)
-                        : await _framePack.TryAnimateAsync(media, project, scene, settings, log, ct);
+                    aiClip = await _livePortrait.TryAnimateAsync(
+                        media, project, scene, settings, log, ct);
                     if (aiClip is not null)
                     {
                         try
                         {
                             if (await ProbeDurationAsync(aiClip, settings, ct) < 1.0)
-                                throw new InvalidDataException("Generated AI video is too short.");
+                                throw new InvalidDataException("Animated face clip too short.");
                             effects.AiGeneratedClipCount++;
                         }
                         catch (OperationCanceledException) { throw; }
                         catch (Exception ex)
                         {
-                            log?.Invoke("AI video validation failed; keeping original image: " + ex.Message);
-                            try { File.Delete(aiClip); } catch { }
+                            log?.Invoke("LivePortrait clip invalid; using source still: " + ex.Message);
                             aiClip = null;
                         }
                     }
@@ -260,8 +252,7 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
                 if (IsVideo(renderMedia))
                 {
                     motion = aiClip is null ? "source video"
-                        : settings.AiImageAnimationEngine == "Wan2.2 5B (ComfyUI)"
-                            ? "AI subtle motion (Wan2.2)" : "AI subtle motion (FramePack)";
+                        : "AI subtle facial motion (LivePortrait)";
                     var vf = $"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h},fps=30";
                     var styleFx = BuildStyleEffectFilter(project);
                     if (!string.IsNullOrWhiteSpace(styleFx)) vf += "," + styleFx;
@@ -269,7 +260,8 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
                 }
                 else
                 {
-                    motion = ChooseMotionPreset(project, scene, effects);
+                    motion = settings.AiImageAnimationEngine == "Off"
+                        ? "static" : ChooseMotionPreset(project, scene, effects);
                     args = BuildStillRenderArgs(media, output, renderSeconds, w, h, motion, project);
                 }
 
@@ -280,7 +272,8 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
                     // An AI clip may decode but still be incompatible with
                     // the main renderer. Retry against the source still.
                     log?.Invoke("AI video render failed; falling back to original illustrated image.");
-                    motion = ChooseMotionPreset(project, scene, effects);
+                    motion = settings.AiImageAnimationEngine == "Off"
+                        ? "static" : ChooseMotionPreset(project, scene, effects);
                     args = BuildStillRenderArgs(media, output, renderSeconds, w, h, motion, project);
                     result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
                 }
