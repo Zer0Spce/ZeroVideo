@@ -139,8 +139,8 @@
                 <TextBlock Text="IMAGE ANIMATION ENGINE" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,0,0,4"/>
                 <ComboBox ItemsSource="{Binding AiImageAnimationEngines}"
                           SelectedItem="{Binding Settings.AiImageAnimationEngine, Mode=TwoWay}"
-                          ToolTip="Default FFmpeg camera motion; optional FramePack AI generates subtle character or environment movement on your local GPU."/>
-                <TextBlock Text="FramePack is optional and requires its separate local installation; Configure it in Settings."
+                          ToolTip="Off, FFmpeg camera motion, or local LivePortrait for recognizable faces (automatic fallback)."/>
+                <TextBlock Text="LivePortrait can animate visible faces with gentle blinks; install and test it under Settings."
                            Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="10.5" Margin="0,5,0,0"/>
               </StackPanel>
                 <CheckBox Content="Music" IsChecked="{Binding Project.Options.AddBackgroundMusic}" Margin="0,4,15,4"/>
@@ -258,7 +258,7 @@
                 <TextBlock Text="ANIMATION ENGINE" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,7,0,3"/>
                 <ComboBox ItemsSource="{Binding AiImageAnimationEngines}"
                           SelectedItem="{Binding Settings.AiImageAnimationEngine, Mode=TwoWay}"
-                          ToolTip="FFmpeg = subtle camera motion; FramePack = optional local AI animation with automatic camera fallback."/>
+                          ToolTip="Off = still image, FFmpeg = camera motion, LivePortrait = subtle facial animation with fallback."/>
                 <CheckBox Content="Music" IsChecked="{Binding Project.Options.AddBackgroundMusic}"/>
                 <CheckBox Content="SFX hooks" IsChecked="{Binding Project.Options.AddSoundEffects}"/>
                 <Button Style="{StaticResource ClipchampSecondaryButton}" Command="{Binding ContinueTtsCommand}" Content="Continue TTS" IsEnabled="{Binding WaitingForTtsContinue}" HorizontalAlignment="Left" Margin="0,10,0,0"/>
@@ -369,7 +369,7 @@
                 <TextBlock Text="ANIMATION ENGINE" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,7,0,3"/>
                 <ComboBox ItemsSource="{Binding AiImageAnimationEngines}"
                           SelectedItem="{Binding Settings.AiImageAnimationEngine, Mode=TwoWay}"
-                          ToolTip="FFmpeg = subtle camera motion; FramePack = optional local AI animation with automatic camera fallback."/>
+                          ToolTip="Off = still image, FFmpeg = camera motion, LivePortrait = subtle facial animation with fallback."/>
                 <CheckBox Content="Music" IsChecked="{Binding Project.Options.AddBackgroundMusic}"/>
                 <CheckBox Content="SFX hooks" IsChecked="{Binding Project.Options.AddSoundEffects}"/>
                 <Button Style="{StaticResource ClipchampSecondaryButton}" Command="{Binding ContinueTtsCommand}" Content="Continue TTS" IsEnabled="{Binding WaitingForTtsContinue}" HorizontalAlignment="Left" Margin="0,10,0,0"/>
@@ -1383,62 +1383,50 @@
                          Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
             </StackPanel>
             <Separator Margin="0,18"/>
-            <TextBlock Text="Local AI Image Animation — Wan2.2 / ComfyUI" FontSize="18" FontWeight="SemiBold"/>
-            <TextBlock Text="RECOMMENDED FOR RTX 3060 8GB: Wan2.2 TI2V-5B uses ZeroVideo's existing ComfyUI engine (no separate FramePack Python/server). Three model files total around 17 GB. First install ComfyUI under Local Images if needed; install the video models below."
-                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,7"/>
-            <WrapPanel Margin="0,3,0,7">
-              <Button Content="1. Install Wan2.2 Video Models (~17 GB)" Style="{StaticResource PrimaryButton}"
-                      Command="{Binding InstallWanVideoCommand}"/>
-              <Button Content="2. Start ComfyUI for Video" Style="{StaticResource SecondaryButton}"
-                      Command="{Binding StartWanVideoCommand}"/>
-              <Button Content="3. Test ComfyUI Video Connection" Style="{StaticResource SecondaryButton}"
-                      Command="{Binding TestWanVideoCommand}"/>
+            <TextBlock Text="Local AI Image Animation — LivePortrait" FontSize="18" FontWeight="SemiBold"/>
+            <TextBlock Text="LivePortrait is for small movements on visible human faces: one blink, slight head movement, subtle expressions. It uses ZeroVideo's existing ComfyUI installation, not Wan or FramePack. Scenes without a recognizable face automatically fall back to camera motion. This does not animate coats, grass, smoke or buildings."
+                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,8"/>
+            <WrapPanel Margin="0,3,0,8">
+              <Button Content="1. Install LivePortrait" Style="{StaticResource PrimaryButton}"
+                      Command="{Binding InstallLivePortraitCommand}"
+                      ToolTip="Install official Kijai LivePortrait nodes and ZeroVideo's idle-blink driver into existing ComfyUI. May update its Python dependencies."/>
+              <Button Content="2. Start / Restart ComfyUI" Style="{StaticResource SecondaryButton}"
+                      Command="{Binding StartLivePortraitComfyUiCommand}"/>
+              <Button Content="3. Test LivePortrait Connection" Style="{StaticResource SecondaryButton}"
+                      Command="{Binding TestLivePortraitCommand}"/>
             </WrapPanel>
-            <TextBlock Text="{Binding WanVideoStatus}" Foreground="{StaticResource AccentHover}"
-                       TextWrapping="Wrap" Margin="0,3,0,7"/>
-            <Label Content="ACTIVE IMAGE ANIMATION ENGINE"/>
-            <ComboBox Width="300" HorizontalAlignment="Left"
+            <TextBlock Text="{Binding LivePortraitStatus}" Foreground="{StaticResource AccentHover}"
+                       TextWrapping="Wrap" Margin="0,3,0,8"/>
+            <Label Content="ANIMATION ENGINE"/>
+            <ComboBox Width="320" HorizontalAlignment="Left"
                       ItemsSource="{Binding AiImageAnimationEngines}"
                       SelectedItem="{Binding Settings.AiImageAnimationEngine, Mode=TwoWay}"/>
-            <TextBlock Text="For subtle motion, use 3–4 seconds, a maximum of 1–3 AI clips per video, and leave FFmpeg camera motion enabled. Wan2.2 preserves originals and automatically falls back when unavailable; VRAM offloading can be slow."
-                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,9"/>
-            <TextBlock Text="Legacy AI Image Animation (FramePack — optional)" FontSize="16" FontWeight="SemiBold" Margin="0,10,0,0"/>
-            <TextBlock Text="ZeroVideo preserves original images. Download and install the official FramePack Windows package here (1.81 GB), then start its local server. The separate required model download on first start exceeds 30 GB. Existing FramePack installations are reused."
-                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,8"/>
-            <WrapPanel Margin="0,2,0,7">
-              <Button Content="1. Download &amp; Install FramePack (1.81 GB)"
-                      Style="{StaticResource PrimaryButton}"
-                      Command="{Binding InstallFramePackCommand}"/>
-              <Button Content="2. Start FramePack / Download Models"
-                      Style="{StaticResource SecondaryButton}"
-                      Command="{Binding StartFramePackCommand}"/>
-              <Button Content="Stop FramePack" Style="{StaticResource SecondaryButton}"
-                      Command="{Binding StopFramePackCommand}"/>
-            </WrapPanel>
-            <Button Content="Open FramePack Folder" Style="{StaticResource SecondaryButton}"
-                    Command="{Binding OpenFramePackFolderCommand}" HorizontalAlignment="Left"
-                    Margin="0,0,0,8"/>
-            <TextBlock Text="{Binding FramePackSetupStatus}" Foreground="{StaticResource AccentHover}"
-                       TextWrapping="Wrap" Margin="0,2,0,9"/>
-            <TextBlock Text="Official: https://github.com/lllyasviel/FramePack" Foreground="{StaticResource AccentHover}" Margin="0,3,0,7"/>
-            <TextBlock Text="FramePack settings below apply only when you select FramePack (Local). Wan2.2 ignores these paths."
-                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,7"/>
-            <Label Content="FRAMEPACK PYTHON.EXE (FROM ITS OWN INSTALLATION)" Margin="0,8,0,0"/>
-            <TextBox Width="740" Text="{Binding Settings.FramePackPythonPath, UpdateSourceTrigger=PropertyChanged}"/>
-            <Label Content="FRAMEPACK SERVER URL (LOCAL ONLY)" Margin="0,8,0,0"/>
-            <TextBox Width="740" Text="{Binding Settings.FramePackServerUrl, UpdateSourceTrigger=PropertyChanged}"/>
-            <Button Content="Test FramePack Connection" Style="{StaticResource SecondaryButton}"
-                    Command="{Binding TestFramePackConnectionCommand}" HorizontalAlignment="Left"
-                    Margin="0,10,0,5"
-                    ToolTip="Checks whether the local FramePack server is running and exposes the expected generation endpoint. Does not use the GPU."/>
-            <TextBlock Text="Use Start FramePack above. On first launch it downloads the required model weights (30+ GB) into its local model cache. Leave ZeroVideo running while FramePack initializes; Test Connection after startup. The connection test does not use GPU resources."
-                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,8"/>
-            <Label Content="AI CLIP LENGTH (3-5 SECONDS)" Margin="0,8,0,0"/>
-            <TextBox Width="120" Text="{Binding Settings.FramePackClipSeconds, UpdateSourceTrigger=LostFocus}"/>
-            <Label Content="MAX AI CLIPS PER VIDEO (0-30; OTHERS USE CAMERA MOTION)" Margin="0,8,0,0"/>
-            <TextBox Width="120" Text="{Binding Settings.FramePackMaxClipsPerVideo, UpdateSourceTrigger=LostFocus}"/>
-            <TextBlock Text="The clip length and AI clip limit above apply to both Wan2.2 and FramePack. When generating with Wan2.2, stop any GPU-heavy FramePack or OmniVoice jobs. Click Save settings after changes."
-                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+            <Label Content="LIVEPORTRAIT CLIP LENGTH (3–5 SECONDS)" Margin="0,8,0,0"/>
+            <TextBox Width="120" Text="{Binding Settings.LivePortraitClipSeconds, UpdateSourceTrigger=LostFocus}"/>
+            <Label Content="MAX FACIAL ANIMATION CLIPS PER VIDEO (0–30)" Margin="0,8,0,0"/>
+            <TextBox Width="120" Text="{Binding Settings.LivePortraitMaxClipsPerVideo, UpdateSourceTrigger=LostFocus}"/>
+            <Label Content="MOTION STRENGTH" Margin="0,8,0,0"/>
+            <ComboBox Width="160" HorizontalAlignment="Left"
+                      SelectedItem="{Binding Settings.LivePortraitMotionStrength, Mode=TwoWay}">
+              <ComboBoxItem Content="Low"/>
+              <ComboBoxItem Content="Medium"/>
+            </ComboBox>
+            <CheckBox Content="Natural blink (when a face is detected)"
+                      IsChecked="{Binding Settings.LivePortraitBlink}" Margin="0,10,0,0"/>
+            <CheckBox Content="Fallback to camera motion for unrecognized faces / environments"
+                      IsChecked="{Binding Settings.LivePortraitFallbackToCamera}" Margin="0,5,0,0"/>
+            <TextBlock Text="The first LivePortrait scene downloads its smaller face-animation model weights locally. Initial model/face-detection setup may take longer. Start with a single portrait scene, Low strength and a 3-second clip. FFmpeg camera motion remains available with no AI download."
+                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,10"/>
+            <Separator Margin="0,18"/>
+            <TextBlock Text="Clean up old Wan2.2 / FramePack models" FontSize="17" FontWeight="SemiBold"/>
+            <TextBlock Text="Optional: select Review &amp; Delete below to see exact file names, sizes, and paths before any removal. Only ZeroVideo-managed FramePack folders and named Wan model files can be recycled. The FLUX / SDXL models, your original media, OmniVoice, and external Hugging Face caches are never touched."
+                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,7"/>
+            <CheckBox Content="Also include shared Wan UMT5 text encoder (other workflows may require it)"
+                      IsChecked="{Binding IncludeSharedWanTextEncoder}" Margin="0,3,0,8"/>
+            <Button Content="Review &amp; Delete Old Wan2.2 / FramePack Models"
+                    Style="{StaticResource SecondaryButton}" HorizontalAlignment="Left"
+                    Command="{Binding ReviewDeleteLegacyAnimationCommand}"
+                    ToolTip="Only after showing every exact path and receiving Yes confirmation. Sends files to Recycle Bin; no automatic deletion."/>
             <Separator Margin="0,18"/>
             <TextBlock Text="Custom background music" FontSize="18" FontWeight="SemiBold"/>
             <TextBlock Text="Choose a licensed audio file. When Music is checked in Create or Shorts, it loops until the video ends." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
