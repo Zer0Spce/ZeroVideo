@@ -130,6 +130,84 @@ QUALITY REQUIREMENTS:
         return destination;
     }
 
+    /// <summary>
+    /// Generate ONE isolated, clearly labeled AI-approximate portrait in the
+    /// user's existing ChatGPT automation chat. Capture the actual original
+    /// PNG via the same proven image saver used for scene images; no webpage
+    /// screenshot, silent web photo scraping or fabricated celebrity photo.
+    /// </summary>
+    public async Task<string> GenerateIdentityReferenceAsync(
+        VideoProject project, string personName, int variation,
+        ZeroVideoSettings settings, Action<string>? log,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(personName) || personName.Length > 90 ||
+            variation is < 1 or > 3)
+            throw new ArgumentOutOfRangeException(nameof(personName));
+        var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
+        var page = await GetProjectPageAsync(project, settings, log, ct);
+        var baseline = await CaptureImageBaselineAsync(
+            page, profile.ChatGpt.GeneratedImages);
+        var styleRules = VisualStylePresets.GetPrompt(project.Style);
+        var angle = variation % 2 == 1
+            ? "straight-on frontal head-and-shoulders, neutral expression"
+            : "natural three-quarter head-and-shoulders, neutral expression";
+        var prompt = $"""
+Create EXACTLY ONE brand-new SQUARE 1:1 portrait illustration.
+SUBJECT: {personName}
+PROJECT VISUAL STYLE: {project.Style}
+STYLE RULES: {styleRules}
+COMPOSITION: {angle}.
+
+This is a local ZeroVideo AI-generated identity *guide*, NOT a verified
+historical photograph or a claim that the face exactly matches the subject.
+Depict a respectful, recognizable stylized likeness of the named real adult
+public figure using your available visual knowledge. Do not invent props or
+historical facts. If likeness is uncertain, preserve the broad defining
+features without pretending you verified a real photograph.
+
+IMPORTANT: isolate a SINGLE face, hair and upper shoulders. Center them
+with adequate headroom, high-detail eyes, face, hairline and facial hair.
+Use a plain mid-gray backdrop with no scenery, no full-body action, no
+dramatic colored rim lights, no text, no logos, no captions, no composites.
+One portrait only, not two poses in the same frame, not a screenshot.
+The portrait must retain the selected comic/digital-illustration style.
+This is a REFERENCE ONLY and must not copy a film still or specific
+copyrighted photograph.
+""";
+        await ChatGptComposer.EnterPromptAsync(
+            page, profile.ChatGpt.PromptInputs, prompt, ct);
+        await ChatGptComposer.SendAsync(
+            page, profile.ChatGpt.SendButtons, ct);
+        log?.Invoke($"ChatGPT: generating {personName} approximate identity guide "+
+            $"{variation} ({project.Style}); waiting for original image...");
+        var folder = RealPersonIdentityService.ReferenceFolder(project);
+        Directory.CreateDirectory(folder);
+        var slug = System.Text.RegularExpressions.Regex.Replace(
+            personName.Trim(), "[^A-Za-z0-9_-]", "_");
+        var destination = Path.Combine(folder,
+            "AI-APPROXIMATE-" + slug + "-v" + variation + "-" +
+            Guid.NewGuid().ToString("N")[..8] + ".png");
+        try
+        {
+            await WaitForGeneratedImageAndSaveAsync(
+                page, profile.ChatGpt.GeneratedImages,
+                profile.ChatGpt.StopButtons, baseline, destination,
+                $"Identity reference {personName} #{variation}", log, ct);
+            RememberConversation(project,page);
+            log?.Invoke("ChatGPT: saved actual full-resolution generated "+
+                "portrait: "+destination);
+            return destination;
+        }
+        catch
+        {
+            // A failed/partial image must never be added to a profile.
+            try { if (File.Exists(destination)) File.Delete(destination); }
+            catch (IOException) { }
+            throw;
+        }
+    }
+
     public Task<string> GenerateVideoIdeasAsync(string niche, int count, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
         // Use the same JSON capture pipeline as working outline generation.
