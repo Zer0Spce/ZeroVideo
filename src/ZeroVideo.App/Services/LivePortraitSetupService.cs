@@ -143,20 +143,6 @@ public sealed class LivePortraitSetupService(ProcessRunner runner)
                     throw new InvalidDataException(
                         "LivePortrait source missing its nodes/requirements.");
 
-                // Prepare dependencies in the EXISTING ComfyUI Python; never
-                // create a second Python and never touch FLUX/SDXL weights.
-                log?.Invoke("Installing LivePortrait requirements into " +
-                    "existing ComfyUI Python. This may update ComfyUI packages.");
-                var result = await runner.RunAsync(EmbeddedPython,
-                    "-m pip install --disable-pip-version-check -r \"" +
-                    Path.Combine(staging, "requirements.txt") + "\" " +
-                    "\"mediapipe==0.10.21\"",
-                    LocalImageService.PortableRoot, ct);
-                if (result.ExitCode != 0)
-                    throw new IOException(
-                        "LivePortrait Python dependency installation failed: " +
-                        (result.StdErr.Length > 1000
-                            ? result.StdErr[^1000..] : result.StdErr));
                 ct.ThrowIfCancellationRequested();
                 if (Directory.Exists(NodeFolder))
                     throw new IOException(
@@ -175,9 +161,89 @@ public sealed class LivePortraitSetupService(ProcessRunner runner)
             }
         }
 
+        // Always run compatibility repair even when the extension folder
+        // exists from an earlier/partially completed installation.
+        await InstallCompatibleDependenciesAsync(log, ct);
         EnsureDriver();
         log?.Invoke("LivePortrait and ZeroVideo idle driver installed. " +
             "Restart ComfyUI, then test connection. Model weights will " +
             "download locally the first time LivePortrait runs.");
     }
+    private async Task InstallCompatibleDependenciesAsync(
+        Action<string>? log, CancellationToken ct)
+    {
+        // The official 2026 ComfyUI NVIDIA portable ships with Python 3.13.
+        // MediaPipe 0.10.21 has Windows wheels only through Python 3.12;
+        // upstream LivePortrait also pins numpy<=1.26.4, which cannot be
+        // installed on Python 3.13. Probe before changing *any* packages.
+        var probe = await runner.RunAsync(EmbeddedPython,
+            "-s -c \"import sys,numpy; " +
+            "print(str(sys.version_info.major)+'.'+str(sys.version_info.minor)); " +
+            "print(numpy.__version__)\"",
+            LocalImageService.PortableRoot, ct);
+        if (probe.ExitCode != 0)
+            throw new IOException(
+                "Could not read existing ComfyUI Python/NumPy versions. " +
+                "No packages were changed. " + probe.StdErr);
+        var lines = probe.StdOut
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries |
+                StringSplitOptions.TrimEntries);
+        if (lines.Length < 2 ||
+            !Version.TryParse(lines[^2], out var pythonVersion) ||
+            !Version.TryParse(lines[^1], out var numpyVersion))
+            throw new InvalidDataException(
+                "Unexpected ComfyUI Python/NumPy version output. " +
+                "No dependencies were installed: " + probe.StdOut);
+        if (pythonVersion.Major != 3 || pythonVersion.Minor < 10 ||
+            pythonVersion.Minor > 13)
+            throw new NotSupportedException(
+                "LivePortrait tested compatibility requires Python 3.10–3.13. " +
+                "Detected " + pythonVersion + ". No packages were modified.");
+
+        var modern = pythonVersion.Minor >= 13 || numpyVersion.Major >= 2;
+        // For Python 3.13, use wheels that actually exist. Keep NumPy 2.x
+        // rather than allowing older LivePortrait requirements to downgrade
+        // (and thereby break FLUX/SDXL/ComfyUI).
+        var mediaPipe = modern
+            ? "mediapipe==0.10.35"
+            : "mediapipe==0.10.21";
+        var numpy = modern ? "numpy>=2,<3" : "numpy>=1.26,<2";
+        log?.Invoke("LivePortrait dependency check: Python " +
+            pythonVersion + ", NumPy " + numpyVersion +
+            ", selecting " + mediaPipe + ". Original ComfyUI preserved.");
+
+        var result = await runner.RunAsync(EmbeddedPython,
+            "-s -m pip install --disable-pip-version-check " +
+            "--only-binary=:all: --upgrade-strategy only-if-needed " +
+            "\"pyyaml\" \"opencv-python\" \"onnxruntime-gpu\" " +
+            "\"pykalman\" \"onnx2torch\" \"" + mediaPipe +
+            "\" \"" + numpy + "\"",
+            LocalImageService.PortableRoot, ct);
+        if (result.ExitCode != 0)
+            throw new IOException(
+                "Compatible LivePortrait Python package install failed. " +
+                "No model checkpoints were deleted. " +
+                (result.StdErr.Length > 1400 ?
+                    result.StdErr[^1400..] : result.StdErr));
+
+        // The new LivePortrait driver and the official Kijai extension both
+        // use the MediaPipe Tasks API; testing this avoids a false "success"
+        // where the installed wheel lacks the required API surface.
+        var verification = await runner.RunAsync(EmbeddedPython,
+            "-s -c \"import mediapipe as mp; " +
+            "from mediapipe.tasks import python; " +
+            "from mediapipe.tasks.python import vision; " +
+            "import cv2,numpy,onnxruntime,pykalman,onnx2torch; " +
+            "print('LivePortrait dependencies verified')\"",
+            LocalImageService.PortableRoot, ct);
+        if (verification.ExitCode != 0)
+            throw new IOException(
+                "LivePortrait packages installed but import validation failed. " +
+                "ComfyUI image models are unchanged. " +
+                (verification.StdErr.Length > 1400 ?
+                    verification.StdErr[^1400..] : verification.StdErr));
+        log?.Invoke("LivePortrait dependency imports verified in ComfyUI Python. " +
+            "Restart ComfyUI before running its face nodes.");
+    }
+
 }
