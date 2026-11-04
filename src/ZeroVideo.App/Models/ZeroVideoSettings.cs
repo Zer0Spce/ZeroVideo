@@ -51,11 +51,13 @@ public sealed class ZeroVideoSettings : INotifyPropertyChanged
     // Independent optional AI image-to-video backend. The zero-install
     // lightweight FFmpeg motion remains the safe default.
     public string AiImageAnimationEngine { get; set; } = "Camera Motion (FFmpeg)";
-    public string FramePackPythonPath { get; set; } = "";
-    public string FramePackServerUrl { get; set; } = "http://127.0.0.1:7860";
-    public double FramePackClipSeconds { get; set; } = 4.0;
-    // Limit expensive video diffusion on 8 GB GPUs; other scenes keep motion.
-    public int FramePackMaxClipsPerVideo { get; set; } = 3;
+    // LivePortrait uses the existing ComfyUI install; no second model server.
+    public double LivePortraitClipSeconds { get; set; } = 4.0;
+    public int LivePortraitMaxClipsPerVideo { get; set; } = 3;
+    public string LivePortraitMotionStrength { get; set; } = "Low";
+    public bool LivePortraitBlink { get; set; } = true;
+    // For scenes without a detectable face, preserve FFmpeg camera motion.
+    public bool LivePortraitFallbackToCamera { get; set; } = true;
 
 
     public string BackgroundMusicPath { get; set; } = "";
