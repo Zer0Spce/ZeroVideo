@@ -63,52 +63,6 @@ public sealed class LocalImageService
 
 
 
-    // Official Comfy-Org Wan2.2 TI2V-5B (8GB with native ComfyUI offloading).
-    public const string WanVideoModel = "wan2.2_ti2v_5B_fp16.safetensors";
-    public const string WanVideoVae = "wan2.2_vae.safetensors";
-    public const string WanVideoText = "umt5_xxl_fp8_e4m3fn_scaled.safetensors";
-    public static string WanVideoModelPath => Path.Combine(
-        PortableRoot, "ComfyUI", "models", "diffusion_models", WanVideoModel);
-    public static string WanVideoVaePath => Path.Combine(
-        PortableRoot, "ComfyUI", "models", "vae", WanVideoVae);
-    public static string WanVideoTextPath => Path.Combine(
-        PortableRoot, "ComfyUI", "models", "text_encoders", WanVideoText);
-    public bool HasWanVideoModels =>
-        File.Exists(WanVideoModelPath) && File.Exists(WanVideoVaePath) &&
-        File.Exists(WanVideoTextPath) &&
-        new FileInfo(WanVideoModelPath).Length > 9_000_000_000L &&
-        new FileInfo(WanVideoVaePath).Length > 1_000_000_000L &&
-        new FileInfo(WanVideoTextPath).Length > 6_000_000_000L;
-
-    public async Task InstallWanVideoModelsAsync(Action<string>? log, CancellationToken ct)
-    {
-        if (!HasComfyUi)
-            throw new InvalidOperationException(
-                "Install the ZeroVideo ComfyUI engine in Local Images first.");
-        var free = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(PortableRoot))!)
-            .AvailableFreeSpace;
-        if (!HasWanVideoModels && free < 20L * 1024 * 1024 * 1024)
-            throw new IOException(
-                "Wan2.2 model installation requires around 17 GB. " +
-                "Free at least 20 GB for the official model components.");
-        log?.Invoke("Wan2.2 TI2V 5B: installing only video model, VAE and text encoder " +
-            "(~17 GB). Existing ComfyUI image checkpoints are preserved.");
-        await EnsureVerifiedModelAsync(
-            "https://huggingface.co/Comfy-Org/Wan-2.2/resolve/main/split_files/diffusion_models/" + WanVideoModel,
-            WanVideoModelPath,
-            "456f901338bd9eadbded3828b819109a9b68e8a525ca5cf8d0049a69fcfeca1e", log, ct);
-        await EnsureVerifiedModelAsync(
-            "https://huggingface.co/Comfy-Org/Wan-2.2/resolve/main/split_files/vae/" + WanVideoVae,
-            WanVideoVaePath,
-            "e40321bd36b9709991dae2530eb4ac303dd168276980d3e9bc4b6e2b75fed156", log, ct);
-        await EnsureVerifiedModelAsync(
-            "https://huggingface.co/Comfy-Org/Wan-2.1/resolve/main/split_files/text_encoders/" + WanVideoText,
-            WanVideoTextPath,
-            "c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68", log, ct);
-        log?.Invoke("Wan2.2 TI2V 5B: all three official model files verified. " +
-            "Restart local ComfyUI to refresh its model registry.");
-    }
-
     public static string Root => Path.Combine(AppPaths.DataDirectory, "LocalAI");
     public static string PortableRoot => Path.Combine(Root,"ComfyUI_windows_portable");
     public static string CheckpointPath => Path.Combine(
