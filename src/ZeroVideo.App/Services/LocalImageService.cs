@@ -698,17 +698,20 @@ public sealed class LocalImageService
         var cast=CharacterConsistencyService.Match(project,scene);
         var main=cast.FirstOrDefault();
         var descriptions=cast.Count==0?"":string.Join("; ",cast.Select(character=>
-            character.Name+": "+character.Appearance));
+            character.Name+": "+CharacterConsistencyService.IdentityDescription(character)));
         var reference=main is null?null:
             CharacterConsistencyService.GetExistingReference(project,main);
-        var seed=main is null?(long?)null:
-            1+(long)((unchecked((ulong)main.Seed)+
-                (ulong)chapter.Number*113+(ulong)scene.Number*997)%
-                ((ulong)long.MaxValue-1));
+        // Hash each scene independently. Small arithmetic offsets of a
+        // fixed character seed and a full-scene img2img anchor made shots
+        // unnecessarily alike in older builds.
+        var seed=CharacterConsistencyService.StableSeed(
+            project.Id+"|shot|"+chapter.Number+"|"+scene.Number+
+            "|"+(main?.Seed.ToString()??"no-character"));
         if(main is not null)
-            log?.Invoke("Character Lock "+main.Name+": "+
-                (reference is not null?"reusing saved visual reference":"creating first reference")+
-                ", stable seed family.");
+            log?.Invoke("Character Bible "+main.Name+": identity guidance only; "+
+                (reference is not null?"approved imported portrait selected. "
+                    :"text description only; no previous scene image reused. ")+
+                "Independent per-scene seed.");
         if(project.Style=="Comic Book Explainer" &&
            project.Options.VintageComicPanelComposition)
         {
@@ -722,20 +725,20 @@ public sealed class LocalImageService
             var directions=new[]
             {
                 "SINGLE PRINTED COMIC PANEL, WIDE establishing frame. "+
-                    "Show the recurring character and scene location clearly. ",
+                    "Show this scene's distinct location and action, not a repeated shot. ",
                 "SINGLE PRINTED COMIC PANEL, MEDIUM action frame. "+
-                    "Show the important action and expressive character pose. ",
+                    "Show this scene's important action, with a person only if relevant. ",
                 "SINGLE PRINTED COMIC PANEL, CLOSE-UP dramatic reaction or "+
-                    "important object detail. Keep consistent character costume. "
+                    "important object detail. Never copy the whole establishing shot. "
             };
             for(var i=0;i<3;i++)
             {
                 ct.ThrowIfCancellationRequested();
                 var panel=Path.Combine(panelsDir,"panel"+(i+1)+".png");
                 panelPaths.Add(panel);
-                var panelSeed=seed.HasValue?seed.Value+i*79:
-                    CharacterConsistencyService.StableSeed(
-                        project.Id+"|"+chapter.Number+"|"+scene.Number+"|"+i);
+                var panelSeed=CharacterConsistencyService.StableSeed(
+                    project.Id+"|"+chapter.Number+"|"+scene.Number+"|panel|"+i+
+                    "|"+(main?.Seed.ToString()??"no-character"));
                 if(!File.Exists(panel))
                 {
                     await GenerateToPathAsync(
@@ -744,9 +747,8 @@ public sealed class LocalImageService
                         directions[i]+scene.ImagePrompt,scene.VisualQuery,
                         panel,settings,log,ct,panelSeed,reference,descriptions);
                 }
-                if(main is not null && reference is null)
-                    reference=CharacterConsistencyService.CaptureFirstReference(
-                        project,main,panel);
+                // Do not auto-capture a full panel as a character reference.
+                // An approved imported portrait is the only image anchor.
             }
             var width=project.AspectRatio=="9:16"?704:1248;
             var height=project.AspectRatio=="9:16"?1248:704;
@@ -760,13 +762,6 @@ public sealed class LocalImageService
             chapter.Title,scene.Narration,scene.ImagePrompt,scene.VisualQuery,
             target,settings,log,ct,seed,reference,descriptions);
         scene.MediaPath=target;
-        if(main is not null&&reference is null)
-        {
-            var anchor=CharacterConsistencyService.CaptureFirstReference(
-                project,main,target);
-            log?.Invoke("Character Lock: saved reference for "+main.Name+
-                " at "+anchor);
-        }
         return target;
     }
 
@@ -911,6 +906,10 @@ public sealed class LocalImageService
                 "LOCKED RECURRING CHARACTERS: "+CompactLocalText(characterDescription,460):"",
             "MOST IMPORTANT: "+CompactLocalText(narration,420),
             "SHOW ON SCREEN: "+CompactLocalText(direction,240),
+            "COMPOSITION: create a fresh scene-specific viewpoint, shot scale, "+
+                "staging and environmental details. Any character reference "+
+                "is for identity only, NEVER copy its background, camera angle, "+
+                "position, lighting, vehicle or surroundings",
             "Key props and setting: "+CompactLocalText(query,120),
             "Video topic: "+CompactLocalText(topic,85),
             portrait?"vertical 9:16 portrait":"horizontal 16:9 widescreen",
@@ -981,15 +980,15 @@ public sealed class LocalImageService
                 vae=isFlux?Ref("20",0):Ref("4",2)
             }};
             latent=Ref("16",0);
-            log?.Invoke("Character Lock: image-to-image identity reference loaded. "+
-                "The master image guides appearance, but exact facial identity "+
-                "cannot be guaranteed across all angles.");
+            log?.Invoke("Character Bible: approved portrait reference loaded. "+
+                "Higher denoise prioritizes the current scene composition; "+
+                "facial identity is not guaranteed.");
         }
         if(isFlux)
             graph["3"]=new {class_type="KSampler",inputs=new
             {
                 seed,steps=4,cfg=1.0,sampler_name="euler",scheduler="simple",
-                denoise=hasReference?0.75:1.0,
+                denoise=hasReference?0.89:1.0,
                 model=Ref("4",0),positive=Ref("13",0),negative=Ref("12",0),
                 latent_image=latent
             }};
@@ -997,7 +996,7 @@ public sealed class LocalImageService
             graph["3"]=new {class_type="KSampler",inputs=new
             {
                 seed,steps=30,cfg=6.0,sampler_name="dpmpp_2m",scheduler="karras",
-                denoise=hasReference?0.68:1.0,
+                denoise=hasReference?0.86:1.0,
                 model=Ref("4",0),positive=Ref("6",0),negative=Ref("7",0),
                 latent_image=latent
             }};
