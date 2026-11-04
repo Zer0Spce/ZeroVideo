@@ -26,6 +26,7 @@ public sealed class LivePortraitSetupService(ProcessRunner runner)
     public static string DriverFolder => Path.Combine(
         LocalImageService.PortableRoot, "ComfyUI", "custom_nodes",
         "ZeroVideo-IdleDriver");
+    public static string BundledPythonExecutable => EmbeddedPython;
     private static string EmbeddedPython =>
         new[]
         {
