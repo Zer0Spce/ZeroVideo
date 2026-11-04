@@ -227,8 +227,12 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
                 var wantsPortrait = settings.AiImageAnimationEngine == "LivePortrait (Local)";
                 var maxClips = Math.Clamp(settings.LivePortraitMaxClipsPerVideo, 0, 30);
                 if (!IsVideo(media) && wantsPortrait &&
-                    effects.AiAttemptCount < maxClips)
+                    effects.AiAttemptCount < maxClips &&
+                    await _livePortrait.CanAnimateAsync(media, log, ct))
                 {
+                    // Only count scenes with a detected, sufficiently large
+                    // face. Environment-only scenes must not exhaust the
+                    // per-video LivePortrait limit.
                     effects.AiAttemptCount++;
                     aiClip = await _livePortrait.TryAnimateAsync(
                         media, project, scene, settings, log, ct);
