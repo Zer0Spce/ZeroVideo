@@ -5,8 +5,9 @@ using ZeroVideo.App.Models;
 
 namespace ZeroVideo.App.Services;
 
-public sealed class FfmpegService(ProcessRunner runner, DependencyService dependencies)
+public sealed class FfmpegService(ProcessRunner runner, DependencyService dependencies, LocalImageService? localImages = null)
 {
+    private readonly WanVideoService _wan = new(localImages ?? new LocalImageService());
     private readonly FramePackAnimationService _framePack = new(runner);
     public async Task ValidateAsync(ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
@@ -224,23 +225,32 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
                 // The original image remains untouched; FFmpeg micro-motion
                 // handles missing server, GPU failures, and capacity limits.
                 string? aiClip = null;
-                if (!IsVideo(media) &&
-                    settings.AiImageAnimationEngine == "FramePack (Local)" &&
-                    effects.AiGeneratedClipCount < Math.Clamp(settings.FramePackMaxClipsPerVideo, 0, 30))
+                var selectedEngine = settings.AiImageAnimationEngine;
+                var wantsWan = selectedEngine == "Wan2.2 5B (ComfyUI)";
+                var wantsFramePack = selectedEngine == "FramePack (Local)";
+                var maxAiClips = Math.Clamp(settings.FramePackMaxClipsPerVideo, 0, 30);
+                // Never run multiple heavy video generators concurrently. A
+                // limited number of attempts prevents repeated scene stalls
+                // when the optional engine is missing or not yet initialized.
+                if (!IsVideo(media) && (wantsWan || wantsFramePack) &&
+                    effects.AiAttemptCount < maxAiClips)
                 {
-                    aiClip = await _framePack.TryAnimateAsync(media, project, scene, settings, log, ct);
+                    effects.AiAttemptCount++;
+                    aiClip = wantsWan
+                        ? await _wan.TryAnimateAsync(media, project, scene, settings, log, ct)
+                        : await _framePack.TryAnimateAsync(media, project, scene, settings, log, ct);
                     if (aiClip is not null)
                     {
                         try
                         {
                             if (await ProbeDurationAsync(aiClip, settings, ct) < 1.0)
-                                throw new InvalidDataException("FramePack video was too short.");
+                                throw new InvalidDataException("Generated AI video is too short.");
                             effects.AiGeneratedClipCount++;
                         }
                         catch (OperationCanceledException) { throw; }
                         catch (Exception ex)
                         {
-                            log?.Invoke("FramePack clip validation failed; using original image: " + ex.Message);
+                            log?.Invoke("AI video validation failed; keeping original image: " + ex.Message);
                             try { File.Delete(aiClip); } catch { }
                             aiClip = null;
                         }
@@ -249,7 +259,9 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
                 var renderMedia = aiClip ?? media;
                 if (IsVideo(renderMedia))
                 {
-                    motion = aiClip is null ? "source video" : "AI subtle motion (FramePack)";
+                    motion = aiClip is null ? "source video"
+                        : settings.AiImageAnimationEngine == "Wan2.2 5B (ComfyUI)"
+                            ? "AI subtle motion (Wan2.2)" : "AI subtle motion (FramePack)";
                     var vf = $"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h},fps=30";
                     var styleFx = BuildStyleEffectFilter(project);
                     if (!string.IsNullOrWhiteSpace(styleFx)) vf += "," + styleFx;
@@ -267,7 +279,7 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
                 {
                     // An AI clip may decode but still be incompatible with
                     // the main renderer. Retry against the source still.
-                    log?.Invoke("FramePack video render failed; falling back to original illustrated image.");
+                    log?.Invoke("AI video render failed; falling back to original illustrated image.");
                     motion = ChooseMotionPreset(project, scene, effects);
                     args = BuildStillRenderArgs(media, output, renderSeconds, w, h, motion, project);
                     result = await runner.RunAsync(settings.FfmpegPath, args, renderDir, ct);
@@ -908,5 +920,6 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         public int MotionCursor;
         public int TransitionCursor;
         public int AiGeneratedClipCount;
+        public int AiAttemptCount;
     }
 }
