@@ -38,6 +38,28 @@ public sealed class FramePackAnimationService(ProcessRunner runner)
         && uri.UserInfo.Length == 0 && uri.AbsolutePath == "/"
         && string.IsNullOrEmpty(uri.Query) && string.IsNullOrEmpty(uri.Fragment);
 
+    public async Task<string> ProbeAsync(ZeroVideoSettings settings, CancellationToken ct)
+    {
+        var python = settings.FramePackPythonPath?.Trim() ?? "";
+        if (!File.Exists(python))
+            throw new FileNotFoundException(
+                "FramePack Python.exe not found. Confirm its path in Settings.", python);
+        var server = settings.FramePackServerUrl?.Trim() ?? "";
+        if (!IsSafeLoopback(server))
+            throw new InvalidOperationException(
+                "Set the FramePack URL to http://127.0.0.1:7860 (local only).");
+        WriteWorker();
+        var result = await runner.RunAsync(python,
+            $"-X utf8 -u \"{WorkerPath}\" --probe --server \"{server}\"",
+            Root, ct);
+        if (result.ExitCode != 0)
+            throw new IOException(
+                "FramePack connection failed: " +
+                (string.IsNullOrWhiteSpace(result.StdErr)
+                    ? result.StdOut : result.StdErr.Trim()));
+        return "FramePack local server connected, /process endpoint available.";
+    }
+
     public async Task<string?> TryAnimateAsync(
         string original, VideoProject project, ProjectScene scene,
         ZeroVideoSettings settings, Action<string>? log, CancellationToken ct)
