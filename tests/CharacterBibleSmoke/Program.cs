@@ -388,6 +388,60 @@ try
         new ProjectScene{ImagePrompt="An empty ocean with sailing ship"})<0.2,
         "Unrelated generic footage cannot replace a missing script-specific scene");
 
+    // Exact 16:9 / 9:16 generation resolution presets, persisted default.
+    var settings = new ZeroVideoSettings();
+    Check(settings.LocalImageResolutionPreset == "Fast" &&
+        settings.LocalImageResolutionMode == "Direct",
+        "Existing 8 GB GPU workflows keep the original Fast direct default");
+    var presets = new[]
+    {
+        ("Fast",1024,576),
+        ("Balanced",1280,720),
+        ("High",1600,900),
+        ("Ultra",1920,1080)
+    };
+    foreach(var (preset,width,height) in presets)
+    {
+        var horizontal=LocalImageResolutionService.Resolve(
+            false,preset,"Direct");
+        var vertical=LocalImageResolutionService.Resolve(
+            true,preset,"Direct");
+        Check(horizontal.Output.Width==width &&
+              horizontal.Output.Height==height &&
+              horizontal.Working.Width==width &&
+              horizontal.Working.Height==height,
+            preset+" Direct uses the requested landscape latent resolution");
+        Check(vertical.Output.Width==height &&
+              vertical.Output.Height==width &&
+              vertical.Working.Width==height &&
+              vertical.Working.Height==width,
+            preset+" Direct uses correct 9:16 portrait pixel dimensions");
+        var safe=LocalImageResolutionService.Resolve(
+            false,preset,"Upscale");
+        Check(safe.Output.Width==width && safe.Output.Height==height &&
+              safe.Working.Width==1024 && safe.Working.Height==576,
+            preset+" CPU Upscale retains final landscape output dimensions");
+        var verticalSafe=LocalImageResolutionService.Resolve(
+            true,preset,"Upscale");
+        Check(verticalSafe.Working.Width==576 &&
+              verticalSafe.Working.Height==1024 &&
+              verticalSafe.Output.Width==height &&
+              verticalSafe.Output.Height==width,
+            preset+" CPU Upscale retains final vertical output dimensions");
+    }
+    Check(LocalImageResolutionService.Resolve(false,"Ultra","Upscale")
+        .CpuUpscale && !LocalImageResolutionService.Resolve(false,
+        "Ultra","Direct").CpuUpscale,
+        "Ultra CPU Upscale avoids allocating a native 1920x1080 GPU latent");
+    Check(LocalImageResolutionService.Resolve(false,"Ultra","Direct")
+        .UsesHighGpuMemory && !LocalImageResolutionService.Resolve(false,
+        "Ultra","Upscale").UsesHighGpuMemory,
+        "User receives a high-VRAM warning only for expensive direct generation");
+    Check(LocalImageResolutionService.ResolveOutput(false,"Bogus").Width==1024 &&
+          !LocalImageResolutionService.IsValidPreset("Bogus") &&
+          !LocalImageResolutionService.IsValidMode("Bogus"),
+        "Unknown saved options safely return to Fast/Direct");
+
     Console.WriteLine("Character Bible regression checks passed.");
 }
 finally
