@@ -48,9 +48,19 @@ public sealed class LivePortraitService(LocalImageService localImages)
             using var doc = JsonDocument.Parse(
                 await result.Content.ReadAsStringAsync(combined.Token));
             if (!doc.RootElement.TryGetProperty(node, out _))
+            {
+                // The pinned upstream class name is correct. A missing
+                // registration generally means the Python extension threw
+                // during import or a different/stale server owns port 8188.
+                var diag = await new LivePortraitSetupService(new ProcessRunner())
+                    .DiagnoseImportsAsync(ct);
                 throw new InvalidOperationException(
-                    "ComfyUI does not have " + node +
-                    ". Restart or update the installed LivePortrait nodes.");
+                    "ComfyUI at 127.0.0.1:8188 is missing " + node +
+                    ", but the local Python import check succeeded. " +
+                    "Another or stale ComfyUI instance may be using port 8188. " +
+                    "Close any external ComfyUI server and restart the " +
+                    "ZeroVideo-owned server. " + diag);
+            }
         }
     }
 
