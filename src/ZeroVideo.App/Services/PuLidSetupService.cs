@@ -171,6 +171,11 @@ public sealed class PuLidSetupService(
             await EnsurePythonDependenciesAsync(python,log,ct);
         }
 
+        // Fix the pinned extension's obsolete FLUX forward wrapper against
+        // the current ComfyUI timestep_zero_index API, including an already
+        // installed extension from previous ZeroVideo builds. This patches
+        // just two verified source files with local backups, not models.
+        await RepairComfyFluxCompatibilityAsync(python,comfy,log,ct);
         // Check the full custom-node import before spending bandwidth
         // on >2 GB of weights. A generic "import insightface" alone is
         // insufficient: the pinned PuLID extension eagerly loads many modules.
@@ -287,6 +292,57 @@ public sealed class PuLidSetupService(
             LocalImageService.PortableRoot,ct);
         RequireSuccess(result,
             "PuLID ComfyUI custom-node import validation");
+        log?.Invoke(result.StdOut.Trim());
+    }
+
+    private static string FluxModelSource => Path.Combine(
+        LocalImageService.PortableRoot, "ComfyUI", "comfy", "ldm",
+        "flux", "model.py");
+
+    /// <summary>
+    /// Detect a pinned PuLID extension still using a 2024-era
+    /// forward_orig monkeypatch. Current ComfyUI passes the keyword
+    /// timestep_zero_index and requires its native forward call to remain
+    /// active. This is a cheap check; no model weights are loaded.
+    /// </summary>
+    public static bool NeedsComfyFluxCompatibilityRepair()
+    {
+        var plugin = Path.Combine(Folder, "pulidflux.py");
+        if (!File.Exists(plugin) || !File.Exists(FluxModelSource))
+            return false;
+        var current = File.ReadAllText(FluxModelSource);
+        return current.Contains("timestep_zero_index",
+                StringComparison.Ordinal) &&
+            File.ReadAllText(plugin).Contains(
+                "wrappers_name, pulid_outer_sample_wrappers_with_override)",
+                StringComparison.Ordinal);
+    }
+
+    private async Task RepairComfyFluxCompatibilityAsync(
+        string python, string comfy, Action<string>? log, CancellationToken ct)
+    {
+        var script = Path.Combine(AppPaths.ManagedToolsDirectory,
+            "pulid_flux_compat.py");
+        Directory.CreateDirectory(Path.GetDirectoryName(script)!);
+        using (var stream = Assembly.GetExecutingAssembly()
+            .GetManifestResourceStream("ZeroVideo.App.Resources.pulid_flux_compat.py"))
+        {
+            if (stream is null)
+                throw new FileNotFoundException(
+                    "ZeroVideo's embedded PuLID FLUX compatibility patch is missing.");
+            var partial = script + ".partial";
+            using (var target = File.Create(partial))
+                stream.CopyTo(target);
+            File.Move(partial, script, overwrite:true);
+        }
+        log?.Invoke("PuLID setup: checking FLUX forward_orig compatibility " +
+            "with the bundled ComfyUI before running any identity inference...");
+        var args = "-X utf8 -s -u \"" + script +
+            "\" --extension \"" + Folder +
+            "\" --flux-model \"" + FluxModelSource + "\"";
+        var result = await runner.RunAsync(python,args,
+            LocalImageService.PortableRoot,ct);
+        RequireSuccess(result, "PuLID forward_orig compatibility repair");
         log?.Invoke(result.StdOut.Trim());
     }
 
