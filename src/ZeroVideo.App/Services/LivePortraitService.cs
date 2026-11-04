@@ -94,6 +94,87 @@ public sealed class LivePortraitService(LocalImageService localImages)
         }
     }
 
+    // Each LivePortraitService is short-lived (one per render/test action).
+    // Cache successful ONNX preflight across service instances, invalidated
+    // if the landmark checkpoint changes on disk. Never cache failures.
+    private static readonly SemaphoreSlim LandmarkPreflightGate = new(1,1);
+    private static string _validatedLandmarkStamp = "";
+
+    private static async Task EnsureLandmarkReadyAsync(
+        Action<string>? log, CancellationToken ct)
+    {
+        await LandmarkPreflightGate.WaitAsync(ct);
+        try
+        {
+            var path = LivePortraitSetupService.LandmarkModelPath;
+            var file = new FileInfo(path);
+            var stamp = file.Exists
+                ? path + ":" + file.Length + ":" +
+                  file.LastWriteTimeUtc.Ticks : "";
+            if (stamp.Length > 0 && stamp == _validatedLandmarkStamp)
+                return;
+
+            log?.Invoke("LivePortrait: verifying the dedicated ONNX landmark " +
+                "model before facial animation (not the MediaPipe face detector).");
+            // The upstream Kijai custom node does not fill a missing
+            // landmark.onnx when models/liveportrait already exists.
+            // Restore ONLY this verified model, preserving others.
+            var setup = new LivePortraitSetupService(new ProcessRunner());
+            await setup.EnsureLandmarkModelAsync(log, ct);
+
+            var python = LivePortraitSetupService.BundledPythonExecutable;
+            if (!File.Exists(python))
+                throw new FileNotFoundException(
+                    "LivePortrait ONNX preflight cannot find bundled ComfyUI Python.");
+            var script = Path.Combine(AppPaths.ManagedToolsDirectory,
+                "liveportrait_onnx_probe.py");
+            Directory.CreateDirectory(Path.GetDirectoryName(script)!);
+            using (var embedded = Assembly.GetExecutingAssembly()
+                .GetManifestResourceStream(
+                    "ZeroVideo.App.Resources.liveportrait_onnx_probe.py"))
+            {
+                if (embedded is null)
+                    throw new FileNotFoundException(
+                        "The bundled LivePortrait ONNX diagnostic is missing.");
+                var partial = script + ".partial";
+                using (var output = File.Create(partial))
+                    embedded.CopyTo(output);
+                File.Move(partial, script, overwrite: true);
+            }
+            using var timeout = CancellationTokenSource
+                .CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(120));
+            var result = await new ProcessRunner().RunAsync(
+                python, "-X utf8 -s -u \"" + script +
+                "\" --model \"" + path + "\"",
+                LocalImageService.PortableRoot, timeout.Token);
+            if (result.ExitCode != 0)
+            {
+                var combined = (result.StdErr + Environment.NewLine +
+                    result.StdOut).Trim();
+                // Put the descriptive diagnostic FIRST rather than only the
+                // last few Python frames, which hid the true cause previously.
+                var summary = combined.Split(
+                    new[] { '\r','\n' }, StringSplitOptions.RemoveEmptyEntries)
+                    .FirstOrDefault(line => line.Contains(
+                        "LIVEPORTRAIT_", StringComparison.Ordinal))
+                    ?? "ONNX Runtime returned an unknown error.";
+                throw new InvalidOperationException(
+                    "LivePortrait landmark model CPU preflight failed: " +
+                    summary + " | Python detail: " +
+                    (combined.Length > 800 ? combined[^800..] : combined));
+            }
+            log?.Invoke("LivePortrait: " + result.StdOut.Trim());
+            file.Refresh();
+            _validatedLandmarkStamp = path + ":" + file.Length + ":" +
+                file.LastWriteTimeUtc.Ticks;
+        }
+        finally
+        {
+            LandmarkPreflightGate.Release();
+        }
+    }
+
     private static readonly string[] RequiredNodes =
     [
         "DownloadAndLoadLivePortraitModels", "LivePortraitLoadMediaPipeCropper",
@@ -101,7 +182,8 @@ public sealed class LivePortraitService(LocalImageService localImages)
         "ZeroVideoIdleDriver", "CreateVideo", "SaveVideo"
     ];
 
-    public async Task TestConnectionAsync(CancellationToken ct)
+    public async Task TestConnectionAsync(
+        CancellationToken ct, Action<string>? log = null)
     {
         if (!LivePortraitSetupService.IsInstalled)
             throw new FileNotFoundException(
@@ -135,6 +217,7 @@ public sealed class LivePortraitService(LocalImageService localImages)
                     "ZeroVideo-owned server. " + diag);
             }
         }
+        await EnsureLandmarkReadyAsync(log,ct);
     }
 
     public async Task<string?> TryAnimateAsync(
@@ -151,7 +234,7 @@ public sealed class LivePortraitService(LocalImageService localImages)
                     "LivePortrait isn't installed; use Install LivePortrait in Settings.");
             if (!await localImages.IsOnlineAsync(ct))
                 await localImages.StartAsync(log, ct);
-            await TestConnectionAsync(ct);
+            await TestConnectionAsync(ct, log);
 
             var seconds = Math.Clamp(settings.LivePortraitClipSeconds, 3.0, 5.0);
             var strength = settings.LivePortraitMotionStrength == "Medium"
@@ -347,17 +430,24 @@ public sealed class LivePortraitService(LocalImageService localImages)
                 var nodeType = Get(info, "node_type");
                 var error = Get(info, "exception_message");
                 var errorType = Get(info, "exception_type");
-                var text = $"Node {nodeId} ({nodeType}): {errorType}: {error}";
+                var summary = $"Node {nodeId} ({nodeType}): " +
+                    $"{errorType}: {error}";
+                // Reserve space for the real exception message. The old
+                // final-1600-char crop discarded it and displayed only
+                // unhelpful stack-frame source snippets.
+                if (summary.Length > 1200) summary = summary[..1200];
                 if (info.TryGetProperty("traceback", out var trace) &&
                     trace.ValueKind == JsonValueKind.Array)
                 {
-                    var lines = trace.EnumerateArray()
+                    var frames = trace.EnumerateArray()
                         .Where(item => item.ValueKind == JsonValueKind.String)
                         .Select(item => item.GetString() ?? "")
-                        .TakeLast(4);
-                    text += " | " + string.Join(" ", lines);
+                        .TakeLast(2);
+                    var tail = string.Join(" ", frames);
+                    summary += " | Traceback tail: " +
+                        (tail.Length > 600 ? tail[^600..] : tail);
                 }
-                return text.Length > 1600 ? text[^1600..] : text;
+                return summary;
             }
         }
         return "ComfyUI returned an error but did not include node details; " +
