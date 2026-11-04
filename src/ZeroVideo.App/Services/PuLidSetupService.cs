@@ -35,9 +35,20 @@ public sealed class PuLidSetupService(
     {
         if(result.ExitCode==0) return;
         var detail=(result.StdErr + Environment.NewLine + result.StdOut).Trim();
-        if(detail.Length>2300) detail=detail[^2300..];
-        throw new InvalidOperationException(stage+" failed. "+
-            "Existing models and projects were not removed. "+detail);
+        var concise=detail.Split(new[] {'\r','\n'},
+            StringSplitOptions.RemoveEmptyEntries |
+            StringSplitOptions.TrimEntries)
+            .LastOrDefault(line =>
+                line.StartsWith("ModuleNotFoundError:",StringComparison.Ordinal) ||
+                line.StartsWith("ImportError:",StringComparison.Ordinal) ||
+                line.StartsWith("OSError:",StringComparison.Ordinal) ||
+                line.StartsWith("RuntimeError:",StringComparison.Ordinal) ||
+                line.Contains("DLL load failed",StringComparison.OrdinalIgnoreCase))
+            ?? "See Python traceback below";
+        if(detail.Length>2400) detail=detail[^2400..];
+        throw new InvalidOperationException(stage+" failed: "+concise+
+            ". Existing models and projects were not removed. "+
+            "Full Python traceback tail: "+detail);
     }
 
     public async Task InstallAndVerifyAsync(
