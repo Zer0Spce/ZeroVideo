@@ -228,6 +228,11 @@ public sealed class LivePortraitService(LocalImageService localImages)
                     "ZeroVideo-owned server. " + diag);
             }
         }
+        // The pinned custom node imports a private legacy face_landmark.py
+        // that is incompatible with MediaPipe 0.10.35. Verify / repair the
+        // public Tasks adapter BEFORE posting an expensive ComfyUI workflow.
+        var setup = new LivePortraitSetupService(new ProcessRunner());
+        await setup.EnsureMediaPipeTasksCompatibilityAsync(log,ct);
         await EnsureLandmarkReadyAsync(log,ct);
     }
 
