@@ -284,6 +284,202 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         return ok;
     }
 
+    // The normal picker path is preserved for video #1. Later videos
+    // occasionally re-render their calendar after file attachment and leave
+    // the closed date unchanged. Recover only that failed later-video date:
+    // inspect the calendar month and choose exactly one enabled date cell.
+    private static async Task<string> ReadTikTokClosedDateAsync(ILocator dateTrigger)
+    {
+        return (await dateTrigger.EvaluateAsync<string>(@"element => {
+            const direct = typeof element.value === 'string' ? element.value.trim() : '';
+            const input = element.querySelector('input');
+            return direct || (input && input.value ? input.value.trim() : '') ||
+                (element.innerText || element.textContent || '').trim();
+        }")).Trim();
+    }
+
+    private static async Task<bool> RecoverTikTokDateForLaterVideoAsync(
+        IPage page, ILocator dateTrigger, DateTime target,
+        Action<string>? log, CancellationToken ct)
+    {
+        var culture = System.Globalization.CultureInfo.GetCultureInfo("en-US");
+        var wanted = target.ToString("yyyy-MM-dd");
+        for (var attempt = 1; attempt <= 2; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var before = await ReadTikTokClosedDateAsync(dateTrigger);
+                if (TikTokSubsequentDatePolicy.MatchesDisplayedDate(before, target))
+                {
+                    log?.Invoke("TikTok: later-video date already committed: " + before);
+                    return true;
+                }
+
+                log?.Invoke("TikTok: later-video date recovery " + attempt +
+                    "/2; requested=" + wanted + "; currently displayed='" + before + "'.");
+                await page.Keyboard.PressAsync("Escape");
+                await dateTrigger.ClickAsync(new() { Timeout = 7000 });
+                var calendar = page.Locator(".DatePicker__panel:visible").First;
+                await calendar.WaitForAsync(new()
+                {
+                    State = WaitForSelectorState.Visible, Timeout = 7000
+                });
+
+                var month = calendar.Locator(".DatePicker__titleMonth").First;
+                var year = calendar.Locator(".DatePicker__titleYear").First;
+                if (await month.CountAsync() == 0 || await year.CountAsync() == 0)
+                {
+                    log?.Invoke("TikTok: recovery calendar month/year header missing.");
+                    await SaveTikTokPickerEvidenceAsync(page, "Later-Date-Header-Missing", log);
+                    return false;
+                }
+
+                var atTargetMonth = false;
+                for (var turn = 0; turn < 5; turn++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var monthText = (await month.InnerTextAsync()).Trim();
+                    var yearText = (await year.InnerTextAsync()).Trim();
+                    if (!int.TryParse(yearText, out var shownYear) ||
+                        !DateTime.TryParseExact(monthText, new[] { "MMMM", "MMM" },
+                            culture, System.Globalization.DateTimeStyles.None, out var shown))
+                    {
+                        log?.Invoke("TikTok: recovery cannot parse month header '" +
+                            monthText + " " + yearText + "'.");
+                        await SaveTikTokPickerEvidenceAsync(page, "Later-Date-Header-Unreadable", log);
+                        return false;
+                    }
+
+                    var distance = TikTokSubsequentDatePolicy.MonthsToTarget(
+                        shownYear, shown.Month, target);
+                    log?.Invoke("TikTok: later-video calendar " + shownYear + "-" +
+                        shown.Month.ToString("D2") + "; requested=" +
+                        target.ToString("yyyy-MM") + "; month difference=" + distance);
+                    if (distance == 0)
+                    {
+                        atTargetMonth = true;
+                        break;
+                    }
+                    // Clicking an unavailable arrow should not select a wrong
+                    // month/day or continue into the final Schedule action.
+                    var nav = calendar.Locator(distance > 0
+                        ? "button[aria-label='Next month']"
+                        : "button[aria-label='Previous month']").First;
+                    if (await nav.CountAsync() != 1 || !await nav.IsEnabledAsync() ||
+                        await nav.GetAttributeAsync("aria-disabled") == "true")
+                    {
+                        log?.Invoke("TikTok: requested later-video month is inaccessible. " +
+                            "Check TikTok's scheduling window; no post will be submitted.");
+                        await SaveTikTokPickerEvidenceAsync(page, "Later-Date-Month-Blocked", log);
+                        return false;
+                    }
+
+                    var expected = new DateTime(shownYear, shown.Month, 1)
+                        .AddMonths(distance > 0 ? 1 : -1);
+                    await nav.ClickAsync(new() { Timeout = 6000 });
+                    var advanced = false;
+                    for (var poll = 0; poll < 24; poll++)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        await Task.Delay(200, ct);
+                        var nextMonthText = (await month.InnerTextAsync()).Trim();
+                        var nextYearText = (await year.InnerTextAsync()).Trim();
+                        if (int.TryParse(nextYearText, out var nextYear) &&
+                            DateTime.TryParseExact(nextMonthText,
+                                new[] { "MMMM", "MMM" }, culture,
+                                System.Globalization.DateTimeStyles.None, out var next) &&
+                            nextYear == expected.Year && next.Month == expected.Month)
+                        {
+                            advanced = true;
+                            break;
+                        }
+                    }
+                    if (!advanced)
+                    {
+                        log?.Invoke("TikTok: later-video month arrow did not reach " +
+                            expected.ToString("yyyy-MM") + "; refusing a wrong date.");
+                        await SaveTikTokPickerEvidenceAsync(page, "Later-Date-Month-Not-Changed", log);
+                        return false;
+                    }
+                }
+
+                if (!atTargetMonth)
+                {
+                    log?.Invoke("TikTok: later-video target month could not be reached.");
+                    await SaveTikTokPickerEvidenceAsync(page, "Later-Date-Wrong-Month", log);
+                    return false;
+                }
+
+                var buttons = calendar.Locator("button.DatePicker__day");
+                var matches = new List<ILocator>();
+                var numericFallback = new List<ILocator>();
+                var count = await buttons.CountAsync();
+                for (var i = 0; i < count; i++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var day = buttons.Nth(i);
+                    if (!await day.IsEnabledAsync() ||
+                        await day.GetAttributeAsync("data-disabled") == "true" ||
+                        await day.GetAttributeAsync("data-outside") == "true")
+                        continue;
+
+                    var label = await day.GetAttributeAsync("aria-label");
+                    var iso = await day.GetAttributeAsync("data-date") ??
+                        await day.GetAttributeAsync("datetime");
+                    if (TikTokSubsequentDatePolicy.MatchesCalendarDay(label, iso, target))
+                    {
+                        matches.Add(day);
+                    }
+                    else if (string.IsNullOrWhiteSpace(label) &&
+                        string.Equals((await day.InnerTextAsync()).Trim(),
+                            target.Day.ToString(), StringComparison.Ordinal) &&
+                        await day.GetAttributeAsync("data-outside") == "false")
+                    {
+                        numericFallback.Add(day);
+                    }
+                }
+
+                var choices = matches.Count > 0 ? matches : numericFallback;
+                if (choices.Count != 1)
+                {
+                    log?.Invoke("TikTok: later-video day " + wanted +
+                        " is missing, disabled or ambiguous; matching day buttons=" +
+                        choices.Count + ". No submission will be attempted.");
+                    await SaveTikTokPickerEvidenceAsync(page, "Later-Date-Day-Unavailable", log);
+                    return false;
+                }
+
+                await choices[0].ClickAsync(new() { Timeout = 7000 });
+                for (var poll = 0; poll < 24; poll++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    await Task.Delay(250, ct);
+                    var displayed = await ReadTikTokClosedDateAsync(dateTrigger);
+                    if (TikTokSubsequentDatePolicy.MatchesDisplayedDate(displayed, target))
+                    {
+                        log?.Invoke("TikTok: later-video date committed after recovery: " +
+                            displayed + " (requested " + wanted + ").");
+                        return true;
+                    }
+                }
+
+                log?.Invoke("TikTok: later-video date click did not commit " + wanted +
+                    "; will retry the calendar once if safe.");
+                await SaveTikTokPickerEvidenceAsync(page, "Later-Date-Not-Committed", log);
+            }
+            catch (PlaywrightException ex)
+            {
+                log?.Invoke("TikTok: later-video calendar changed during recovery: " +
+                    ex.Message.Split((char)10)[0]);
+                await SaveTikTokPickerEvidenceAsync(page, "Later-Date-Picker-Changed", log);
+            }
+            if (attempt < 2) await Task.Delay(600, ct);
+        }
+        return false;
+    }
+
+
     private static async Task<ILocator?> GetTikTokTimePopupAsync(
         IPage page, ILocator timeTrigger, Action<string>? log)
     {
@@ -406,7 +602,8 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     }
 
     private static async Task<bool> SetTikTokScheduleAsync(
-        IPage page,DateTimeOffset slot,Action<string>? log,CancellationToken ct)
+        IPage page,DateTimeOffset slot,Action<string>? log,CancellationToken ct,
+        bool laterVideo = false)
     {
         var target=slot.LocalDateTime;
         var culture=System.Globalization.CultureInfo.GetCultureInfo("en-US");
@@ -432,7 +629,25 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         {
             log?.Invoke("TikTok: date trigger not available.");return false;
         }
-        var dateOk=await SetTikTokDateStrictAsync(page,dateTrigger,target,log,ct);
+        bool dateOk;
+        if (laterVideo)
+        {
+            try { dateOk = await SetTikTokDateStrictAsync(page, dateTrigger, target, log, ct); }
+            catch (PlaywrightException ex)
+            {
+                log?.Invoke("TikTok: later-video primary date picker failed: " +
+                    ex.Message.Split((char)10)[0] + "; trying scoped calendar recovery.");
+                dateOk = false;
+            }
+            if (!dateOk)
+                dateOk = await RecoverTikTokDateForLaterVideoAsync(
+                    page, dateTrigger, target, log, ct);
+        }
+        else
+        {
+            // Keep the first video's known-working date path untouched.
+            dateOk = await SetTikTokDateStrictAsync(page,dateTrigger,target,log,ct);
+        }
         if(!dateOk) await SaveTikTokPickerEvidenceAsync(page,"Date-Failed",log);
 
         // Date failure does not authorize any click outside the time field;
@@ -477,6 +692,36 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         {
             log?.Invoke("TikTok: schedule NOT set. date="+dateOk+" time="+timeOk);
             return false;
+        }
+        if (laterVideo)
+        {
+            // TikTok can reset date after the time popup closes. Check only
+            // later videos, preserving the original first-video submit path.
+            var finalDate = await ReadTikTokClosedDateAsync(dateTrigger);
+            if (!TikTokSubsequentDatePolicy.MatchesDisplayedDate(finalDate, target))
+            {
+                log?.Invoke("TikTok: later-video date was reset while selecting time; " +
+                    "trying its own calendar again.");
+                if (!await RecoverTikTokDateForLaterVideoAsync(
+                        page, dateTrigger, target, log, ct))
+                    return false;
+
+                var verifiedTime = (await timeTrigger.InnerTextAsync()).Trim();
+                var expectedTime = target.ToString("HH:mm");
+                if (verifiedTime != expectedTime &&
+                    verifiedTime != target.ToString("H:mm"))
+                {
+                    log?.Invoke("TikTok: later-video time changed while recovering date; " +
+                        "refusing to submit an incorrect schedule.");
+                    await SaveTikTokPickerEvidenceAsync(page,
+                        "Later-Time-Changed-After-Date", log);
+                    return false;
+                }
+            }
+
+            log?.Invoke("TikTok: later-video date confirmed before final Schedule. " +
+                "Requested=" + target.ToString("yyyy-MM-dd") +
+                "; displayed='" + await ReadTikTokClosedDateAsync(dateTrigger) + "'.");
         }
         log?.Invoke("TikTok: date AND time fields verified. Final Schedule is manual.");
         return true;
@@ -868,8 +1113,16 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             {
                 if (!await WaitForTikTokUploadReadyAsync(page, log, ct))
                     return "TikTok: upload still processing; final submission NOT attempted.";
+                if (freshTikTokUploadPage && scheduledAt.HasValue)
+                {
+                    // The subsequent upload can still be replacing its React
+                    // form as the file finishes loading; do not select its
+                    // calendar before the controls have settled.
+                    await Task.Delay(1500, ct);
+                }
                 if (scheduledAt.HasValue &&
-                    !await SetTikTokScheduleAsync(page, scheduledAt.Value, log, ct))
+                    !await SetTikTokScheduleAsync(page, scheduledAt.Value, log, ct,
+                        laterVideo: freshTikTokUploadPage))
                     return "TikTok: requested date/time NOT verified. Final submission NOT attempted.";
                 // Only reach the final button after all required checks passed.
                 return await SubmitTikTokOnceAsync(page, scheduledAt.HasValue, log, ct);

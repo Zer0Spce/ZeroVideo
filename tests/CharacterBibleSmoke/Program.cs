@@ -187,6 +187,50 @@ Check(ChatGptResponseRecovery.FindTaggedCandidateForRepair(
     invalidNewlineTaggedJson[..^3], machineRequestId) is null,
     "Incomplete JSON without a final closing brace does not trigger premature correction");
 
+// Regression: the first TikTok upload remains unchanged. The second upload
+// must select the exact day with its year, not an identical day number in a
+// neighboring month or a date from the previous scheduled video.
+var tiktokSecondDate = new DateTime(2026, 11, 6, 18, 5, 0);
+Check(TikTokSubsequentDatePolicy.MatchesDisplayedDate(
+    "Nov 6, 2026", tiktokSecondDate),
+    "Second-video date readback accepts the actual TikTok short month label");
+Check(TikTokSubsequentDatePolicy.MatchesDisplayedDate(
+    "November 6, 2026", tiktokSecondDate),
+    "Second-video date readback accepts a full month label");
+Check(TikTokSubsequentDatePolicy.MatchesDisplayedDate(
+    "2026-11-06", tiktokSecondDate),
+    "Second-video date readback accepts ISO date input value");
+Check(!TikTokSubsequentDatePolicy.MatchesDisplayedDate(
+    "Nov 5, 2026", tiktokSecondDate),
+    "Second-video date readback rejects prior video's selected date");
+Check(!TikTokSubsequentDatePolicy.MatchesDisplayedDate(
+    "Nov 6, 2025", tiktokSecondDate),
+    "Second-video date readback rejects an incorrect year");
+Check(!TikTokSubsequentDatePolicy.MatchesDisplayedDate(
+    "Nov 6", tiktokSecondDate),
+    "Second-video date readback refuses a date without explicit year");
+Check(TikTokSubsequentDatePolicy.MatchesCalendarDay(
+    "Friday, November 6th, 2026", null, tiktokSecondDate),
+    "Second-video recovery matches TikTok weekday and ordinal aria label");
+Check(TikTokSubsequentDatePolicy.MatchesCalendarDay(
+    null, "2026-11-06", tiktokSecondDate),
+    "Second-video recovery matches exact ISO date attribute");
+Check(!TikTokSubsequentDatePolicy.MatchesCalendarDay(
+    "Saturday, December 6th, 2026", null, tiktokSecondDate),
+    "Second-video recovery rejects same day in a different month");
+Check(!TikTokSubsequentDatePolicy.MatchesCalendarDay(
+    "Friday, November 6th, 2025", null, tiktokSecondDate),
+    "Second-video recovery rejects identical day in wrong year");
+Check(TikTokSubsequentDatePolicy.MonthsToTarget(
+    2026, 10, tiktokSecondDate) == 1,
+    "Second-video picker navigates correctly from October to November");
+Check(TikTokSubsequentDatePolicy.MonthsToTarget(
+    2026, 12, tiktokSecondDate) == -1,
+    "Second-video picker navigates correctly backward to requested month");
+Check(TikTokSubsequentDatePolicy.MonthsToTarget(
+    2025, 12, new DateTime(2026, 1, 1)) == 1,
+    "Second-video picker handles calendar year transitions safely");
+
 Check(!new ProjectOptions().EnableCharacterConsistency,
     "New projects keep Character Bible disabled by default");
 
