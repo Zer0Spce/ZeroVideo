@@ -92,7 +92,8 @@ public sealed class StudioUploadService(BrowserSession browser)
         {
             var html=await page.EvaluateAsync<string>(@"
 ()=>['.DatePicker__panel','.Picker__panel.schedule-picker-panel',
- '.tiktok-timepicker-time-picker-container','.TimePicker__panel']
+ '.tiktok-timepicker-time-picker-container','.TimePicker__panel',
+ '.date-picker-input','.time-picker-input']
 .map(sel=>{const e=[...document.querySelectorAll(sel)].find(n=>{
 const r=n.getBoundingClientRect();return r.width>0&&r.height>0});
 return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
@@ -288,14 +289,38 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     // occasionally re-render their calendar after file attachment and leave
     // the closed date unchanged. Recover only that failed later-video date:
     // inspect the calendar month and choose exactly one enabled date cell.
+    // TikTok's wrapper can contain a stale hidden input from an earlier
+    // selected date. What the user sees on the closed picker is authoritative;
+    // fall back to input values ONLY if the visible text contains no date.
     private static async Task<string> ReadTikTokClosedDateAsync(ILocator dateTrigger)
     {
-        return (await dateTrigger.EvaluateAsync<string>(@"element => {
+        var candidates = await ReadTikTokDateCandidatesAsync(dateTrigger);
+        return TikTokSubsequentDatePolicy.PreferVisibleDate(
+            candidates[0], candidates[1], candidates[2]);
+    }
+
+    private static async Task<string[]> ReadTikTokDateCandidatesAsync(ILocator dateTrigger)
+    {
+        return await dateTrigger.EvaluateAsync<string[]>(@"element => {
+            const text = (element.innerText || '').trim();
             const direct = typeof element.value === 'string' ? element.value.trim() : '';
             const input = element.querySelector('input');
-            return direct || (input && input.value ? input.value.trim() : '') ||
-                (element.innerText || element.textContent || '').trim();
-        }")).Trim();
+            const child = input && typeof input.value === 'string'
+                ? input.value.trim() : '';
+            return [text, direct, child];
+        }");
+    }
+
+    private static async Task LogTikTokDateReadbackAsync(
+        ILocator dateTrigger, DateTime target, Action<string>? log)
+    {
+        var values = await ReadTikTokDateCandidatesAsync(dateTrigger);
+        var selected = TikTokSubsequentDatePolicy.PreferVisibleDate(
+            values[0], values[1], values[2]);
+        log?.Invoke("TikTok: later-video date readback requested=" +
+            target.ToString("yyyy-MM-dd") + "; chosen='" + selected +
+            "'; visible text='" + values[0] + "'; element value='" +
+            values[1] + "'; nested input='" + values[2] + "'.");
     }
 
     private static async Task<bool> RecoverTikTokDateForLaterVideoAsync(
@@ -318,6 +343,7 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
 
                 log?.Invoke("TikTok: later-video date recovery " + attempt +
                     "/2; requested=" + wanted + "; currently displayed='" + before + "'.");
+                await LogTikTokDateReadbackAsync(dateTrigger, target, log);
                 await page.Keyboard.PressAsync("Escape");
                 await dateTrigger.ClickAsync(new() { Timeout = 7000 });
                 var calendar = page.Locator(".DatePicker__panel:visible").First;
@@ -607,6 +633,12 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     {
         var target=slot.LocalDateTime;
         var culture=System.Globalization.CultureInfo.GetCultureInfo("en-US");
+        if (laterVideo)
+            log?.Invoke("TikTok: subsequent-video scheduling requested=" +
+                target.ToString("yyyy-MM-dd HH:mm") + "; days ahead=" +
+                (target - DateTime.Now).TotalDays.ToString("F1",
+                    System.Globalization.CultureInfo.InvariantCulture) +
+                ". The first-video schedule code is unchanged.");
         if(target<=DateTime.Now.AddMinutes(20)||target.Minute%5!=0)
         {
             log?.Invoke("TikTok: invalid schedule; must be future and 5-minute interval.");
@@ -698,6 +730,7 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             // TikTok can reset date after the time popup closes. Check only
             // later videos, preserving the original first-video submit path.
             var finalDate = await ReadTikTokClosedDateAsync(dateTrigger);
+            await LogTikTokDateReadbackAsync(dateTrigger, target, log);
             if (!TikTokSubsequentDatePolicy.MatchesDisplayedDate(finalDate, target))
             {
                 log?.Invoke("TikTok: later-video date was reset while selecting time; " +

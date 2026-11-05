@@ -231,6 +231,29 @@ Check(TikTokSubsequentDatePolicy.MonthsToTarget(
     2025, 12, new DateTime(2026, 1, 1)) == 1,
     "Second-video picker handles calendar year transitions safely");
 
+// The later TikTok upload can display a new date while a nested hidden input
+// still contains the previous scheduled video's date. Always trust visible text.
+Check(TikTokSubsequentDatePolicy.PreferVisibleDate(
+    "Nov 6, 2026", null, "Nov 5, 2026") == "Nov 6, 2026",
+    "TikTok subsequent upload prioritizes visible date over stale hidden input");
+Check(TikTokSubsequentDatePolicy.PreferVisibleDate(
+    "Date: Nov 6, 2026\nChoose a date", "", "Nov 5, 2026") == "Nov 6, 2026",
+    "TikTok date readback extracts a complete date from a composite visible label");
+Check(TikTokSubsequentDatePolicy.PreferVisibleDate(
+    "2026-11-06", "2026-11-05", "") == "2026-11-06",
+    "TikTok prioritizes visibly selected ISO date");
+Check(TikTokSubsequentDatePolicy.PreferVisibleDate(
+    "", "2026-11-06", "2026-11-05") == "2026-11-06",
+    "TikTok falls back to direct input only when no date is visible");
+Check(TikTokSubsequentDatePolicy.PreferVisibleDate(
+    "", "", "2026-11-06") == "2026-11-06",
+    "TikTok falls back to nested input only when visible and direct input are empty");
+Check(TikTokSubsequentDatePolicy.MatchesDisplayedDate(
+    TikTokSubsequentDatePolicy.PreferVisibleDate(
+        "Nov 6, 2026", null, "Nov 5, 2026"),
+    new DateTime(2026, 11, 6)),
+    "Second video accepts the date visible in TikTok despite stale internal values");
+
 Check(!new ProjectOptions().EnableCharacterConsistency,
     "New projects keep Character Bible disabled by default");
 
