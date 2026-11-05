@@ -3,9 +3,12 @@ using ZeroVideo.App.Models;
 
 namespace ZeroVideo.App.Services;
 
-/// <summary>Temporary assisted browser upload. Never clicks final Publish/Schedule or bypasses account checks.</summary>
+/// <summary>Verified sequential TikTok Studio upload/scheduling. Never bypasses account checks.</summary>
 public sealed class StudioUploadService(BrowserSession browser)
 {
+    // Reuse the authenticated Edge profile but NOT a previous video's
+    // React upload form. Only close a tab after TikTok explicitly confirmed it.
+    private IPage? _lastConfirmedTikTokPage;
     private static async Task<string> SaveDiagnosticAsync(IPage page, string destination, Action<string>? log)
     {
         try
@@ -144,17 +147,84 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
 
 
 
+    private static async Task<string> ReadTikTokPickerValueAsync(ILocator locator)
+        => (await locator.EvaluateAsync<string>(@"el => {
+            const direct = typeof el.value === 'string' ? el.value.trim() : '';
+            if (direct) return direct;
+            const child = el.querySelector('input');
+            if (child && child.value && child.value.trim()) return child.value.trim();
+            return (el.innerText || el.textContent || '').trim();
+        }")).Trim();
+
+    private static async Task<bool> VerifyTikTokScheduleFieldsAsync(
+        IPage page, DateTime target, Action<string>? log,
+        CancellationToken ct)
+    {
+        // Never rely on the previous video's selected calendar state or on
+        // the result of a click. Read BOTH current visible fields again.
+        var date = page.Locator(".date-picker-input:visible").First;
+        var time = page.Locator(".time-picker-input:visible").First;
+        if (await date.CountAsync() != 1 || await time.CountAsync() != 1 ||
+            !await date.IsVisibleAsync() || !await time.IsVisibleAsync())
+        {
+            log?.Invoke("TikTok: schedule verification FAILED: date/time controls missing.");
+            await SaveTikTokPickerEvidenceAsync(page, "Schedule-Controls-Missing", log);
+            return false;
+        }
+
+        string shownDate = "", shownTime = "";
+        for (var poll = 0; poll < 8; poll++)
+        {
+            ct.ThrowIfCancellationRequested();
+            shownDate = await ReadTikTokPickerValueAsync(date);
+            shownTime = await ReadTikTokPickerValueAsync(time);
+            if (TikTokScheduleVerification.SlotMatches(shownDate, shownTime, target))
+            {
+                log?.Invoke("TikTok: read-back verified for this video: " +
+                    target.ToString("yyyy-MM-dd HH:mm") +
+                    "; Studio date='" + shownDate + "', time='" + shownTime + "'.");
+                return true;
+            }
+            if (poll < 7) await Task.Delay(250, ct);
+        }
+
+        log?.Invoke("TikTok: schedule MISMATCH; requested=" +
+            target.ToString("yyyy-MM-dd HH:mm") + "; Studio date='" +
+            shownDate + "', time='" + shownTime +
+            "'. Final Schedule button will NOT be clicked.");
+        await SaveTikTokPickerEvidenceAsync(page, "Schedule-Readback-Mismatch", log);
+        return false;
+    }
+
     private static async Task<bool> SetTikTokDateStrictAsync(
         IPage page, ILocator dateTrigger, DateTime target,
         Action<string>? log, CancellationToken ct)
     {
         var culture=System.Globalization.CultureInfo.GetCultureInfo("en-US");
-        var shown=(await dateTrigger.InnerTextAsync()).Trim();
-        if(DateTime.TryParse(shown,culture,System.Globalization.DateTimeStyles.None,out var existing)
-            && existing.Date==target.Date) return true;
+        var shown = await ReadTikTokPickerValueAsync(dateTrigger);
+        if (TikTokScheduleVerification.DateMatches(shown, target))
+        {
+            log?.Invoke("TikTok: current form date already equals requested " +
+                target.ToString("yyyy-MM-dd") + " (read-back: '" + shown + "').");
+            return true;
+        }
+
+        log?.Invoke("TikTok: selecting this video's date " +
+            target.ToString("yyyy-MM-dd") + "; form currently displays '" + shown + "'.");
         await dateTrigger.ClickAsync(new(){Timeout=7000});
         var calendar=page.Locator(".DatePicker__panel:visible").First;
-        if(await calendar.CountAsync()==0)
+        try
+        {
+            await calendar.WaitForAsync(new()
+            {
+                State = WaitForSelectorState.Visible, Timeout = 5000
+            });
+        }
+        catch (PlaywrightException)
+        {
+            log?.Invoke("TikTok: calendar did not open within five seconds.");
+        }
+        if(await calendar.CountAsync()==0 || !await calendar.IsVisibleAsync())
         {
             log?.Invoke("TikTok: expected DatePicker__panel unavailable.");
             await SaveTikTokPickerEvidenceAsync(page,"Date-Panel-Missing",log);
@@ -274,14 +344,23 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         }
         await option.ClickAsync(new(){Timeout=7000});
         // No Escape on successful day click; it may revert the selection.
-        await Task.Delay(350,ct);
-        var selected=(await dateTrigger.InnerTextAsync()).Trim();
-        var ok=DateTime.TryParse(selected,culture,
-            System.Globalization.DateTimeStyles.None,out var read)&&read.Date==target.Date;
-        log?.Invoke("TikTok: date requested "+target.ToString("yyyy-MM-dd")+
-            "; displayed "+selected+"; verified="+ok);
-        if(!ok) await SaveTikTokPickerEvidenceAsync(page,"Date-Uncommitted",log);
-        return ok;
+        string selected = "";
+        for (var poll = 0; poll < 16; poll++)
+        {
+            ct.ThrowIfCancellationRequested();
+            selected = await ReadTikTokPickerValueAsync(dateTrigger);
+            if (TikTokScheduleVerification.DateMatches(selected, target))
+            {
+                log?.Invoke("TikTok: date requested " + target.ToString("yyyy-MM-dd") +
+                    "; displayed '" + selected + "'; verified=True.");
+                return true;
+            }
+            await Task.Delay(250, ct);
+        }
+        log?.Invoke("TikTok: date requested " + target.ToString("yyyy-MM-dd") +
+            "; displayed '" + selected + "'; verified=False.");
+        await SaveTikTokPickerEvidenceAsync(page, "Date-Uncommitted", log);
+        return false;
     }
 
     private static async Task<ILocator?> GetTikTokTimePopupAsync(
@@ -433,6 +512,15 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             log?.Invoke("TikTok: date trigger not available.");return false;
         }
         var dateOk=await SetTikTokDateStrictAsync(page,dateTrigger,target,log,ct);
+        if (!dateOk)
+        {
+            // Retry the date control ONLY. TikTok sometimes discards the first
+            // day selection when its React form is still settling.
+            log?.Invoke("TikTok: date did not commit; retrying its own picker once.");
+            await page.Keyboard.PressAsync("Escape");
+            await Task.Delay(500, ct);
+            dateOk = await SetTikTokDateStrictAsync(page,dateTrigger,target,log,ct);
+        }
         if(!dateOk) await SaveTikTokPickerEvidenceAsync(page,"Date-Failed",log);
 
         // Date failure does not authorize any click outside the time field;
@@ -444,9 +532,9 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         var timeOk=false;
         if(await timeTrigger.CountAsync()>0&&await timeTrigger.IsVisibleAsync())
         {
-            var current=(await timeTrigger.InnerTextAsync()).Trim();
+            var current=await ReadTikTokPickerValueAsync(timeTrigger);
             var expected=target.ToString("HH:mm");
-            timeOk=current==expected||current==target.ToString("H:mm");
+            timeOk=TikTokScheduleVerification.TimeMatches(current,target);
             if(!timeOk)
             {
                 await page.Keyboard.PressAsync("Escape");
@@ -466,8 +554,8 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                     await timeTrigger.ClickAsync(new(){Timeout=6000});
                     await Task.Delay(350,ct);
                 }
-                current=(await timeTrigger.InnerTextAsync()).Trim();
-                timeOk=current==expected||current==target.ToString("H:mm");
+                current=await ReadTikTokPickerValueAsync(timeTrigger);
+                timeOk=TikTokScheduleVerification.TimeMatches(current,target);
                 log?.Invoke("TikTok: time requested="+expected+" displayed="+current+
                     " verified="+timeOk);
                 if(!timeOk)await SaveTikTokPickerEvidenceAsync(page,"Time-Failed",log);
@@ -478,8 +566,9 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             log?.Invoke("TikTok: schedule NOT set. date="+dateOk+" time="+timeOk);
             return false;
         }
-        log?.Invoke("TikTok: date AND time fields verified. Final Schedule is manual.");
-        return true;
+        // TikTok may re-render the date after its time picker closes. Read
+        // BOTH fields again, rather than trusting separate earlier checks.
+        return await VerifyTikTokScheduleFieldsAsync(page, target, log, ct);
     }
 
 
@@ -574,9 +663,10 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     // If TikTok doesn't clearly confirm receipt, flag an ambiguous submission
     // and require the user to inspect TikTok Studio before attempting again.
     private static async Task<string> SubmitTikTokOnceAsync(
-        IPage page, bool scheduled, Action<string>? log, CancellationToken ct)
+        IPage page, DateTimeOffset? scheduledAt, Action<string>? log, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        var scheduled = scheduledAt.HasValue;
         if (!Uri.TryCreate(page.Url, UriKind.Absolute, out var address) ||
             !(address.Host.Equals("www.tiktok.com", StringComparison.OrdinalIgnoreCase) ||
               address.Host.Equals("tiktok.com", StringComparison.OrdinalIgnoreCase)) ||
@@ -641,7 +731,18 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             return "TikTok: submission NOT attempted; final Schedule button not verified.";
         }
 
-        log?.Invoke("TikTok: verified date/time and upload readiness; clicking final '" +
+        // This is intentionally the final check BEFORE the only submission
+        // click. If TikTok reverted to the previous video's date during a
+        // React re-render, do not schedule the new video at the wrong date.
+        if (scheduledAt.HasValue &&
+            !await VerifyTikTokScheduleFieldsAsync(
+                page, scheduledAt.Value.LocalDateTime, log, ct))
+        {
+            return "TikTok: schedule date/time changed or was not committed. " +
+                "Final submission NOT attempted. Inspect the second video's date in Studio.";
+        }
+
+        log?.Invoke("TikTok: verified this video's date/time and upload readiness; clicking final '" +
             label + "' button ONCE. Do not retry automatically.");
         // Mark the attempt BEFORE dispatching the click. If browser navigation
         // interrupts Playwright, the outcome is unknown, not safe to retry.
@@ -722,9 +823,27 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         if (new FileInfo(videoPath).Length == 0) throw new IOException("Video is empty.");
         await browser.EnsureStartedAsync(settings);
         var youtube = destination == "YouTube";
-        var page = await browser.GetOrCreatePageAsync(youtube ? "studio.youtube.com" : "tiktok.com");
+        // The second upload must never inherit the first upload's React
+        // scheduling state. Create a fresh TikTok tab in the SAME authenticated
+        // Edge context. Leave uncertain submissions open for manual review.
+        if (!youtube && _lastConfirmedTikTokPage is { IsClosed: false })
+        {
+            try { await _lastConfirmedTikTokPage.CloseAsync(); }
+            catch (PlaywrightException) { /* Already navigated or closed. */ }
+            _lastConfirmedTikTokPage = null;
+        }
+
+        var page = youtube
+            ? await browser.GetOrCreatePageAsync("studio.youtube.com")
+            : await browser.Context.NewPageAsync();
         await page.GotoAsync(youtube ? "https://studio.youtube.com/" : "https://www.tiktok.com/tiktokstudio/upload",
             new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 90000 });
+        if (!youtube)
+        {
+            log?.Invoke("TikTok: opened fresh upload tab in authenticated browser context " +
+                "(previous video's calendar state discarded).");
+            await page.BringToFrontAsync();
+        }
         ct.ThrowIfCancellationRequested();
         log?.Invoke(destination + ": Studio opened at " + page.Url);
         if (youtube)
@@ -864,7 +983,10 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                     !await SetTikTokScheduleAsync(page, scheduledAt.Value, log, ct))
                     return "TikTok: requested date/time NOT verified. Final submission NOT attempted.";
                 // Only reach the final button after all required checks passed.
-                return await SubmitTikTokOnceAsync(page, scheduledAt.HasValue, log, ct);
+                var result = await SubmitTikTokOnceAsync(page, scheduledAt, log, ct);
+                if (result.StartsWith("TikTok: SUBMISSION_CONFIRMED", StringComparison.Ordinal))
+                    _lastConfirmedTikTokPage = page;
+                return result;
             }
             catch (Exception ex) when (ex is PlaywrightException or TimeoutException or InvalidOperationException)
             {

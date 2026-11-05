@@ -753,6 +753,10 @@ public sealed partial class MainViewModel
                 _cts.Token.ThrowIfCancellationRequested();
                 var (item, slot) = prepared[index];
                 PublishStatus = $"TikTok {index + 1}/{prepared.Count}: uploading {item.Title}";
+                Log($"TikTok batch {index + 1}/{prepared.Count}: requested slot for '" +
+                    item.Title + "' = " +
+                    (slot.HasValue ? slot.Value.LocalDateTime.ToString("yyyy-MM-dd HH:mm") :
+                        "Post now") + ". A fresh upload tab and independent schedule verification will be used.");
                 item.TikTokStatus = "Uploading";
                 SavePublishingQueue();
                 string result;
