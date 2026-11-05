@@ -753,10 +753,12 @@ public sealed partial class MainViewModel
                 _cts.Token.ThrowIfCancellationRequested();
                 var (item, slot) = prepared[index];
                 PublishStatus = $"TikTok {index + 1}/{prepared.Count}: uploading {item.Title}";
-                Log($"TikTok batch {index + 1}/{prepared.Count}: requested slot for '" +
-                    item.Title + "' = " +
-                    (slot.HasValue ? slot.Value.LocalDateTime.ToString("yyyy-MM-dd HH:mm") :
-                        "Post now") + ". A fresh upload tab and independent schedule verification will be used.");
+                Log($"TikTok batch {index + 1}/{prepared.Count}: " +
+                    (slot.HasValue
+                        ? "requested schedule " + slot.Value.LocalDateTime.ToString("yyyy-MM-dd HH:mm")
+                        : "Post now") +
+                    (index > 0 ? "; fresh upload tab for subsequent video." :
+                        "; original first-upload path preserved."));
                 item.TikTokStatus = "Uploading";
                 SavePublishingQueue();
                 string result;
@@ -771,7 +773,7 @@ public sealed partial class MainViewModel
                             // another submit or interact with TikTok controls.
                             Application.Current.Dispatcher.Invoke(() =>
                                 PublishStatus = $"TikTok {index + 1}/{prepared.Count}: " + message);
-                        }, _cts.Token);
+                        }, _cts.Token, freshTikTokUploadPage: index > 0);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)

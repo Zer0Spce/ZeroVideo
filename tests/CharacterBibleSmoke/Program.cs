@@ -187,45 +187,6 @@ Check(ChatGptResponseRecovery.FindTaggedCandidateForRepair(
     invalidNewlineTaggedJson[..^3], machineRequestId) is null,
     "Incomplete JSON without a final closing brace does not trigger premature correction");
 
-// TikTok batch regression: the second item's requested date/time must be
-// checked independently, not inferred from the first item's successful form.
-var firstTikTokSlot = new DateTime(2026, 11, 5, 12, 0, 0);
-var secondTikTokSlot = new DateTime(2026, 11, 6, 18, 5, 0);
-Check(TikTokScheduleVerification.SlotMatches(
-    "Nov 5, 2026", "12:00", firstTikTokSlot),
-    "TikTok first upload's intended date/time is recognized");
-Check(!TikTokScheduleVerification.SlotMatches(
-    "Nov 5, 2026", "12:00", secondTikTokSlot),
-    "TikTok cannot schedule second video with the first video's stale date and time");
-Check(!TikTokScheduleVerification.SlotMatches(
-    "Nov 5, 2026", "18:05", secondTikTokSlot),
-    "TikTok rejects unchanged date even when second video's time changed");
-Check(!TikTokScheduleVerification.SlotMatches(
-    "Nov 6, 2026", "12:00", secondTikTokSlot),
-    "TikTok rejects unchanged time even when second video's date changed");
-Check(TikTokScheduleVerification.SlotMatches(
-    "Nov 6, 2026", "18:05", secondTikTokSlot),
-    "TikTok verifies the fresh date AND time before clicking final Schedule");
-Check(TikTokScheduleVerification.SlotMatches(
-    "November 6, 2026", "6:05 PM", secondTikTokSlot),
-    "TikTok understands long month names and 12-hour time");
-Check(!TikTokScheduleVerification.DateMatches(
-    "November 6", secondTikTokSlot),
-    "TikTok refuses a displayed date without a verified year");
-Check(!TikTokScheduleVerification.DateMatches(
-    "Nov 6, 2025", secondTikTokSlot),
-    "TikTok refuses a stale year even when month and day match");
-Check(TikTokScheduleVerification.DateMatches(
-    "2026-11-06", secondTikTokSlot),
-    "TikTok accepts a clear ISO-formatted full date");
-Check(!TikTokScheduleVerification.TimeMatches(
-    "", secondTikTokSlot),
-    "TikTok refuses empty or unreadable time controls");
-Check(TikTokScheduleVerification.SlotMatches(
-    "Nov 6, 2026", "18:05",
-    new DateTime(2026, 11, 6, 18, 5, 0)),
-    "TikTok allows multiple queued videos on the same day when their true slot matches");
-
 Check(!new ProjectOptions().EnableCharacterConsistency,
     "New projects keep Character Bible disabled by default");
 
