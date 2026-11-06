@@ -28,7 +28,7 @@ public sealed class ChatGptBrowserService(BrowserSession browser, AutomationProf
             catch (Exception ex) when (attempt == 1)
             {
                 log?.Invoke($"Outline JSON was invalid ({ex.Message}). Retrying in the same project chat.");
-                prompt += "\nIMPORTANT: Your previous response could not be parsed. Return one complete valid JSON object only. Do not use markdown fences.";
+                prompt += "\nIMPORTANT: Your previous response could not be parsed. Return one complete valid JSON object inside a fenced json code block, with no text outside the block.";
             }
         }
         throw new InvalidDataException("ChatGPT did not return a valid outline after two attempts.");
@@ -56,7 +56,7 @@ public sealed class ChatGptBrowserService(BrowserSession browser, AutomationProf
             catch (Exception ex) when (attempt == 1)
             {
                 log?.Invoke($"Chapter {metadata.Number} JSON was invalid ({ex.Message}). Retrying in the same project chat.");
-                prompt += "\nIMPORTANT: Your previous response could not be parsed. Return one complete valid JSON object only, with all scenes included and no markdown fences.";
+                prompt += "\nIMPORTANT: Your previous response could not be parsed. Return one complete valid JSON object inside a fenced json code block, with all scenes included and no text outside the block.";
             }
         }
         throw new InvalidDataException($"ChatGPT did not return valid JSON for chapter {metadata.Number} after two attempts.");
@@ -130,6 +130,85 @@ QUALITY REQUIREMENTS:
         return destination;
     }
 
+    /// <summary>
+    /// Generate ONE isolated, clearly labeled AI-approximate portrait in the
+    /// user's existing ChatGPT automation chat. Capture the actual original
+    /// PNG via the same proven image saver used for scene images; no webpage
+    /// screenshot, silent web photo scraping or fabricated celebrity photo.
+    /// </summary>
+    public async Task<string> GenerateIdentityReferenceAsync(
+        VideoProject project, string personName, int variation,
+        ZeroVideoSettings settings, Action<string>? log,
+        CancellationToken ct, string? outputDirectory = null)
+    {
+        if (string.IsNullOrWhiteSpace(personName) || personName.Length > 90 ||
+            variation is < 1 or > 3)
+            throw new ArgumentOutOfRangeException(nameof(personName));
+        var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
+        var page = await GetProjectPageAsync(project, settings, log, ct);
+        var baseline = await CaptureImageBaselineAsync(
+            page, profile.ChatGpt.GeneratedImages);
+        var styleRules = VisualStylePresets.GetPrompt(project.Style);
+        var angle = variation % 2 == 1
+            ? "straight-on frontal head-and-shoulders, neutral expression"
+            : "natural three-quarter head-and-shoulders, neutral expression";
+        var prompt = $"""
+Create EXACTLY ONE brand-new SQUARE 1:1 portrait illustration.
+SUBJECT: {personName}
+PROJECT VISUAL STYLE: {project.Style}
+STYLE RULES: {styleRules}
+COMPOSITION: {angle}.
+
+This is a local ZeroVideo AI-generated identity *guide*, NOT a verified
+historical photograph or a claim that the face exactly matches the subject.
+Depict a respectful, recognizable stylized likeness of the named real adult
+public figure using your available visual knowledge. Do not invent props or
+historical facts. If likeness is uncertain, preserve the broad defining
+features without pretending you verified a real photograph.
+
+IMPORTANT: isolate a SINGLE face, hair and upper shoulders. Center them
+with adequate headroom, high-detail eyes, face, hairline and facial hair.
+Use a plain mid-gray backdrop with no scenery, no full-body action, no
+dramatic colored rim lights, no text, no logos, no captions, no composites.
+One portrait only, not two poses in the same frame, not a screenshot.
+The portrait must retain the selected comic/digital-illustration style.
+This is a REFERENCE ONLY and must not copy a film still or specific
+copyrighted photograph.
+""";
+        await ChatGptComposer.EnterPromptAsync(
+            page, profile.ChatGpt.PromptInputs, prompt, ct);
+        await ChatGptComposer.SendAsync(
+            page, profile.ChatGpt.SendButtons, ct);
+        log?.Invoke($"ChatGPT: generating {personName} approximate identity guide "+
+            $"{variation} ({project.Style}); waiting for original image...");
+        var folder = outputDirectory ??
+            RealPersonIdentityService.ReferenceFolder(project);
+        Directory.CreateDirectory(folder);
+        var slug = System.Text.RegularExpressions.Regex.Replace(
+            personName.Trim(), "[^A-Za-z0-9_-]", "_");
+        var destination = Path.Combine(folder,
+            "AI-APPROXIMATE-" + slug + "-v" + variation + "-" +
+            Guid.NewGuid().ToString("N")[..8] + ".png");
+        try
+        {
+            await WaitForGeneratedImageAndSaveAsync(
+                page, profile.ChatGpt.GeneratedImages,
+                profile.ChatGpt.StopButtons, baseline, destination,
+                $"Identity reference {personName} #{variation}", log, ct);
+            RememberConversation(project,page);
+            log?.Invoke("ChatGPT: saved actual full-resolution generated "+
+                "portrait: "+destination);
+            return destination;
+        }
+        catch
+        {
+            // A failed/partial image must never be added to a profile.
+            try { if (File.Exists(destination)) File.Delete(destination); }
+            catch (IOException) { }
+            throw;
+        }
+    }
+
     public Task<string> GenerateVideoIdeasAsync(string niche, int count, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
         // Use the same JSON capture pipeline as working outline generation.
@@ -137,7 +216,7 @@ QUALITY REQUIREMENTS:
         var prompt = $"Generate exactly {count} distinct, factual and compelling video ideas for the niche: {niche}. " +
             "Use curiosity-driven YouTube/TikTok titles and specific opening hooks that deliver on the title. " +
             "Avoid repetition, invented facts, misleading clickbait and guaranteed-view claims. " +
-            "IMPORTANT: Return ONLY one complete valid JSON object, without markdown or commentary. " +
+            "IMPORTANT: Return one complete valid JSON object inside a fenced json code block, with no other commentary. " +
             "Required JSON schema: " +
             """ 
             {"response_type":"zerovideo_ideas_v1","niche":"the requested niche","ideas":[{"title":"Specific video title","hook":"Compelling opening hook"}]}
@@ -154,10 +233,21 @@ QUALITY REQUIREMENTS:
         var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
         var page = await GetProjectPageAsync(project, settings, log, ct);
 
+        var requestId = "ZV_" + Guid.NewGuid().ToString("N");
+        var markedPrompt = prompt + ChatGptResponseRecovery.BuildStrictJsonInstruction(requestId);
         log?.Invoke("ChatGPT: waiting for the live composer...");
-        await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, prompt, ct);
+        await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, markedPrompt, ct);
 
-        var baseline = await TryReadLatestResponseAsync(page, profile.ChatGpt.AssistantMessages) ?? "";
+        // Record the assistant output BEFORE sending, so old chapter JSON
+        // cannot be mistaken for the result of this request.
+        var baselineCandidates = await ReadAssistantCandidatesAsync(page);
+        var baselineCount = baselineCandidates.Length;
+        var baseline = baselineCandidates.Select(ChatGptResponseRecovery.ExtractLastValidJsonObject)
+            .LastOrDefault(value => value is not null) ?? "";
+        var baselineAssistant = baselineCandidates.LastOrDefault() ?? "";
+        // The latest ChatGPT UI sometimes has ZERO assistant-role/markdown
+        // nodes. Its visible main text still contains the actual reply.
+        var baselineMainText = await ReadMainConversationTextAsync(page);
         await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
         log?.Invoke("ChatGPT: prompt sent; waiting for the finished response...");
 
@@ -165,13 +255,64 @@ QUALITY REQUIREMENTS:
             page,
             profile.ChatGpt.AssistantMessages,
             profile.ChatGpt.StopButtons,
+            baselineCount,
             baseline,
+            baselineAssistant,
+            baselineMainText,
+            markedPrompt,
+            requestId,
             log,
             ct);
 
         RememberConversation(project, page);
+        var taggedJson = ChatGptResponseRecovery.FindJsonForRequest(response, requestId);
+        if (taggedJson is not null)
+        {
+            await SaveVerifiedJsonAsync(project, requestId, taggedJson, log, ct);
+            log?.Invoke("ChatGPT: exact request ID and JSON end marker verified.");
+            response = taggedJson;
+        }
+        else
+        {
+            // Compatibility: do not discard a valid untagged reply. Existing
+            // outline/chapter validators still decide whether it is usable.
+            var plainJson = ChatGptResponseRecovery.ExtractLastValidJsonObject(response);
+            if (plainJson is not null)
+            {
+                await SaveVerifiedJsonAsync(project, requestId, plainJson, log, ct);
+                response = plainJson;
+                log?.Invoke("ChatGPT: strict markers missing; validated JSON recovered.");
+            }
+        }
         log?.Invoke("ChatGPT: finished response detected.");
         return response;
+    }
+
+    private static async Task SaveVerifiedJsonAsync(
+        VideoProject project, string requestId, string json,
+        Action<string>? log, CancellationToken ct)
+    {
+        try
+        {
+            using var _ = JsonDocument.Parse(json);
+            var root = !string.IsNullOrWhiteSpace(project.ProjectDirectory)
+                ? project.ProjectDirectory
+                : AppPaths.DataDirectory;
+            var folder = Path.Combine(root, "chatgpt-json");
+            Directory.CreateDirectory(folder);
+            var destination = Path.Combine(folder, requestId + ".json");
+            var temporary = destination + ".tmp";
+            await File.WriteAllTextAsync(temporary, json, ct);
+            File.Move(temporary, destination, overwrite: true);
+            log?.Invoke("ChatGPT: verified JSON saved to " + destination);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            // A response is already valid; a disk permission failure must
+            // not cause generation to repeat or lose the completed chapter.
+            log?.Invoke("ChatGPT: could not save optional JSON copy: " + ex.Message);
+        }
     }
 
     private async Task<IPage> GetProjectPageAsync(VideoProject project, ZeroVideoSettings settings, Action<string>? log, CancellationToken ct)
@@ -388,112 +529,403 @@ QUALITY REQUIREMENTS:
         IPage page,
         IEnumerable<string> configuredResponseSelectors,
         IEnumerable<string> stopSelectors,
+        int baselineCount,
         string baseline,
+        string baselineAssistant,
+        string baselineMainText,
+        string sentPrompt,
+        string requestId,
         Action<string>? log,
         CancellationToken ct)
     {
-        string last = "";
-        var stableSamples = 0;
-        var sawGeneration = false;
+        string lastJson = "", lastRaw = "";
+        var reportedPlainTextFallback = false;
+        int stableJson = 0, stableRaw = 0;
         var started = DateTime.UtcNow;
+        var lastHeartbeat = started;
+        var lastVisibleMainText = "";
+        var unchangedMainSince = started;
 
         while (!ct.IsCancellationRequested && DateTime.UtcNow - started < TimeSpan.FromMinutes(12))
         {
-            var isGenerating = await AnyVisibleAsync(page, stopSelectors);
-            sawGeneration |= isGenerating;
-
-            var current = await TryReadLatestResponseAsync(page, configuredResponseSelectors);
-            if (!string.IsNullOrWhiteSpace(current) &&
-                !string.Equals(current, baseline, StringComparison.Ordinal))
+            ct.ThrowIfCancellationRequested();
+            var generating = await AnyVisibleAsync(page, stopSelectors);
+            var candidates = await ReadAssistantCandidatesAsync(page);
+            var visibleMain = await ReadMainConversationTextAsync(page);
+            var codeBlock = await ReadLatestJsonCodeBlockAsync(page, requestId);
+            if (!string.Equals(visibleMain, lastVisibleMainText, StringComparison.Ordinal))
             {
-                if (string.Equals(current, last, StringComparison.Ordinal))
-                    stableSamples++;
-                else
+                lastVisibleMainText = visibleMain;
+                unchangedMainSince = DateTime.UtcNow;
+            }
+            // Prefer the actual visible Copy-code-block contents. The request
+            // ID is unique, so older code blocks cannot be mistaken for it.
+            var freshJson = ChatGptResponseRecovery.FindJsonInCodeBlock(
+                codeBlock, requestId)
+                ?? ChatGptResponseRecovery.FindJsonForRequest(visibleMain, requestId);
+            if (freshJson is null)
+                freshJson = ChatGptResponseRecovery.FindFreshJson(
+                    candidates, baselineCount, baselineAssistant, baseline);
+
+            // A new ChatGPT renderer can expose no identifiable assistant
+            // nodes at all. The attached diagnostics confirm main.innerText
+            // contains the completed JSON even when ALL selectors match zero.
+            // Validate against BOTH the pre-send page and the user's prompt.
+            if (freshJson is not null &&
+                (baselineMainText.Contains(freshJson, StringComparison.Ordinal) ||
+                 sentPrompt.Contains(freshJson, StringComparison.Ordinal)))
+                freshJson = null;
+            if (freshJson is null)
+            {
+                freshJson = ChatGptResponseRecovery.FindFreshJsonInMainText(
+                    visibleMain, baselineMainText, sentPrompt);
+                if (freshJson is not null && !reportedPlainTextFallback)
                 {
-                    last = current;
-                    stableSamples = 0;
+                    reportedPlainTextFallback = true;
+                    log?.Invoke("ChatGPT: response found in visible conversation text; assistant DOM selectors unavailable.");
                 }
-
-                if (!isGenerating && stableSamples >= 1)
-                    return current;
             }
 
-            if (sawGeneration && !isGenerating && !string.IsNullOrWhiteSpace(last))
+            if (freshJson is not null)
             {
-                await Task.Delay(1000, ct);
-                var finalRead = await TryReadLatestResponseAsync(page, configuredResponseSelectors);
-                if (!string.IsNullOrWhiteSpace(finalRead) &&
-                    !string.Equals(finalRead, baseline, StringComparison.Ordinal))
-                    return finalRead;
+                stableJson = string.Equals(freshJson, lastJson, StringComparison.Ordinal)
+                    ? stableJson + 1 : 0;
+                lastJson = freshJson;
+                if (ChatGptResponseRecovery.CanAcceptStableJson(
+                    generating,
+                    stableJson,
+                    DateTime.UtcNow - unchangedMainSince,
+                    (!string.IsNullOrWhiteSpace(codeBlock) &&
+                        string.Equals(ChatGptResponseRecovery.FindJsonInCodeBlock(
+                            codeBlock, requestId), freshJson, StringComparison.Ordinal)) ||
+                    (!string.IsNullOrWhiteSpace(visibleMain) &&
+                        visibleMain.Contains(freshJson, StringComparison.Ordinal))))
+                {
+                    if (generating)
+                        log?.Invoke("ChatGPT: Stop control still visible, but completed JSON and full conversation text remained unchanged for 12 seconds; recovering reply.");
+                    else
+                        log?.Invoke("ChatGPT: newest assistant JSON detected and stable.");
+                    return freshJson;
+                }
+            }
+            else { lastJson = ""; stableJson = 0; }
+
+            // If ChatGPT rendered the full code block but the JSON inside
+            // does NOT parse, do not spin for 12 minutes. Pass the exact
+            // malformed block to the existing one-time JSON correction step.
+            var malformedResponse = ChatGptResponseRecovery.HasEndMarker(codeBlock, requestId)
+                ? codeBlock
+                : ChatGptResponseRecovery.FindTaggedCandidateForRepair(visibleMain, requestId);
+            if (!generating && freshJson is null &&
+                !string.IsNullOrWhiteSpace(malformedResponse) &&
+                DateTime.UtcNow - unchangedMainSince >= TimeSpan.FromSeconds(8))
+            {
+                log?.Invoke("ChatGPT: completed tagged JSON is not parseable; requesting one JSON correction instead of waiting for timeout.");
+                await SaveChatGptResponseDiagnosticAsync(page,
+                    "Invalid-Tagged-Json", malformedResponse, log);
+                return malformedResponse;
             }
 
+            // If ChatGPT produced non-JSON prose, hand that NEW response to
+            // existing validation + retry, not an earlier completed chapter.
+            if (!generating && DateTime.UtcNow - started > TimeSpan.FromSeconds(30))
+            {
+                var freshText = candidates.Length > baselineCount
+                    ? string.Join("\n", candidates.Skip(baselineCount))
+                    : candidates.Length > 0 &&
+                      !string.Equals(candidates[^1], baselineAssistant, StringComparison.Ordinal)
+                        ? candidates[^1] : null;
+
+                if (!string.IsNullOrWhiteSpace(freshText))
+                {
+                    stableRaw = string.Equals(freshText, lastRaw, StringComparison.Ordinal)
+                        ? stableRaw + 1 : 0;
+                    lastRaw = freshText;
+                    if (stableRaw >= 10)
+                    {
+                        var json = ChatGptResponseRecovery.ExtractLastValidJsonObject(freshText);
+                        if (json is not null &&
+                            (candidates.Length > baselineCount || json != baseline))
+                        {
+                            log?.Invoke("ChatGPT: completed answer recovered from fallback text.");
+                            return json;
+                        }
+
+                        await SaveChatGptResponseDiagnosticAsync(page,
+                            "Completed-NonJson", freshText, log);
+                        log?.Invoke("ChatGPT: response is not valid JSON; requesting repair.");
+                        return freshText;
+                    }
+                }
+            }
+
+            if (DateTime.UtcNow - lastHeartbeat >= TimeSpan.FromSeconds(20))
+            {
+                lastHeartbeat = DateTime.UtcNow;
+                log?.Invoke($"ChatGPT: awaiting response — visible characters: {visibleMain.Length}, " +
+                    $"JSON code block: {!string.IsNullOrWhiteSpace(codeBlock)}, " +
+                    $"complete new JSON: {freshJson is not null}, Stop control visible: {generating}, " +
+                    $"stable JSON polls: {stableJson}.");
+            }
             await Task.Delay(1200, ct);
         }
 
-        if (!string.IsNullOrWhiteSpace(last) &&
-            !string.Equals(last, baseline, StringComparison.Ordinal))
+        ct.ThrowIfCancellationRequested();
+        var finalCandidates = await ReadAssistantCandidatesAsync(page);
+        var finalCodeBlock = await ReadLatestJsonCodeBlockAsync(page, requestId);
+        var recovered = ChatGptResponseRecovery.FindJsonInCodeBlock(finalCodeBlock, requestId)
+            ?? ChatGptResponseRecovery.FindJsonForRequest(
+            await ReadMainConversationTextAsync(page), requestId)
+            ?? ChatGptResponseRecovery.FindFreshJson(
+                finalCandidates, baselineCount, baselineAssistant, baseline);
+        if (recovered is null ||
+            baselineMainText.Contains(recovered, StringComparison.Ordinal) ||
+            sentPrompt.Contains(recovered, StringComparison.Ordinal))
         {
-            log?.Invoke("ChatGPT: completion controls were inconclusive, but a new valid JSON response was visible; using it.");
-            return last;
+            recovered = ChatGptResponseRecovery.FindFreshJsonInMainText(
+                await ReadMainConversationTextAsync(page), baselineMainText, sentPrompt);
+        }
+        if (recovered is not null && !await AnyVisibleAsync(page, stopSelectors))
+        {
+            log?.Invoke("ChatGPT: finished JSON recovered on final check.");
+            return recovered;
         }
 
-        throw new TimeoutException("ChatGPT finished in the browser, but ZeroVideo could not find a new valid JSON response in the visible conversation.");
+        await SaveChatGptResponseDiagnosticAsync(page,
+            "Json-NotFound", finalCandidates.LastOrDefault() ?? "", log);
+        throw new TimeoutException(
+            "ZeroVideo could not locate a NEW completed ChatGPT assistant reply. " +
+            "Diagnostics were saved in %LOCALAPPDATA%\\ZeroVideo\\diagnostics. " +
+            "Your saved conversation and completed video work are preserved; " +
+            "retry with Resume Unfinished once the browser is ready.");
     }
 
-    private static async Task<string?> TryReadLatestResponseAsync(IPage page, IEnumerable<string> configuredSelectors)
+    // The ChatGPT page can have new assistant markdown without stable role
+    // attributes. Read all visible output blocks in DOM order, excluding
+    // user turns. Never favor an older JSON just because it matches a selector.
+    /// <summary>
+    /// Copy from the rendered ChatGPT JSON code block itself, rather than
+    /// scraping the full conversation or assuming assistant role attributes.
+    /// The assistant's unique request ID identifies only its current block.
+    /// </summary>
+    private static async Task<string?> ReadLatestJsonCodeBlockAsync(IPage page, string requestId)
     {
-        var fallbacks = new[]
-        {
-            "[data-message-author-role='assistant']",
-            "main article[data-testid^='conversation-turn-']",
-            "main [data-testid^='conversation-turn-']",
-            "main .markdown",
-            "main [class*='markdown']"
-        };
-
-        foreach (var selector in configuredSelectors.Concat(fallbacks).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct())
+        const string script = """
+            (requestId) => {
+              const root=document.querySelector('main') ||
+                document.querySelector('[role="main"]');
+              if(!root)return null;
+              const selectors=[
+                'pre code','pre','[data-language="json"] code',
+                '[data-testid*="code-block"] code','[data-testid*="codeblock"] code'
+              ];
+              let matches=[];
+              for(const selector of selectors) {
+                try {
+                  for(const n of root.querySelectorAll(selector)) {
+                    const text=(n.innerText||n.textContent||'').trim();
+                    if(text.includes(requestId) &&
+                       text.includes('"zerovideo_request_id"'))
+                      matches.push({n,text});
+                  }
+                } catch {}
+              }
+              matches.sort((a,b)=>{
+                const v=a.n.compareDocumentPosition(b.n);
+                return v&Node.DOCUMENT_POSITION_FOLLOWING?-1:
+                  v&Node.DOCUMENT_POSITION_PRECEDING?1:0;
+              });
+              return matches.length?matches[matches.length-1].text:null;
+            }
+            """;
+        foreach (var frame in page.Frames)
         {
             try
             {
-                var items = page.Locator(selector);
-                var count = await items.CountAsync();
-                for (var i = count - 1; i >= 0; i--)
-                {
-                    var item = items.Nth(i);
-                    if (!await item.IsVisibleAsync()) continue;
-
-                    try
-                    {
-                        if (await item.Locator("[data-message-author-role='user']").CountAsync() > 0 &&
-                            await item.Locator("[data-message-author-role='assistant']").CountAsync() == 0)
-                            continue;
-                    }
-                    catch { }
-
-                    var text = (await item.InnerTextAsync()).Trim();
-                    var json = TryExtractLastValidJsonObject(text);
-                    if (json is not null) return json;
-                }
+                if (frame != page.MainFrame &&
+                    !frame.Url.Contains("chatgpt.com", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var text = await frame.EvaluateAsync<string?>(script, requestId);
+                if (!string.IsNullOrWhiteSpace(text)) return text;
             }
-            catch
-            {
-                // ChatGPT can replace conversation turns while streaming; always re-query.
-            }
+            catch (PlaywrightException) { /* Re-read after streaming rerender. */ }
         }
+        return null;
+    }
 
+    private static async Task<string> ReadMainConversationTextAsync(IPage page)
+    {
+        foreach (var frame in page.Frames)
+        {
+            try
+            {
+                if (frame != page.MainFrame &&
+                    !frame.Url.Contains("chatgpt.com", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                // Do NOT depend on role, article, markdown or test-id markers:
+                // several recent UI deployments have none of them.
+                var text = await frame.EvaluateAsync<string?>(@"
+() => {
+  const main=document.querySelector('main') || document.querySelector('[role=""main""]');
+  return main ? (main.innerText || main.textContent || '') : '';
+}");
+                if (!string.IsNullOrWhiteSpace(text)) return text;
+            }
+            catch (PlaywrightException) { /* ChatGPT may replace the tree mid-read. */ }
+        }
+        return "";
+    }
+
+    private static async Task<string[]> ReadAssistantCandidatesAsync(IPage page)
+    {
+        const string script = """
+            () => {
+              const main=document.querySelector('main') ||
+                document.querySelector('[role="main"]');
+              if(!main)return [];
+              const assistant='[data-message-author-role="assistant"],' +
+                '[data-testid="conversation-turn-assistant"],' +
+                '[data-testid*="assistant-response"],[data-role="assistant"]';
+              const blocks='.markdown,[class*="markdown"],pre';
+              const user=n=>!!n.closest(
+                '[data-message-author-role="user"],[data-role="user"],' +
+                '[data-testid*="conversation-turn-user"]');
+              const visible=n=>{const st=getComputedStyle(n);
+                return st.display!=='none' && st.visibility!=='hidden';};
+              const roots=[...main.querySelectorAll(assistant)].filter(n=>!user(n));
+              const records=[],seen=new Set();
+              const add=n=>{
+                if(seen.has(n)||user(n)||!visible(n))return;
+                const text=(n.innerText||n.textContent||'').trim();
+                if(!text)return; seen.add(n);
+                records.push({n,text:text.slice(0,500000)});
+              };
+              roots.forEach(n=>{
+                if(!roots.some(p=>p!==n&&p.contains(n)))add(n);
+              });
+              for(const n of main.querySelectorAll(blocks)){
+                if(roots.some(p=>p.contains(n)))continue;
+                if(n.matches('pre')&&n.closest('.markdown,[class*="markdown"]'))continue;
+                if(n.matches('.markdown,[class*="markdown"]') &&
+                   n.parentElement?.closest('.markdown,[class*="markdown"]'))continue;
+                add(n);
+              }
+              for(const n of main.querySelectorAll('[data-testid^="conversation-turn-"]')){
+                if(user(n)||roots.some(p=>p.contains(n)))continue;
+                const id=(n.getAttribute('data-testid')||'').toLowerCase();
+                if(id.includes('assistant')||n.querySelector(blocks))add(n);
+              }
+              records.sort((a,b)=>{
+                const pos=a.n.compareDocumentPosition(b.n);
+                return pos&Node.DOCUMENT_POSITION_FOLLOWING?-1:
+                  pos&Node.DOCUMENT_POSITION_PRECEDING?1:0;
+              });
+              // Deduplicate outer assistant turn + nested content nodes.
+              return records.filter((e,i)=>
+                !records.some((p,j)=>i!==j&&p.n.contains(e.n))
+              ).map(e=>e.text);
+            }
+            """;
+        foreach (var frame in page.Frames)
+        {
+            try
+            {
+                if (frame != page.MainFrame &&
+                    !frame.Url.Contains("chatgpt.com", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var values = await frame.EvaluateAsync<string[]?>(script);
+                if (values is { Length: > 0 }) return values;
+            }
+            catch (PlaywrightException) { /* retry after DOM rerender */ }
+        }
+        return [];
+    }
+
+    private static async Task SaveChatGptResponseDiagnosticAsync(
+        IPage page, string reason, string assistantText, Action<string>? log)
+    {
         try
         {
-            var main = page.Locator("main").First;
-            if (await main.CountAsync() > 0 && await main.IsVisibleAsync())
+            Directory.CreateDirectory(AppPaths.DiagnosticsDirectory);
+            var stamp=DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            var file=Path.Combine(AppPaths.DiagnosticsDirectory,
+                "ChatGPT-JSON-"+reason+"-"+stamp+".txt");
+            // Local-only evidence for an actual DOM detection failure.
+            // Does not upload the browser page or private conversations.
+            var summary=await page.EvaluateAsync<string>(@"
+() => {
+  const selectors=[
+    'main','[data-message-author-role=""user""]',
+    '[data-message-author-role=""assistant""]',
+    '[data-testid^=""conversation-turn-""]',
+    '[data-testid*=""assistant""]','main .markdown',
+    'main pre','main code','main article',
+    '[data-testid=""send-button""]',
+    'button[aria-label*=""Stop""]'
+  ];
+  const lines=['Page title: '+document.title,
+    'Document state: '+document.readyState,
+    'URL path: '+location.pathname,
+    'Visible main text length: '+(document.querySelector('main')?.innerText||'').length,
+    'Focused element: '+(document.activeElement?.tagName||'(none)')];
+  for(const selector of selectors) {
+    try {
+      const items=[...document.querySelectorAll(selector)];
+      lines.push(selector+': '+items.length);
+    }catch(e){lines.push(selector+': selector failed '+e.message)}
+  }
+  const turns=[...document.querySelectorAll(
+    '[data-testid^=""conversation-turn-""], [data-message-author-role]')];
+  lines.push('Last conversation nodes (role, testid, length, preview):');
+  for(const e of turns.slice(-12)) {
+    const txt=(e.innerText||e.textContent||'').trim();
+    lines.push('role='+(e.getAttribute('data-message-author-role')||'?')+
+      ' testid='+(e.getAttribute('data-testid')||'?')+
+      ' length='+txt.length+' preview='+txt.slice(0,200).replace(/\s+/g,' '));
+  }
+  const main=document.querySelector('main');
+  if(main) {
+    const end=(main.innerText||'').slice(-1800);
+    lines.push('Last 1800 visible main characters (may include prompt): '+end);
+  }
+  return lines.join('\n');
+}");
+            var detail="URL: "+page.Url+Environment.NewLine+
+                "Assistant response length: "+assistantText.Length+Environment.NewLine+
+                "Frames: "+string.Join(" | ",page.Frames.Select(fr=>fr.Url))+Environment.NewLine+
+                "DOM snapshot:"+Environment.NewLine+summary+Environment.NewLine+
+                "Captured assistant text (first 20000 chars):"+Environment.NewLine+
+                assistantText[..Math.Min(assistantText.Length,20000)];
+            await File.WriteAllTextAsync(file,detail);
+            // Keep a local full-text snapshot, not only the last 1800 chars.
+            // This allows debugging future UI changes where role selectors fail.
+            var fullMainText = await ReadMainConversationTextAsync(page);
+            if (!string.IsNullOrWhiteSpace(fullMainText))
             {
-                var text = await main.InnerTextAsync();
-                var json = TryExtractLastValidJsonObject(text);
-                if (json is not null) return json;
+                var fullTextPath = Path.Combine(AppPaths.DiagnosticsDirectory,
+                    "ChatGPT-JSON-"+reason+"-"+stamp+".main.txt");
+                await File.WriteAllTextAsync(fullTextPath,
+                    fullMainText[..Math.Min(fullMainText.Length, 500000)]);
+                log?.Invoke("ChatGPT: full visible conversation diagnostic: "+fullTextPath);
+            }
+            log?.Invoke("ChatGPT: local DOM diagnostic saved: "+file);
+            try
+            {
+                var screenshot=Path.Combine(AppPaths.DiagnosticsDirectory,
+                    "ChatGPT-JSON-"+reason+"-"+stamp+".png");
+                await page.ScreenshotAsync(new(){Path=screenshot,FullPage=false,Timeout=10000});
+                log?.Invoke("ChatGPT: diagnostic screenshot: "+screenshot);
+            }
+            catch (PlaywrightException ex)
+            {
+                log?.Invoke("ChatGPT: screenshot diagnostic unavailable: "+ex.Message);
             }
         }
-        catch { }
-
-        return null;
+        catch (Exception ex)
+        {
+            log?.Invoke("ChatGPT: could not save response diagnostic: "+ex.Message);
+        }
     }
 
     private static async Task<bool> AnyVisibleAsync(IPage page, IEnumerable<string> selectors)
