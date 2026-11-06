@@ -153,12 +153,32 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         var shown=(await dateTrigger.InnerTextAsync()).Trim();
         if(DateTime.TryParse(shown,culture,System.Globalization.DateTimeStyles.None,out var existing)
             && existing.Date==target.Date) return true;
-        await dateTrigger.ClickAsync(new(){Timeout=7000});
         var calendar=page.Locator(".DatePicker__panel:visible").First;
+        // TikTok mounts the calendar asynchronously in React. The previous
+        // immediate CountAsync check raced this render: at 08:21:40 it opened
+        // successfully, but repeated later attempts reported Panel-Missing.
+        // Never click twice if the popup is already open (that toggles it shut).
         if(await calendar.CountAsync()==0)
+            await dateTrigger.ClickAsync(new(){Timeout=7000});
+        try
         {
-            log?.Invoke("TikTok: expected DatePicker__panel unavailable.");
+            await calendar.WaitForAsync(new()
+            {
+                State=WaitForSelectorState.Visible, Timeout=7000
+            });
+            log?.Invoke("TikTok: date calendar rendered after opening the trigger.");
+        }
+        catch(PlaywrightException ex)
+        {
+            log?.Invoke("TikTok: date calendar did not render within 7 seconds " +
+                "after the date-trigger click: " + ex.Message.Split((char)10)[0]);
+        }
+        if(await calendar.CountAsync()==0 || !await calendar.IsVisibleAsync())
+        {
+            log?.Invoke("TikTok: DatePicker__panel still unavailable; not selecting a day.");
             await SaveTikTokPickerEvidenceAsync(page,"Date-Panel-Missing",log);
+            await SaveTikTokLaterDateContextAsync(page,
+                "Initial-Date-Panel-Missing",log);
             await page.Keyboard.PressAsync("Escape");
             return false;
         }
@@ -784,6 +804,9 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     {
         var target=slot.LocalDateTime;
         var culture=System.Globalization.CultureInfo.GetCultureInfo("en-US");
+        log?.Invoke("TikTok: scheduler path=" +
+            (laterVideo ? "subsequent-batch-video" : "first-or-standalone-video") +
+            "; requested=" + target.ToString("yyyy-MM-dd HH:mm") + ".");
         if (laterVideo)
             log?.Invoke("TikTok: subsequent-video scheduling requested=" +
                 target.ToString("yyyy-MM-dd HH:mm") + "; days ahead=" +
@@ -839,10 +862,15 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             // Keep the first video's known-working date path untouched.
             dateOk = await SetTikTokDateStrictAsync(page,dateTrigger,target,log,ct);
         }
-        if(!dateOk) await SaveTikTokPickerEvidenceAsync(page,"Date-Failed",log);
+        if(!dateOk)
+        {
+            await SaveTikTokPickerEvidenceAsync(page,"Date-Failed",log);
+            log?.Invoke("TikTok: date FAILED — time picker left untouched; " +
+                "final Schedule/Post will NOT be clicked.");
+            return false;
+        }
 
-        // Date failure does not authorize any click outside the time field;
-        // time is tested independently but inside its own verified popup.
+        // The date was verified. Only now touch the dedicated time control.
         var timeTrigger=page.Locator(".time-picker-input:visible").First;
         if(await timeTrigger.CountAsync()==0)
             timeTrigger=page.GetByText(new System.Text.RegularExpressions.Regex(
