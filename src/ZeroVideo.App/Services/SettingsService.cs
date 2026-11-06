@@ -30,6 +30,24 @@ public sealed class SettingsService
             settings.AutomationProfilePath = AppPaths.BundledAutomationProfile;
         }
 
+        // Legacy animation selection is no longer supported. Do not delete
+        // old model files here: cleanup is an explicit confirmed user action.
+        if (settings.AiImageAnimationEngine is "Wan2.2 5B (ComfyUI)" or
+            "FramePack (Local)" || string.IsNullOrWhiteSpace(settings.AiImageAnimationEngine))
+            settings.AiImageAnimationEngine = "Camera Motion (FFmpeg)";
+        if (settings.AiImageAnimationEngine is not ("Off" or
+            "Camera Motion (FFmpeg)" or "LivePortrait (Local)"))
+            settings.AiImageAnimationEngine = "Camera Motion (FFmpeg)";
+
+        // Migrate missing/unrecognized values without changing legacy
+        // projects' 8GB-friendly 1024x576 ComfyUI default.
+        if (!LocalImageResolutionService.IsValidPreset(
+                settings.LocalImageResolutionPreset))
+            settings.LocalImageResolutionPreset = LocalImageResolutionService.Fast;
+        if (!LocalImageResolutionService.IsValidMode(
+                settings.LocalImageResolutionMode))
+            settings.LocalImageResolutionMode = LocalImageResolutionService.Direct;
+
         settings.FfmpegPath = ResolveTool(settings.FfmpegPath, "ffmpeg.exe");
         settings.FfprobePath = ResolveTool(settings.FfprobePath, "ffprobe.exe");
         return settings;
