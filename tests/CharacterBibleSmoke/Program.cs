@@ -296,6 +296,40 @@ Check(!TikTokScheduleDateGuard.IsDateControl(
     insideEditor: false, insideFinalSubmission: true),
     "TikTok never clicks the final publish button as a calendar control");
 
+// YouTube Shorts public metadata limits: title <=100 characters INCLUDING
+// hashtags, description <=5000 UTF-8 bytes; Shorts <=3 minutes vertical.
+Check(YouTubeShortsPolicy.ValidateMetadata(
+    new string('A',100),"Short about a mystery #Shorts") is null,
+    "YouTube Shorts accepts exactly 100 title characters");
+Check(YouTubeShortsPolicy.ValidateMetadata(
+    new string('A',101),"description") is not null,
+    "YouTube Shorts rejects 101 title characters instead of truncating");
+Check(YouTubeShortsPolicy.ValidateMetadata(
+    new string('A',92)+" #Shorts","description") is null,
+    "YouTube Shorts counts hashtags inside the title's 100-character budget");
+Check(YouTubeShortsPolicy.ValidateMetadata(
+    new string('A',93)+" #Shorts","description") is not null,
+    "YouTube Shorts rejects a title whose hashtag pushes it to 101");
+Check(YouTubeShortsPolicy.ValidateMetadata(
+    "Valid title","") is null,
+    "YouTube Shorts description may be empty when title is valid");
+Check(YouTubeShortsPolicy.ValidateMetadata(
+    "Bad <title>","description") is not null,
+    "YouTube Shorts metadata rejects invalid bracket characters");
+Check(YouTubeShortsPolicy.ValidateMetadata(
+    "Valid title",new string('A',5001)) is not null,
+    "YouTube Shorts rejects descriptions over 5000 UTF-8 bytes");
+Check(YouTubeShortsPolicy.IsShort(180,1080,1920),
+    "YouTube Shorts accepts 9:16 vertical exactly 3 minutes");
+Check(YouTubeShortsPolicy.IsShort(59.9,1080,1080),
+    "YouTube Shorts accepts square videos");
+Check(!YouTubeShortsPolicy.IsShort(181,1080,1920),
+    "YouTube Shorts rejects videos longer than 3 minutes");
+Check(!YouTubeShortsPolicy.IsShort(60,1920,1080),
+    "YouTube Shorts rejects 16:9 regular landscape videos");
+Check(!YouTubeShortsPolicy.IsShort(0,1080,1920),
+    "YouTube Shorts rejects unreadable or zero video duration");
+
 Check(!new ProjectOptions().EnableCharacterConsistency,
     "New projects keep Character Bible disabled by default");
 

@@ -78,7 +78,12 @@ public sealed class PublishQueueItem : ObservableObject
     public string TikTokCheckpointNote { get; set; } = "";
     public DateTimeOffset? YouTubeCheckpointUpdated { get; set; }
     public DateTimeOffset? TikTokCheckpointUpdated { get; set; }
-    public string YouTubeStatus { get; set; } = "Ready";
+    private string _youTubeStatus = "Ready";
+    public string YouTubeStatus
+    {
+        get => _youTubeStatus;
+        set { if (Set(ref _youTubeStatus,value)) Raise(nameof(Display)); }
+    }
     private string _tikTokStatus = "Ready";
     public string TikTokStatus { get => _tikTokStatus; set => Set(ref _tikTokStatus, value); }
     public void RaiseSeoChanged()
@@ -169,6 +174,13 @@ public sealed partial class MainViewModel
     public ICommand OpenYouTubeStudioCommand { get; private set; } = null!;
     public ICommand OpenTikTokStudioCommand { get; private set; } = null!;
     public ICommand BrowserPublishCommand { get; private set; } = null!;
+    public ICommand PublishYouTubeShortsCommand { get; private set; } = null!;
+    private bool _youTubeNotMadeForKidsConfirmed;
+    public bool YouTubeNotMadeForKidsConfirmed
+    {
+        get => _youTubeNotMadeForKidsConfirmed;
+        set => Set(ref _youTubeNotMadeForKidsConfirmed,value);
+    }
     public ICommand SavePublishCheckpointCommand { get; private set; } = null!;
     public ICommand ResumePublishCheckpointCommand { get; private set; } = null!;
     public ObservableCollection<string> PublishCheckpointStages { get; } =
@@ -207,7 +219,7 @@ public sealed partial class MainViewModel
     }
     private string _publishDestination = "TikTok";
     public string PublishDestination { get => _publishDestination; set { if (Set(ref _publishDestination, value)) LoadSelectedCheckpoint(); } }
-    public ObservableCollection<string> PublishDestinations { get; } = ["TikTok"];
+    public ObservableCollection<string> PublishDestinations { get; } = ["TikTok", "YouTube"];
     public ICommand RemovePublishQueueCommand { get; private set; } = null!;
     public ICommand SelectAllPublishQueueCommand { get; private set; } = null!;
     public ICommand ClearPublishQueueSelectionCommand { get; private set; } = null!;
@@ -611,10 +623,19 @@ public sealed partial class MainViewModel
         });
 
         BrowserPublishCommand = new AsyncCommand(()=>RunManagedJobAsync("TikTok batch publishing",RunTikTokBatchAsync,publishing:true));
-
-        // YouTube publishing is disabled until explicitly re-enabled.
-        OpenYouTubeStudioCommand = new RelayCommand(() =>
-            PublishStatus = "YouTube publishing is disabled; metadata is saved for later.");
+        PublishYouTubeShortsCommand = new AsyncCommand(() =>
+            RunManagedJobAsync("YouTube Shorts batch publishing",
+                RunYouTubeShortsBatchAsync,publishing:true));
+        OpenYouTubeStudioCommand = new AsyncCommand(async () =>
+        {
+            try
+            {
+                await _browser.OpenManualAsync(Settings,"https://studio.youtube.com/");
+                PublishStatus = "YouTube Studio opened in ZeroVideo's dedicated Edge profile. " +
+                    "Sign in and check your channel before using Shorts batch publishing.";
+            }
+            catch(Exception ex) { PublishStatus="YouTube Studio: "+ex.Message; }
+        });
         OpenTikTokStudioCommand = new AsyncCommand(async () =>
         {
             try { await _browser.OpenManualAsync(Settings, "https://www.tiktok.com/tiktokstudio/upload"); PublishStatus = "TikTok Studio opened. Sign in and review cover and scheduling controls."; }
@@ -667,7 +688,8 @@ public sealed partial class MainViewModel
             QueueCompletedVideoFromBrowse(dialog.FileName);
         });
         PublishYouTubeCommand = new RelayCommand(() =>
-            PublishStatus = "YouTube publishing is disabled for now.");
+            PublishStatus = "Use Publish Checked to YouTube Shorts on the Publishing tab. " +
+                "Only eligible vertical/square MP4s up to 3 minutes will be submitted.");
 
         PublishTikTokCommand = new AsyncCommand(async () =>
         {
@@ -682,6 +704,178 @@ public sealed partial class MainViewModel
             catch (Exception ex) { PublishStatus = "TikTok: " + ex.Message; }
             finally { PublishConsent = false; }
         });
+    }
+
+    // YouTube Shorts uses an independent batch action and upload service.
+    // TikTok's proven browser click/scheduling logic is never modified.
+    private async Task RunYouTubeShortsBatchAsync()
+    {
+        if(IsBatchPublishing)return;
+        var chosen=PublishingQueue.Where(x=>x.IsChecked).ToList();
+        if(chosen.Count==0)
+        {
+            PublishStatus="Check one or more Shorts in the finished-video queue.";
+            return;
+        }
+        if(!PublishConsent)
+        {
+            PublishStatus="Check the rights/publishing authorization box first.";
+            return;
+        }
+        if(!YouTubeNotMadeForKidsConfirmed)
+        {
+            PublishStatus="For this Shorts test, explicitly confirm all selected videos " +
+                "are NOT made for kids. Do not select this if any video targets children.";
+            return;
+        }
+
+        var prepared=new List<(PublishQueueItem Item,DateTimeOffset? Slot)>();
+        foreach(var item in chosen)
+        {
+            if(!File.Exists(item.VideoPath))
+            {
+                PublishStatus="Missing YouTube Shorts video: "+item.Title;
+                return;
+            }
+            var status=item.YouTubeStatus ?? "";
+            if(status.Equals("Published",StringComparison.OrdinalIgnoreCase) ||
+               status.Equals("Scheduled",StringComparison.OrdinalIgnoreCase) ||
+               status.StartsWith("Submission attempted",StringComparison.OrdinalIgnoreCase))
+            {
+                PublishStatus="YouTube video was already submitted or may have been submitted. " +
+                    "Verify it in Studio before retrying: "+item.Title;
+                return;
+            }
+            var title=string.IsNullOrWhiteSpace(item.YouTubeTitle)
+                ? item.Title : item.YouTubeTitle;
+            var error=YouTubeShortsPolicy.ValidateMetadata(title,item.SeoDescription);
+            if(error is not null)
+            {
+                PublishStatus="YouTube Shorts '"+item.Title+"': "+error;
+                return;
+            }
+            var videoError=await YouTubeShortsPolicy.ValidateVideoAsync(
+                item.VideoPath,Settings.FfprobePath,_cts.Token);
+            if(videoError is not null)
+            {
+                PublishStatus="YouTube Shorts '"+item.Title+"': "+videoError;
+                return;
+            }
+            DateTimeOffset? slot=null;
+            if(item.IsScheduled)
+            {
+                if(!DateTime.TryParseExact(item.ScheduleDateText.Trim(),
+                    "yyyy-MM-dd HH:mm",CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeLocal,out var local) ||
+                   local<=DateTime.Now.AddMinutes(20))
+                {
+                    PublishStatus="Invalid YouTube Shorts schedule for '"+item.Title+
+                        "'. Use future local YYYY-MM-DD HH:MM.";
+                    return;
+                }
+                slot=new DateTimeOffset(local);
+            }
+            prepared.Add((item,slot));
+        }
+
+        var preview=string.Join(Environment.NewLine,
+            prepared.Take(8).Select((x,i) =>
+                $"{i+1}. {x.Item.SeoTitle} — "+
+                (x.Slot.HasValue
+                    ? x.Slot.Value.LocalDateTime.ToString("yyyy-MM-dd HH:mm")
+                    : "Publish now")));
+        var rest=prepared.Count>8
+            ? Environment.NewLine+$"...and {prepared.Count-8} more." : "";
+        var consent="PUBLISH "+prepared.Count+" YOUTUBE SHORT(S) SEQUENTIALLY?"+
+            Environment.NewLine+Environment.NewLine+preview+rest+
+            Environment.NewLine+Environment.NewLine+
+            "Only square/vertical MP4s at most 3 minutes are eligible. "+
+            "You confirm all selected content is not made for kids, that you "+
+            "own the necessary rights, and that the titles (including hashtags), "+
+            "descriptions, privacy and schedules are correct. ZeroVideo will "+
+            "click each final YouTube button ONCE only after reading back the "+
+            "required fields. An uncertain upload outcome STOPS the batch; "+
+            "never retry without checking YouTube Studio.";
+        if(MessageBox.Show(consent,"Confirm YouTube Shorts publishing",
+            MessageBoxButton.YesNo,MessageBoxImage.Warning)!=MessageBoxResult.Yes)
+            return;
+
+        var service=new YouTubeShortsPublishService(_browser);
+        IsBatchPublishing=true;
+        var completed=0;
+        try
+        {
+            for(var i=0;i<prepared.Count;i++)
+            {
+                _cts.Token.ThrowIfCancellationRequested();
+                var (item,slot)=prepared[i];
+                PublishStatus=$"YouTube Shorts {i+1}/{prepared.Count}: "+
+                    "uploading "+item.SeoTitle;
+                item.YouTubeStatus="Uploading";
+                SavePublishingQueue();
+                var title=string.IsNullOrWhiteSpace(item.YouTubeTitle)
+                    ? item.Title : item.YouTubeTitle;
+                string result;
+                try
+                {
+                    result=await service.PublishAsync(Settings,item.VideoPath,
+                        title,item.SeoDescription,
+                        YouTubeNotMadeForKidsConfirmed,slot,message=>
+                        {
+                            Log(message);
+                            Application.Current.Dispatcher.Invoke(() =>
+                                PublishStatus=$"YouTube Shorts {i+1}/{prepared.Count}: "+
+                                    message);
+                        },_cts.Token);
+                }
+                catch(OperationCanceledException){throw;}
+                catch(Exception ex)
+                {
+                    item.YouTubeStatus="Needs review";
+                    SavePublishingQueue();
+                    PublishStatus="YouTube Shorts batch stopped: "+ex.Message;
+                    Log(PublishStatus);
+                    return;
+                }
+
+                if(result.StartsWith("YouTube: SUBMISSION_CONFIRMED",
+                    StringComparison.Ordinal))
+                {
+                    item.YouTubeStatus=slot.HasValue?"Scheduled":"Published";
+                    item.IsChecked=false;
+                    completed++;
+                    SavePublishingQueue();
+                    Log($"YouTube Shorts {i+1}/{prepared.Count}: "+
+                        item.YouTubeStatus+"; no duplicate submission.");
+                }
+                else
+                {
+                    item.YouTubeStatus=result.StartsWith(
+                        "YouTube: SUBMISSION_ATTEMPTED",StringComparison.Ordinal)
+                        ? "Submission attempted - check Studio"
+                        : "Needs review";
+                    SavePublishingQueue();
+                    PublishStatus=$"YouTube Shorts batch stopped at {i+1}/"+
+                        $"{prepared.Count}: {result}";
+                    Log(PublishStatus);
+                    return;
+                }
+            }
+            PublishStatus=$"YouTube Shorts batch completed: {completed}/"+
+                $"{prepared.Count} confirmed. Review YouTube Studio Content.";
+        }
+        catch(OperationCanceledException)
+        {
+            PublishStatus=$"YouTube Shorts batch canceled after {completed}/"+
+                $"{prepared.Count} confirmed. Check Studio before retrying.";
+        }
+        finally
+        {
+            IsBatchPublishing=false;
+            PublishConsent=false;
+            YouTubeNotMadeForKidsConfirmed=false;
+            SavePublishingQueue();
+        }
     }
 
     // TikTok-only sequential publishing. The snapshot is taken once in visual
