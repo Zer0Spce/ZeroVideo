@@ -330,6 +330,28 @@ Check(!YouTubeShortsPolicy.IsShort(60,1920,1080),
 Check(!YouTubeShortsPolicy.IsShort(0,1080,1920),
     "YouTube Shorts rejects unreadable or zero video duration");
 
+// Regression for Nov 6: user was ALREADY signed into YouTube Studio and
+// could SEE Create at the top-right, but a role-only lookup reported that the
+// Create menu was missing. Studio uses a custom ytcp-button#create-icon.
+Check(YouTubeStudioControlPolicy.CreateSelectors[0] ==
+      "ytcp-button#create-icon",
+    "YouTube Shorts prioritizes real Studio Create custom-element ID");
+Check(YouTubeStudioControlPolicy.IsSafeCreateSelector("#create-icon") &&
+      YouTubeStudioControlPolicy.IsSafeCreateSelector("ytcp-button#create-icon"),
+    "YouTube Create control supports component ID regardless of HTML button role");
+Check(YouTubeStudioControlPolicy.IsSafeCreateSelector(
+      "ytcp-button[aria-label='Create']"),
+    "YouTube Create control has accessible-label fallback");
+Check(!YouTubeStudioControlPolicy.IsSafeCreateSelector("span[data-text]") &&
+      !YouTubeStudioControlPolicy.IsSafeCreateSelector("[contenteditable=true]"),
+    "YouTube Create control must never match arbitrary page/caption text");
+Check(YouTubeStudioControlPolicy.UploadMenuSelectors[0] ==
+      "tp-yt-paper-item[test-id='upload-beta']",
+    "YouTube Upload videos menu uses the stable Studio test attribute");
+Check(!YouTubeStudioControlPolicy.IsSafeUploadMenuSelector(
+      "button:has-text('Upload videos')"),
+    "YouTube upload step avoids unrelated text-driven page buttons");
+
 Check(!new ProjectOptions().EnableCharacterConsistency,
     "New projects keep Character Bible disabled by default");
 

@@ -16,6 +16,7 @@ public sealed class YouTubeShortsPublishService(BrowserSession browser)
     private static readonly Regex UploadName = new(
         @"^\s*Upload videos\s*$", RegexOptions.IgnoreCase);
 
+
     private static async Task<string> SaveEvidenceAsync(
         IPage page, string step, Action<string>? log)
     {
@@ -39,6 +40,151 @@ public sealed class YouTubeShortsPublishService(BrowserSession browser)
                 ex.Message.Split((char)10)[0]);
             return "(unavailable)";
         }
+    }
+
+    private static async Task SaveCreateControlsDiagnosticAsync(
+        IPage page, string stage, Action<string>? log)
+    {
+        try
+        {
+            const string script = """
+                () => {
+                  const selectors = [
+                    'ytcp-button#create-icon', '#create-icon',
+                    "ytcp-button[aria-label='Create']",
+                    "button[aria-label='Create']",
+                    "[aria-label='Create']",
+                    "tp-yt-paper-item[test-id='upload-beta']",
+                    "tp-yt-paper-item[aria-label='Upload videos']"
+                  ];
+                  const entries=[];
+                  for(const sel of selectors) {
+                    for(const el of [...document.querySelectorAll(sel)].slice(0,4)){
+                      const rect=el.getBoundingClientRect();
+                      entries.push({selector:sel, tag:el.tagName,
+                        text:(el.innerText||'').trim().slice(0,100),
+                        visible:rect.width>0&&rect.height>0,
+                        html:el.outerHTML.slice(0,850)});
+                    }
+                  }
+                  return JSON.stringify({
+                    pathname:location.pathname,readyState:document.readyState,
+                    controls:entries
+                  },null,2);
+                }
+                """;
+            var content=await page.EvaluateAsync<string>(script);
+            var dir=Path.Combine(Environment.GetFolderPath(
+                Environment.SpecialFolder.LocalApplicationData),
+                "ZeroVideo","PublishingDiagnostics");
+            Directory.CreateDirectory(dir);
+            var file=Path.Combine(dir,
+                "YouTube-Shorts-Create-Controls-"+stage+"-"+
+                DateTime.Now.ToString("yyyyMMdd-HHmmss-fff")+".txt");
+            await File.WriteAllTextAsync(file,content);
+            log?.Invoke("YouTube Shorts: scoped Create-control diagnostic: "+file);
+        }
+        catch(Exception ex) when(ex is PlaywrightException or IOException or
+                                   UnauthorizedAccessException)
+        {
+            log?.Invoke("YouTube Shorts: Create-control diagnostic unavailable: "+
+                ex.Message.Split((char)10)[0]);
+        }
+    }
+
+    private static async Task<bool> OpenCreateMenuAsync(
+        IPage page, Action<string>? log, CancellationToken ct)
+    {
+        // Navigation's DOMContentLoaded event precedes the Polymer dashboard
+        // controls being mounted. Poll for the actual button for up to 25s.
+        for(var poll=0;poll<100;poll++)
+        {
+            ct.ThrowIfCancellationRequested();
+            foreach(var css in YouTubeStudioControlPolicy.CreateSelectors)
+            {
+                var button=page.Locator(css);
+                if(await button.CountAsync()!=1 ||
+                   !await button.IsVisibleAsync() ||
+                   !await button.IsEnabledAsync())
+                    continue;
+                log?.Invoke("YouTube Shorts: Create button found using '"+css+"'.");
+                try
+                {
+                    await button.ClickAsync(new(){Timeout=8000});
+                    return true;
+                }
+                catch(PlaywrightException ex)
+                {
+                    log?.Invoke("YouTube Shorts: Create rerendered before click: "+
+                        ex.Message.Split((char)10)[0]);
+                    // Do not report the user as signed out; try again only
+                    // while still safely before any upload or submission.
+                }
+            }
+
+            // Older YouTube Studio renderings expose the button by ARIA,
+            // but this is strictly a fallback, never the only lookup.
+            var role=page.GetByRole(AriaRole.Button,
+                new(){NameRegex=CreateName});
+            if(await role.CountAsync()==1 && await role.IsVisibleAsync() &&
+               await role.IsEnabledAsync())
+            {
+                try
+                {
+                    await role.ClickAsync(new(){Timeout=8000});
+                    log?.Invoke("YouTube Shorts: Create menu opened by ARIA fallback.");
+                    return true;
+                }
+                catch(PlaywrightException) { /* Dashboard is rerendering. */ }
+            }
+            if(poll<99)await Task.Delay(250,ct);
+        }
+        await SaveCreateControlsDiagnosticAsync(page,"Not-Found",log);
+        await SaveEvidenceAsync(page,"Create-Missing",log);
+        log?.Invoke("YouTube Shorts: Create control not detected after 25s. " +
+            "Studio sign-in is NOT assumed to be missing.");
+        return false;
+    }
+
+    private static async Task<bool> OpenUploadVideosAsync(
+        IPage page, Action<string>? log, CancellationToken ct)
+    {
+        // The custom Studio menu item has a stable test-id. Avoid clicking
+        // text somewhere unrelated to the opened Create menu.
+        for(var poll=0;poll<60;poll++)
+        {
+            ct.ThrowIfCancellationRequested();
+            foreach(var css in YouTubeStudioControlPolicy.UploadMenuSelectors)
+            {
+                var button=page.Locator(css);
+                if(await button.CountAsync()!=1 ||
+                   !await button.IsVisibleAsync() ||
+                   !await button.IsEnabledAsync())
+                    continue;
+                log?.Invoke("YouTube Shorts: Upload videos found via '"+css+"'.");
+                try
+                {
+                    await button.ClickAsync(new(){Timeout=8000});
+                    return true;
+                }
+                catch(PlaywrightException)
+                {
+                    log?.Invoke("YouTube Shorts: Upload menu rerendered; retrying.");
+                }
+            }
+            var menuItem=page.GetByRole(AriaRole.Menuitem,
+                new(){NameRegex=UploadName});
+            if(await menuItem.CountAsync()==1 && await menuItem.IsVisibleAsync())
+            {
+                await menuItem.ClickAsync(new(){Timeout=8000});
+                log?.Invoke("YouTube Shorts: Upload videos selected via menu item.");
+                return true;
+            }
+            if(poll<59)await Task.Delay(250,ct);
+        }
+        await SaveCreateControlsDiagnosticAsync(page,"Upload-Menu-Missing",log);
+        await SaveEvidenceAsync(page,"Upload-Menu-Missing",log);
+        return false;
     }
 
     private static async Task<bool> AttachVideoAsync(
@@ -377,20 +523,14 @@ public sealed class YouTubeShortsPublishService(BrowserSession browser)
                    StringComparison.OrdinalIgnoreCase))
                 return "YouTube: NOT_SUBMITTED; sign in to YouTube Studio in the dedicated Edge profile first.";
 
-            var create=page.GetByRole(AriaRole.Button,new(){NameRegex=CreateName});
-            if(await create.CountAsync()<1)
-                create=page.GetByText("Create",new(){Exact=true});
-            if(await create.CountAsync()!=1 || !await create.First.IsVisibleAsync())
-            {
-                await SaveEvidenceAsync(page,"Create-Missing",log);
-                return "YouTube: NOT_SUBMITTED; Create menu not visible. Sign in to Studio first.";
-            }
-            await create.First.ClickAsync(new(){Timeout=10000});
-
-            var upload=page.GetByText("Upload videos",new(){Exact=true}).First;
-            await upload.WaitForAsync(new(){
-                State=WaitForSelectorState.Visible,Timeout=15000});
-            await upload.ClickAsync(new(){Timeout=10000});
+            log?.Invoke("YouTube Shorts: Studio dashboard loaded at "+
+                page.Url+". Looking for the Create toolbar control.");
+            if(!await OpenCreateMenuAsync(page,log,ct))
+                return "YouTube: NOT_SUBMITTED; Studio Create control not found. " +
+                    "You may already be signed in. See Create-control diagnostics.";
+            if(!await OpenUploadVideosAsync(page,log,ct))
+                return "YouTube: NOT_SUBMITTED; Create opened, but Upload videos " +
+                    "menu item was not found. See the Upload-Menu diagnostic.";
             var dialog=page.Locator("ytcp-uploads-dialog");
             await dialog.WaitForAsync(new(){
                 State=WaitForSelectorState.Visible,Timeout=20000});
