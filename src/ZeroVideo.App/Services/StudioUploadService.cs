@@ -147,9 +147,9 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     // Capture ONLY the date-trigger neighborhood, not an entire page with
     // user/session data. The earlier Date-Panel-Missing files logged only
     // popup HTML and could not explain why the trigger did not open it.
-    private static async Task SaveSubsequentTikTokDateTriggerAsync(
+    private static async Task SaveTikTokDateTriggerDiagnosticAsync(
         IPage page, ILocator dateTrigger, string stage, DateTime target,
-        Action<string>? log)
+        Action<string>? log, bool subsequent)
     {
         try
         {
@@ -187,11 +187,12 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                 Environment.SpecialFolder.LocalApplicationData),
                 "ZeroVideo","PublishingDiagnostics");
             Directory.CreateDirectory(dir);
-            var path=Path.Combine(dir,"TikTok-Subsequent-Date-"+stage+"-"+
+            var path=Path.Combine(dir,(subsequent ? "TikTok-Subsequent-Date-" :
+                "TikTok-First-Date-")+stage+"-"+
                 DateTime.Now.ToString("yyyyMMdd-HHmmss-fff")+".txt");
             await File.WriteAllTextAsync(path,
                 "Requested date: "+target.ToString("yyyy-MM-dd")+"\n"+data);
-            log?.Invoke("TikTok: second-video date trigger diagnostic saved: "+path);
+            log?.Invoke("TikTok: date trigger diagnostic saved: "+path);
         }
         catch(Exception ex)
         {
@@ -201,39 +202,125 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     }
 
 
+    private static async Task<ILocator?> FindTikTokDateTriggerWrapperAsync(
+        IPage page, ILocator dateTrigger, Action<string>? log)
+    {
+        const string script = """
+            element => {
+              document.querySelectorAll('[data-zerovideo-date-wrapper]')
+                .forEach(n=>n.removeAttribute('data-zerovideo-date-wrapper'));
+              const visible=n=>{
+                const r=n.getBoundingClientRect(),css=getComputedStyle(n);
+                return r.width>30 && r.height>8 && css.visibility!=='hidden' &&
+                  css.display!=='none';
+              };
+              // The text node can be a non-clickable child of a calendar
+              // control. Search only its own ancestors, never other inputs.
+              let p=element;
+              for(let d=0;p && d<=5;p=p.parentElement,d++){
+                if(!visible(p))continue;
+                const cls=typeof p.className==='string'?p.className.toLowerCase():'';
+                const role=(p.getAttribute('role')||'').toLowerCase();
+                const label=(p.getAttribute('aria-label')||'').toLowerCase();
+                const attr=(p.getAttribute('data-testid')||'').toLowerCase();
+                const dateHint=/date|calendar/.test(cls+' '+label+' '+attr);
+                const interactive=p.matches('button,input,[role="button"],[role="combobox"],[tabindex]');
+                // Never climb into generic layout / publishing controls.
+                if(!dateHint || (!interactive && !/picker|input/.test(cls)))continue;
+                const bounds=p.getBoundingClientRect();
+                if(bounds.width>650 || bounds.height>150)continue;
+                // The fallback must target a date widget, not privacy,
+                // copyright checks or the final upload button.
+                p.setAttribute('data-zerovideo-date-wrapper','true');
+                return {found:true,tag:p.tagName,className:cls.slice(0,100)};
+              }
+              return {found:false};
+            }
+            """;
+        try
+        {
+            var result=await dateTrigger.EvaluateAsync<System.Text.Json.JsonElement>(script);
+            if(!result.GetProperty("found").GetBoolean())
+            {
+                log?.Invoke("TikTok: date-specific clickable wrapper not found; no unsafe fallback click.");
+                return null;
+            }
+            log?.Invoke("TikTok: retrying only date wrapper " +
+                result.GetProperty("tag").GetString() + " class='" +
+                result.GetProperty("className").GetString() + "'.");
+            var candidate=page.Locator("[data-zerovideo-date-wrapper='true']");
+            return await candidate.CountAsync()==1 && await candidate.IsVisibleAsync()
+                ? candidate : null;
+        }
+        catch(PlaywrightException ex)
+        {
+            log?.Invoke("TikTok: date wrapper changed during recovery: " +
+                ex.Message.Split((char)10)[0]);
+            return null;
+        }
+    }
+
     private static async Task<bool> SetTikTokDateStrictAsync(
         IPage page, ILocator dateTrigger, DateTime target,
         Action<string>? log, CancellationToken ct, bool subsequent = false)
     {
         var culture=System.Globalization.CultureInfo.GetCultureInfo("en-US");
-        if (subsequent)
-            await SaveSubsequentTikTokDateTriggerAsync(
-                page,dateTrigger,"Before-Click",target,log);
+        await SaveTikTokDateTriggerDiagnosticAsync(
+            page,dateTrigger,"Before-Click",target,log,subsequent);
         var shown=(await dateTrigger.InnerTextAsync()).Trim();
         if(DateTime.TryParse(shown,culture,System.Globalization.DateTimeStyles.None,out var existing)
             && existing.Date==target.Date) return true;
-        await dateTrigger.ClickAsync(new(){Timeout=7000});
+
         var calendar=page.Locator(".DatePicker__panel:visible").First;
-        if (subsequent)
-        {
-            // The first video retains the exact old selector and timing.
-            // On subsequent uploads, allow React to mount the popup.
-            try
-            {
-                await calendar.WaitForAsync(new(){
-                    State=WaitForSelectorState.Visible,Timeout=7000});
-            }
-            catch(PlaywrightException ex)
-            {
-                log?.Invoke("TikTok: video 2+ date click did not open calendar: "+
-                    ex.Message.Split((char)10)[0]);
-                await SaveSubsequentTikTokDateTriggerAsync(
-                    page,dateTrigger,"Panel-Not-Opened",target,log);
-            }
-        }
+        // Do not toggle a calendar that already opened during a React render.
         if(await calendar.CountAsync()==0)
         {
-            log?.Invoke("TikTok: expected DatePicker__panel unavailable.");
+            log?.Invoke("TikTok: opening date picker for " +
+                (subsequent ? "video 2+" : "first/standalone video") +
+                "; displayed='" + shown + "', target=" + target.ToString("yyyy-MM-dd"));
+            await dateTrigger.ClickAsync(new(){Timeout=7000});
+        }
+        var panelOpen=false;
+        try
+        {
+            await calendar.WaitForAsync(new(){
+                State=WaitForSelectorState.Visible,Timeout=7000});
+            panelOpen=true;
+        }
+        catch(PlaywrightException ex)
+        {
+            log?.Invoke("TikTok: date trigger was clicked but calendar did not open: " +
+                ex.Message.Split((char)10)[0]);
+            await SaveTikTokDateTriggerDiagnosticAsync(
+                page,dateTrigger,"Panel-Not-Opened",target,log,subsequent);
+        }
+
+        if(!panelOpen)
+        {
+            // The date text may be a child of the actual clickable control.
+            // Only retry through a clearly date-specific, interactive ancestor.
+            var wrapper=await FindTikTokDateTriggerWrapperAsync(page,dateTrigger,log);
+            if(wrapper is not null)
+            {
+                await wrapper.ClickAsync(new(){Timeout=7000});
+                try
+                {
+                    await calendar.WaitForAsync(new(){
+                        State=WaitForSelectorState.Visible,Timeout=5000});
+                    panelOpen=true;
+                    log?.Invoke("TikTok: date calendar opened through date-control wrapper.");
+                }
+                catch(PlaywrightException)
+                {
+                    await SaveTikTokDateTriggerDiagnosticAsync(
+                        page,dateTrigger,"Wrapper-Not-Opened",target,log,subsequent);
+                }
+            }
+        }
+        if(!panelOpen || await calendar.CountAsync()==0)
+        {
+            log?.Invoke("TikTok: date calendar still unavailable — stopping scheduling " +
+                "before time or final submit, without selecting an unverified date.");
             await SaveTikTokPickerEvidenceAsync(page,"Date-Panel-Missing",log);
             await page.Keyboard.PressAsync("Escape");
             return false;
@@ -518,12 +605,9 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         if(!dateOk)
         {
             await SaveTikTokPickerEvidenceAsync(page,"Date-Failed",log);
-            if (subsequent)
-            {
-                log?.Invoke("TikTok: later video date never committed; " +
-                    "stopping before time selection and final Schedule.");
-                return false;
-            }
+            log?.Invoke("TikTok: date never committed; stopping before time selection " +
+                "and final Schedule for ALL videos.");
+            return false;
         }
 
         // Date failure does not authorize any click outside the time field;
