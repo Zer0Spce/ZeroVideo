@@ -352,6 +352,28 @@ Check(!YouTubeStudioControlPolicy.IsSafeUploadMenuSelector(
       "button:has-text('Upload videos')"),
     "YouTube upload step avoids unrelated text-driven page buttons");
 
+// Regression from the signed-in Studio screenshot: Upload videos was visible
+// but waiting on the hidden custom-element host timed out. File selection
+// must accept the actual video input even through nested shadow roots.
+Check(YouTubeStudioControlPolicy.IsEligibleUploadInput(
+    "video/*",insideUploadDialog:false,disabled:false),
+    "YouTube Shorts permits a video-only file input");
+Check(YouTubeStudioControlPolicy.IsEligibleUploadInput(
+    ".mp4",insideUploadDialog:false,disabled:false),
+    "YouTube Shorts permits an MP4-only picker");
+Check(YouTubeStudioControlPolicy.IsEligibleUploadInput(
+    "",insideUploadDialog:true,disabled:false),
+    "YouTube Shorts permits an upload-dialog file input without accept attribute");
+Check(!YouTubeStudioControlPolicy.IsEligibleUploadInput(
+    "image/*",insideUploadDialog:true,disabled:false),
+    "YouTube Shorts never attaches MP4 to a thumbnail image picker");
+Check(!YouTubeStudioControlPolicy.IsEligibleUploadInput(
+    "",insideUploadDialog:false,disabled:false),
+    "YouTube Shorts avoids unrelated generic file inputs elsewhere on the page");
+Check(!YouTubeStudioControlPolicy.IsEligibleUploadInput(
+    "video/mp4",insideUploadDialog:true,disabled:true),
+    "YouTube Shorts refuses disabled file inputs");
+
 Check(!new ProjectOptions().EnableCharacterConsistency,
     "New projects keep Character Bible disabled by default");
 

@@ -187,64 +187,224 @@ public sealed class YouTubeShortsPublishService(BrowserSession browser)
         return false;
     }
 
+    /// <summary>
+    /// YouTube's "Upload videos" window may be fully visible while its
+    /// ytcp-uploads-dialog custom-element host still reports hidden.
+    /// Wait for what the user actually sees: the Select files prompt.
+    /// </summary>
+    private static async Task<bool> WaitForUploadPickerAsync(
+        IPage page, Action<string>? log, CancellationToken ct)
+    {
+        var selectFiles=page.GetByText(new Regex(
+            @"^\s*Select files\s*$",RegexOptions.IgnoreCase));
+        var dropHint=page.GetByText(new Regex(
+            @"Drag and drop video files to upload",RegexOptions.IgnoreCase));
+        for(var poll=0;poll<80;poll++)
+        {
+            ct.ThrowIfCancellationRequested();
+            foreach(var locator in new[]{selectFiles,dropHint})
+            {
+                var count=Math.Min(await locator.CountAsync(),8);
+                for(var i=0;i<count;i++)
+                {
+                    if(await locator.Nth(i).IsVisibleAsync())
+                    {
+                        log?.Invoke("YouTube Shorts: Upload videos picker is visibly " +
+                            "open (Select files / drag-and-drop prompt detected).");
+                        return true;
+                    }
+                }
+            }
+            if(poll<79) await Task.Delay(250,ct);
+        }
+        log?.Invoke("YouTube Shorts: upload picker did not show Select files " +
+            "after 20 seconds, even though the Create menu was opened.");
+        await SaveUploadStageDiagnosticAsync(page,"Picker-Not-Visible",log);
+        await SaveEvidenceAsync(page,"Picker-Not-Visible",log);
+        return false;
+    }
+
+    /// <summary>
+    /// Capture the relevant upload dialog/inputs as TXT. The earlier .txt
+    /// diagnostic only covered the Create button; this covers every later
+    /// upload failure without including the page's private video metadata.
+    /// </summary>
+    private static async Task SaveUploadStageDiagnosticAsync(
+        IPage page, string stage, Action<string>? log)
+    {
+        try
+        {
+            const string script = """
+                () => {
+                  const roots=[document], inputs=[], dialogs=[];
+                  let shadowRoots=0;
+                  for(let p=0;p<roots.length && p<150;p++){
+                    const root=roots[p];
+                    for(const n of root.querySelectorAll('input[type="file"]')){
+                      const accept=n.getAttribute('accept')||'';
+                      inputs.push({
+                        accept,disabled:n.disabled,tag:n.tagName,
+                        html:n.outerHTML.slice(0,550),
+                        host:n.getRootNode()?.host?.tagName||null
+                      });
+                    }
+                    for(const el of root.querySelectorAll('ytcp-uploads-dialog')){
+                      const r=el.getBoundingClientRect();
+                      dialogs.push({tag:el.tagName,visible:r.width>0&&r.height>0});
+                    }
+                    for(const el of root.querySelectorAll('*')){
+                      if(el.shadowRoot){roots.push(el.shadowRoot);shadowRoots++;}
+                    }
+                  }
+                  const signal=(text) => {
+                    const walk=[document];
+                    for(let i=0;i<walk.length&&i<150;i++){
+                      const root=walk[i];
+                      for(const el of root.querySelectorAll(
+                        'button,ytcp-button,span,yt-formatted-string')){
+                        if((el.innerText||'').trim()===text){
+                          const r=el.getBoundingClientRect();
+                          if(r.width>0&&r.height>0)return true;
+                        }
+                      }
+                      for(const e of root.querySelectorAll('*'))
+                        if(e.shadowRoot)walk.push(e.shadowRoot);
+                    }
+                    return false;
+                  };
+                  return JSON.stringify({
+                    readyState:document.readyState,
+                    dialogHosts:dialogs,shadowRoots,
+                    selectFilesVisible:signal('Select files'),
+                    fileInputCount:inputs.length,fileInputs:inputs.slice(0,20)
+                  },null,2);
+                }
+                """;
+            var details=await page.EvaluateAsync<string>(script);
+            var dir=Path.Combine(Environment.GetFolderPath(
+                Environment.SpecialFolder.LocalApplicationData),
+                "ZeroVideo","PublishingDiagnostics");
+            Directory.CreateDirectory(dir);
+            var filepath=Path.Combine(dir,
+                "YouTube-Shorts-Upload-"+stage+"-"+
+                DateTime.Now.ToString("yyyyMMdd-HHmmss-fff")+".txt");
+            await File.WriteAllTextAsync(filepath,details);
+            log?.Invoke("YouTube Shorts: upload-stage TXT diagnostic saved: "+filepath);
+        }
+        catch(Exception ex) when(ex is PlaywrightException or IOException or
+            UnauthorizedAccessException or InvalidOperationException)
+        {
+            log?.Invoke("YouTube Shorts: upload-stage TXT diagnostic failed: "+
+                ex.Message.Split((char)10)[0]);
+        }
+    }
+
     private static async Task<bool> AttachVideoAsync(
         IPage page,string path,Action<string>? log,CancellationToken ct)
     {
-        // Existing ZeroVideo Edge is attached by CDP, which has a 50 MB
-        // Playwright driver transfer limit. Assign a local MP4 path through
-        // Chrome DevTools instead, without uploading it through Playwright.
+        // Playwright's SetInputFiles may transfer the entire MP4 via its
+        // protocol. For large videos, attach a LOCAL path directly through
+        // Chrome DevTools (DOM.setFileInputFiles with a remote objectId).
+        // Unlike DOM.querySelectorAll(document), Runtime.evaluate can find
+        // a file input INSIDE nested YouTube Studio shadow roots.
+        const string fileInputExpression = """
+            (() => {
+              const roots=[document], candidates=[];
+              for(let p=0;p<roots.length && p<150;p++){
+                const root=roots[p];
+                for(const input of root.querySelectorAll('input[type="file"]'))
+                  candidates.push(input);
+                for(const el of root.querySelectorAll('*'))
+                  if(el.shadowRoot)roots.push(el.shadowRoot);
+              }
+              const insideUploadDialog = input => {
+                for(let el=input;el;){
+                  if(el.tagName?.toLowerCase()==='ytcp-uploads-dialog')
+                    return true;
+                  const root=el.getRootNode();
+                  el=el.parentElement||(root && root.host)||null;
+                }
+                return false;
+              };
+              const isVideoInput = input => {
+                const accept=(input.getAttribute('accept')||'').toLowerCase();
+                return accept.includes('video') || accept.includes('.mp4');
+              };
+              const eligible=candidates.filter(input=>{
+                const accept=(input.getAttribute('accept')||'').toLowerCase();
+                const imageOnly=accept.includes('image')&&!isVideoInput(input);
+                return !input.disabled && !imageOnly &&
+                  (insideUploadDialog(input)||isVideoInput(input));
+              });
+              // No arbitrary first match; ambiguous file inputs must not
+              // attach a video to a thumbnail/caption picker.
+              return eligible.length===1?eligible[0]:null;
+            })()
+            """;
         var cdp=await page.Context.NewCDPSessionAsync(page);
         try
         {
-            for(var poll=0;poll<35;poll++)
+            var lastLog="";
+            for(var poll=0;poll<50;poll++)
             {
                 ct.ThrowIfCancellationRequested();
+                System.Text.Json.JsonElement? remote=null;
                 try
                 {
-                    var doc=await cdp.SendAsync("DOM.getDocument",
-                        new Dictionary<string,object>{{"depth",-1},{"pierce",true}});
-                    if(doc is null)throw new InvalidOperationException("No CDP document.");
-                    var root=doc.Value.GetProperty("root").GetProperty("nodeId").GetInt32();
-                    var ids=await cdp.SendAsync("DOM.querySelectorAll",
+                    remote=await cdp.SendAsync("Runtime.evaluate",
                         new Dictionary<string,object>{
-                            {"nodeId",root},{"selector","input[type=file]"}});
-                    if(ids is not null)
+                            {"expression",fileInputExpression},
+                            {"returnByValue",false},
+                            {"objectGroup","zerovideo-shorts-filepicker"}
+                        });
+                    if(remote is null ||
+                        !remote.Value.TryGetProperty("result",out var result) ||
+                        !result.TryGetProperty("objectId",out var objectId))
                     {
-                        foreach(var e in ids.Value.GetProperty("nodeIds").EnumerateArray())
-                        {
-                            var id=e.GetInt32();
-                            var info=await cdp.SendAsync("DOM.describeNode",
-                                new Dictionary<string,object>{{"nodeId",id}});
-                            if(info is null)continue;
-                            var attrs=info.Value.GetProperty("node").GetProperty("attributes");
-                            string accept="";
-                            for(var i=0;i+1<attrs.GetArrayLength();i+=2)
-                                if(attrs[i].GetString()=="accept")
-                                    accept=attrs[i+1].GetString()??"";
-                            if(accept.Contains("image",StringComparison.OrdinalIgnoreCase)
-                               && !accept.Contains("video",StringComparison.OrdinalIgnoreCase))
-                                continue;
-                            await cdp.SendAsync("DOM.setFileInputFiles",
-                                new Dictionary<string,object>{
-                                    {"files",new[]{path}},{"nodeId",id}});
-                            log?.Invoke("YouTube Shorts: attached MP4 through local Edge DevTools.");
-                            return true;
-                        }
+                        if(poll==0||poll==24||poll==49)
+                            log?.Invoke("YouTube Shorts: upload dialog visible, " +
+                                "waiting for an unambiguous MP4 file input.");
+                        await Task.Delay(350,ct);
+                        continue;
                     }
+                    var remoteId=objectId.GetString();
+                    if(string.IsNullOrWhiteSpace(remoteId))
+                        throw new InvalidOperationException(
+                            "YouTube file input did not have an element object ID.");
+
+                    // ONE attachment command. If the browser fails at this
+                    // point, do not automatically retry an uncertain upload.
+                    log?.Invoke("YouTube Shorts: located MP4 input (including " +
+                        "nested Studio components); assigning local file once.");
+                    await cdp.SendAsync("DOM.setFileInputFiles",
+                        new Dictionary<string,object>{
+                            {"files",new[]{path}},{"objectId",remoteId}
+                        });
+                    log?.Invoke("YouTube Shorts: MP4 selected via local " +
+                        "Edge DevTools; waiting for Studio metadata fields.");
+                    return true;
                 }
                 catch(PlaywrightException ex)
                 {
-                    if(poll==0||poll==20)
-                        log?.Invoke("YouTube Shorts: file input still loading: "+
-                            ex.Message.Split((char)10)[0]);
+                    lastLog=ex.Message.Split((char)10)[0];
+                    log?.Invoke("YouTube Shorts: local file selection failed: "+
+                        lastLog+". Do not retry an uncertain attachment.");
+                    break;
                 }
-                await Task.Delay(500,ct);
+                catch(InvalidOperationException ex)
+                {
+                    lastLog=ex.Message;
+                    log?.Invoke("YouTube Shorts: "+lastLog);
+                    break;
+                }
             }
+            await SaveUploadStageDiagnosticAsync(page,"File-Input-Not-Selected",log);
             return false;
         }
         finally
         {
-            await cdp.DetachAsync();
+            try { await cdp.DetachAsync(); }
+            catch(PlaywrightException) { /* Session may already be closed. */ }
         }
     }
 
@@ -513,6 +673,7 @@ public sealed class YouTubeShortsPublishService(BrowserSession browser)
         // Each video uses a fresh tab, with the existing authenticated Edge
         // profile. No state from the previous YouTube or TikTok upload is reused.
         var page=await browser.Context.NewPageAsync();
+        var stage="Studio-Dashboard";
         try
         {
             await page.GotoAsync("https://studio.youtube.com/",new(){
@@ -525,43 +686,63 @@ public sealed class YouTubeShortsPublishService(BrowserSession browser)
 
             log?.Invoke("YouTube Shorts: Studio dashboard loaded at "+
                 page.Url+". Looking for the Create toolbar control.");
+            stage="Create-Menu";
             if(!await OpenCreateMenuAsync(page,log,ct))
                 return "YouTube: NOT_SUBMITTED; Studio Create control not found. " +
                     "You may already be signed in. See Create-control diagnostics.";
+            stage="Upload-Videos-Menu";
             if(!await OpenUploadVideosAsync(page,log,ct))
                 return "YouTube: NOT_SUBMITTED; Create opened, but Upload videos " +
                     "menu item was not found. See the Upload-Menu diagnostic.";
-            var dialog=page.Locator("ytcp-uploads-dialog");
-            await dialog.WaitForAsync(new(){
-                State=WaitForSelectorState.Visible,Timeout=20000});
+            stage="Upload-Picker";
+            log?.Invoke("YouTube Shorts: stage=upload-picker-ready; " +
+                "waiting for visible Select files control (not dialog host).");
+            if(!await WaitForUploadPickerAsync(page,log,ct))
+                return "YouTube: NOT_SUBMITTED; upload picker not visibly ready. " +
+                    "See YouTube-Shorts-Upload-Picker diagnostics.";
 
+            stage="Attach-MP4";
+            log?.Invoke("YouTube Shorts: stage=attach-mp4.");
             if(!await AttachVideoAsync(page,videoPath,log,ct))
             {
                 await SaveEvidenceAsync(page,"File-Input-Missing",log);
-                return "YouTube: NOT_SUBMITTED; MP4 input not found.";
+                return "YouTube: NOT_SUBMITTED; MP4 could not be selected. " +
+                    "See YouTube-Shorts-Upload-File-Input-Not-Selected diagnostics.";
             }
+            stage="Fill-Metadata";
             if(!await FillMetadataAsync(page,title,description,log,ct))
                 return "YouTube: NOT_SUBMITTED; title or description could not be verified.";
+            stage="Audience";
             if(!await ChooseNotMadeForKidsAsync(page,log))
                 return "YouTube: NOT_SUBMITTED; audience option not confirmed.";
+            stage="Visibility-Wizard";
             if(!await OpenVisibilityAsync(page,log,ct))
                 return "YouTube: NOT_SUBMITTED; visibility setup not ready.";
+            stage="Visibility-Selection";
             var visibilityOk=slot.HasValue
                 ? await ChooseScheduleAsync(page,slot.Value,log,ct)
                 : await ChoosePublicAsync(page,log);
             if(!visibilityOk)
                 return "YouTube: NOT_SUBMITTED; visibility/date/time not verified.";
+            stage="Final-Submission";
             return await SubmitOnceAsync(page,slot.HasValue,log,ct);
         }
         catch(OperationCanceledException){throw;}
         catch(Exception ex) when(ex is PlaywrightException or InvalidOperationException
                                     or TimeoutException)
         {
-            log?.Invoke("YouTube Shorts: stopped before confirming submission: "+
-                ex.Message.Split((char)10)[0]);
-            await SaveEvidenceAsync(page,"Workflow-Interrupted",log);
-            return "YouTube: NOT_SUBMITTED_OR_UNCERTAIN; browser step failed. " +
-                "Inspect YouTube Studio before retrying: "+ex.Message.Split((char)10)[0];
+            log?.Invoke("YouTube Shorts: failure at stage="+stage+"; "+
+                ex.Message[..Math.Min(1200,ex.Message.Length)]);
+            await SaveUploadStageDiagnosticAsync(page,
+                "Workflow-Failed-"+stage,log);
+            await SaveEvidenceAsync(page,"Workflow-Interrupted-"+stage,log);
+            // Earlier stages cannot publish; an exception once the final
+            // submission stage is entered must be considered uncertain.
+            return stage=="Final-Submission"
+                ? "YouTube: SUBMISSION_ATTEMPTED; final-stage outcome uncertain. " +
+                    "Check YouTube Studio before retrying."
+                : "YouTube: NOT_SUBMITTED; failed at "+stage+
+                    ". Check the YouTube-Shorts-Upload-Workflow-Failed-*.txt diagnostic.";
         }
     }
 }

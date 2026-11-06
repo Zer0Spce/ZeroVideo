@@ -28,4 +28,19 @@ public static class YouTubeStudioControlPolicy
     public static bool IsSafeUploadMenuSelector(string? selector)
         => !string.IsNullOrWhiteSpace(selector) &&
             UploadMenuSelectors.Contains(selector, StringComparer.Ordinal);
+
+    // Upload inputs in YouTube Studio can be nested in shadow roots. Reject
+    // thumbnail/image pickers and inputs outside the upload dialog unless
+    // they explicitly accept MP4/video content.
+    public static bool IsEligibleUploadInput(
+        string? accepts, bool insideUploadDialog, bool disabled)
+    {
+        if (disabled) return false;
+        var accept = (accepts ?? "").ToLowerInvariant();
+        var forVideo = accept.Contains("video", StringComparison.Ordinal) ||
+            accept.Contains(".mp4", StringComparison.Ordinal);
+        var imageOnly = accept.Contains("image", StringComparison.Ordinal) &&
+            !forVideo;
+        return !imageOnly && (insideUploadDialog || forVideo);
+    }
 }
