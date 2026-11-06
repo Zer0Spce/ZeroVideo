@@ -374,6 +374,53 @@ Check(!YouTubeStudioControlPolicy.IsEligibleUploadInput(
     "video/mp4",insideUploadDialog:true,disabled:true),
     "YouTube Shorts refuses disabled file inputs");
 
+// YouTube Studio Nov 6 screenshot: Schedule is a collapsed card. A
+// name='SCHEDULE' radio may not exist until that card is expanded.
+Check(YouTubeStudioControlPolicy.ScheduleCardSelectors[0] ==
+      "#schedule-radio-button",
+    "YouTube scheduling opens the dedicated Schedule card, not just a radio name");
+Check(YouTubeStudioControlPolicy.ScheduleCardSelectors.All(
+      x=>!x.Contains("done-button")&&!x.Contains("#save-button")),
+    "YouTube Schedule card selectors cannot click the final Save/Publish action");
+Check(YouTubeStudioControlPolicy.IsExpectedFinalAction(true,"Schedule"),
+    "Scheduled Shorts require the final Schedule action");
+Check(!YouTubeStudioControlPolicy.IsExpectedFinalAction(true,"Save"),
+    "YouTube Shorts refuses a private-draft Save as scheduled publishing");
+Check(!YouTubeStudioControlPolicy.IsExpectedFinalAction(true,"Publish"),
+    "Scheduled upload cannot accidentally be published immediately");
+Check(YouTubeStudioControlPolicy.IsExpectedFinalAction(false,"Publish"),
+    "Instant YouTube publishing accepts Publish");
+Check(!YouTubeStudioControlPolicy.IsExpectedFinalAction(false,"Save"),
+    "Instant YouTube publishing does not confuse saving private draft with publishing");
+var youtubeDate = new DateTime(2026,11,12,6,0,0);
+Check(YouTubeStudioControlPolicy.MatchesScheduleDate(
+    "Nov 12, 2026",youtubeDate),
+    "YouTube schedule date readback recognizes November 12, 2026");
+Check(YouTubeStudioControlPolicy.MatchesScheduleDate(
+    "Date: 2026-11-12",youtubeDate),
+    "YouTube schedule readback recognizes ISO date");
+Check(!YouTubeStudioControlPolicy.MatchesScheduleDate(
+    "Nov 10, 2026",youtubeDate),
+    "YouTube rejects a previous video's stale schedule date");
+Check(!YouTubeStudioControlPolicy.MatchesScheduleDate(
+    "Nov 12, 2025",youtubeDate),
+    "YouTube rejects identical month and day with wrong year");
+Check(!YouTubeStudioControlPolicy.MatchesScheduleDate(
+    "Nov 12",youtubeDate),
+    "YouTube does not accept incomplete schedule date without year");
+Check(YouTubeStudioControlPolicy.MatchesScheduleTime(
+    "6:00 AM",youtubeDate),
+    "YouTube schedule verifies 12-hour time");
+Check(YouTubeStudioControlPolicy.MatchesScheduleTime(
+    "06:00",youtubeDate),
+    "YouTube schedule verifies 24-hour time");
+Check(!YouTubeStudioControlPolicy.MatchesScheduleTime(
+    "6:15 AM",youtubeDate),
+    "YouTube schedule refuses 15-minute mismatch");
+Check(!YouTubeStudioControlPolicy.MatchesScheduleTime(
+    "6:00 PM",youtubeDate),
+    "YouTube schedule refuses AM/PM mismatch");
+
 Check(!new ProjectOptions().EnableCharacterConsistency,
     "New projects keep Character Bible disabled by default");
 

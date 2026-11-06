@@ -515,82 +515,375 @@ public sealed class YouTubeShortsPublishService(BrowserSession browser)
         return true;
     }
 
+    // Capture ONLY the YouTube scheduling widget and its floating picker
+    // controls. No full-page text: titles/descriptions may contain dates and
+    // must never be mistaken for a schedule control (TikTok regression).
+    private static async Task SaveScheduleStageDiagnosticAsync(
+        IPage page, string stage, Action<string>? log)
+    {
+        try
+        {
+            const string script = """
+                () => {
+                  const root=document.querySelector(
+                    'ytcp-uploads-dialog ytcp-video-visibility-select');
+                  const selectors=[
+                    '#schedule-radio-button',
+                    '[name="SCHEDULE"]',
+                    '#datepicker-trigger',
+                    '#time-of-day-trigger',
+                    'ytcp-visibility-scheduler',
+                    'ytcp-datetime-picker',
+                    'ytcp-date-picker',
+                    'ytcp-time-of-day-picker',
+                    'tp-yt-paper-dialog',
+                    '#done-button'
+                  ];
+                  const details=[];
+                  for(const selector of selectors){
+                    const scope=selector==='ytcp-date-picker' ||
+                      selector==='ytcp-time-of-day-picker' ||
+                      selector==='tp-yt-paper-dialog' ||
+                      selector==='#done-button' ? document : root;
+                    if(!scope)continue;
+                    for(const el of [...scope.querySelectorAll(selector)].slice(0,6)){
+                      const rect=el.getBoundingClientRect();
+                      details.push({selector,tag:el.tagName,
+                        visible:rect.width>0&&rect.height>0,
+                        expanded:el.getAttribute('aria-expanded'),
+                        checked:el.getAttribute('aria-checked'),
+                        text:(el.innerText||'').trim().slice(0,110),
+                        html:el.outerHTML.slice(0,1100)});
+                    }
+                  }
+                  const inputs=[...document.querySelectorAll('input')]
+                    .filter(el=>{
+                      const r=el.getBoundingClientRect();
+                      return r.width>0&&r.height>0 &&
+                        (el.closest('ytcp-datetime-picker,ytcp-date-picker,'+
+                          'ytcp-time-of-day-picker,tp-yt-paper-dialog')!=null);
+                    }).slice(0,14).map(el=>({
+                      type:el.type,placeholder:el.placeholder,
+                      ariaLabel:el.getAttribute('aria-label'),
+                      value:el.value,html:el.outerHTML.slice(0,550)
+                    }));
+                  return JSON.stringify({
+                    pathname:location.pathname,
+                    visibilityHostPresent:!!root,
+                    controls:details,visibleScheduleInputs:inputs
+                  },null,2);
+                }
+                """;
+            var details=await page.EvaluateAsync<string>(script);
+            var dir=Path.Combine(Environment.GetFolderPath(
+                Environment.SpecialFolder.LocalApplicationData),
+                "ZeroVideo","PublishingDiagnostics");
+            Directory.CreateDirectory(dir);
+            var name="YouTube-Shorts-Schedule-"+stage+"-"+
+                DateTime.Now.ToString("yyyyMMdd-HHmmss-fff")+".txt";
+            var path=Path.Combine(dir,name);
+            await File.WriteAllTextAsync(path,details);
+            log?.Invoke("YouTube Shorts: schedule controls diagnostic saved: "+path);
+        }
+        catch(Exception ex) when(ex is PlaywrightException or IOException or
+                                    UnauthorizedAccessException)
+        {
+            log?.Invoke("YouTube Shorts: schedule diagnostic unavailable: "+
+                ex.Message.Split((char)10)[0]);
+        }
+    }
+
+    private static async Task<string> ReadScheduleControlAsync(ILocator control)
+        => (await control.EvaluateAsync<string>(
+            """
+            el => {
+              const values=[el.innerText,
+                  el.getAttribute('aria-label'),
+                  el.querySelector('input')?.value,
+                  el.getAttribute('title'),
+                  typeof el.value==='string'?el.value:''];
+              return values.filter(v=>typeof v==='string'&&v.trim())
+                  .map(v=>v.trim()).join(' | ');
+            }
+            """)).Trim();
+
+    private static async Task<bool> ScheduleFieldsVisibleAsync(ILocator visibility)
+    {
+        var date=visibility.Locator("#datepicker-trigger");
+        var time=visibility.Locator("#time-of-day-trigger");
+        return await date.CountAsync()==1 && await time.CountAsync()==1 &&
+            await date.IsVisibleAsync() && await time.IsVisibleAsync();
+    }
+
+    private static async Task<bool> ExpandScheduleCardAsync(
+        IPage page,ILocator visibility,Action<string>? log,CancellationToken ct)
+    {
+        if(await ScheduleFieldsVisibleAsync(visibility))
+        {
+            log?.Invoke("YouTube Shorts: Schedule card already expanded.");
+            return true;
+        }
+
+        var clicked=false;
+        foreach(var css in YouTubeStudioControlPolicy.ScheduleCardSelectors)
+        {
+            ct.ThrowIfCancellationRequested();
+            var card=visibility.Locator(css);
+            if(await card.CountAsync()!=1 || !await card.IsVisibleAsync())
+                continue;
+            log?.Invoke("YouTube Shorts: opening Schedule CARD using '"+css+
+                "' (not searching for a SCHEDULE radio name).");
+            await card.ClickAsync(new(){Timeout=8000});
+            clicked=true;
+            break;
+        }
+
+        if(!clicked)
+        {
+            // Screenshot: the collapsed Schedule card has a visible heading
+            // and chevron, even without a <radio name=SCHEDULE> element.
+            // This text fallback is STRICTLY scoped within Visibility; it
+            // cannot click the bottom upload Save/Publish button.
+            var card=visibility.GetByText("Schedule",new(){Exact=true});
+            if(await card.CountAsync()==1 && await card.IsVisibleAsync())
+            {
+                log?.Invoke("YouTube Shorts: opening Schedule card through its " +
+                    "unique, Visibility-scoped heading.");
+                await card.ClickAsync(new(){Timeout=8000});
+                clicked=true;
+            }
+        }
+
+        if(!clicked)
+        {
+            log?.Invoke("YouTube Shorts: collapsed Schedule card not found. " +
+                "No date or final upload action attempted.");
+            await SaveScheduleStageDiagnosticAsync(page,"Card-Not-Found",log);
+            await SaveEvidenceAsync(page,"Schedule-Card-Not-Found",log);
+            return false;
+        }
+
+        for(var poll=0;poll<48;poll++)
+        {
+            ct.ThrowIfCancellationRequested();
+            if(await ScheduleFieldsVisibleAsync(visibility))
+            {
+                log?.Invoke("YouTube Shorts: Schedule card expanded; " +
+                    "date and time controls are now visible.");
+                return true;
+            }
+            if(poll<47)await Task.Delay(250,ct);
+        }
+        log?.Invoke("YouTube Shorts: Schedule card clicked but its date/time " +
+            "controls did not appear. No submission.");
+        await SaveScheduleStageDiagnosticAsync(page,"Card-Not-Expanded",log);
+        await SaveEvidenceAsync(page,"Schedule-Card-Not-Expanded",log);
+        return false;
+    }
+
+    private static async Task<bool> SetScheduledDateAsync(
+        IPage page,ILocator visibility,DateTime target,
+        Action<string>? log,CancellationToken ct)
+    {
+        var trigger=visibility.Locator("#datepicker-trigger");
+        var shown=await ReadScheduleControlAsync(trigger);
+        if(YouTubeStudioControlPolicy.MatchesScheduleDate(shown,target))
+        {
+            log?.Invoke("YouTube Shorts: schedule date already equals requested "+
+                target.ToString("yyyy-MM-dd")+".");
+            return true;
+        }
+
+        await trigger.ClickAsync(new(){Timeout=8000});
+        log?.Invoke("YouTube Shorts: opened dedicated date dropdown.");
+        var dateInputs=page.Locator(
+            "ytcp-date-picker input:visible, " +
+            "ytcp-date-picker tp-yt-paper-input input:visible");
+        ILocator? input=null;
+        for(var poll=0;poll<36;poll++)
+        {
+            ct.ThrowIfCancellationRequested();
+            if(await dateInputs.CountAsync()==1 &&
+                await dateInputs.First.IsVisibleAsync())
+            {
+                input=dateInputs.First;
+                break;
+            }
+            if(poll<35)await Task.Delay(250,ct);
+        }
+        if(input is null)
+        {
+            log?.Invoke("YouTube Shorts: YouTube date popup did not expose a " +
+                "unique editable input. No submission.");
+            await SaveScheduleStageDiagnosticAsync(page,"Date-Input-Missing",log);
+            await SaveEvidenceAsync(page,"Schedule-Date-Input-Missing",log);
+            return false;
+        }
+
+        var dateString=target.ToString("MMM d, yyyy",
+            System.Globalization.CultureInfo.GetCultureInfo("en-US"));
+        await input.FillAsync(dateString,new(){Timeout=8000});
+        await input.PressAsync("Enter",new(){Timeout=8000});
+        log?.Invoke("YouTube Shorts: requested calendar date "+dateString+".");
+        for(var poll=0;poll<24;poll++)
+        {
+            ct.ThrowIfCancellationRequested();
+            shown=await ReadScheduleControlAsync(trigger);
+            if(YouTubeStudioControlPolicy.MatchesScheduleDate(shown,target))
+            {
+                log?.Invoke("YouTube Shorts: date readback verified: "+shown+".");
+                return true;
+            }
+            if(poll<23)await Task.Delay(250,ct);
+        }
+        log?.Invoke("YouTube Shorts: date did NOT commit; expected="+
+            target.ToString("yyyy-MM-dd")+", displayed='"+shown+
+            "'. Final Schedule disabled.");
+        await SaveScheduleStageDiagnosticAsync(page,"Date-Not-Committed",log);
+        await SaveEvidenceAsync(page,"Schedule-Date-Not-Committed",log);
+        return false;
+    }
+
+    private static async Task<bool> SetScheduledTimeAsync(
+        IPage page,ILocator visibility,DateTime target,
+        Action<string>? log,CancellationToken ct)
+    {
+        var trigger=visibility.Locator("#time-of-day-trigger");
+        var shown=await ReadScheduleControlAsync(trigger);
+        if(YouTubeStudioControlPolicy.MatchesScheduleTime(shown,target))
+        {
+            log?.Invoke("YouTube Shorts: schedule time already equals requested "+
+                target.ToString("HH:mm")+".");
+            return true;
+        }
+
+        await trigger.ClickAsync(new(){Timeout=8000});
+        log?.Invoke("YouTube Shorts: opened dedicated time dropdown.");
+        var desired=target.ToString("h:mm tt",
+            System.Globalization.CultureInfo.GetCultureInfo("en-US"));
+
+        // Some Studio layouts expose an editable time input. Others have
+        // 15-minute list options. Try only the time widget and popup.
+        var edit=page.Locator(
+            "ytcp-time-of-day-picker input:visible, " +
+            "#time-of-day-trigger input:visible, " +
+            "tp-yt-paper-dialog:visible input[aria-label*='Time' i]");
+        if(await edit.CountAsync()==1 && await edit.First.IsVisibleAsync())
+        {
+            await edit.First.FillAsync(desired,new(){Timeout=8000});
+            await edit.First.PressAsync("Enter",new(){Timeout=8000});
+            log?.Invoke("YouTube Shorts: entered desired time "+desired+
+                " in YouTube's time input.");
+        }
+        else
+        {
+            var options=page.Locator(
+                "ytcp-time-of-day-picker tp-yt-paper-item:visible, " +
+                "tp-yt-paper-dialog:visible tp-yt-paper-item:visible, " +
+                "tp-yt-paper-dialog:visible [role='option']");
+            var candidates=new List<ILocator>();
+            var count=Math.Min(await options.CountAsync(),150);
+            for(var i=0;i<count;i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var option=options.Nth(i);
+                if(!await option.IsVisibleAsync())continue;
+                var label=(await option.InnerTextAsync()).Trim();
+                if(label.Length>18)continue;
+                if(YouTubeStudioControlPolicy.MatchesScheduleTime(label,target))
+                    candidates.Add(option);
+            }
+            if(candidates.Count!=1)
+            {
+                log?.Invoke("YouTube Shorts: requested "+desired+
+                    " is missing or ambiguous in the visible time options ("+
+                    candidates.Count+" matches). Not scheduling at a wrong time.");
+                await SaveScheduleStageDiagnosticAsync(page,"Time-Option-Missing",log);
+                await SaveEvidenceAsync(page,"Schedule-Time-Option-Missing",log);
+                return false;
+            }
+            await candidates[0].ClickAsync(new(){Timeout=8000});
+            log?.Invoke("YouTube Shorts: selected exact time option "+desired+".");
+        }
+
+        for(var poll=0;poll<24;poll++)
+        {
+            ct.ThrowIfCancellationRequested();
+            shown=await ReadScheduleControlAsync(trigger);
+            if(YouTubeStudioControlPolicy.MatchesScheduleTime(shown,target))
+            {
+                log?.Invoke("YouTube Shorts: time readback verified: "+shown+".");
+                return true;
+            }
+            if(poll<23)await Task.Delay(250,ct);
+        }
+        log?.Invoke("YouTube Shorts: time did NOT commit; expected="+
+            target.ToString("HH:mm")+", displayed='"+shown+"'.");
+        await SaveScheduleStageDiagnosticAsync(page,"Time-Not-Committed",log);
+        await SaveEvidenceAsync(page,"Schedule-Time-Not-Committed",log);
+        return false;
+    }
+
+    private static async Task<bool> ScheduleReadbackMatchesAsync(
+        IPage page,ILocator visibility,DateTime target,
+        Action<string>? log)
+    {
+        if(!await ScheduleFieldsVisibleAsync(visibility))
+        {
+            log?.Invoke("YouTube Shorts: Schedule fields disappeared before submit.");
+            await SaveScheduleStageDiagnosticAsync(page,"Fields-Disappeared",log);
+            return false;
+        }
+        var shownDate=await ReadScheduleControlAsync(
+            visibility.Locator("#datepicker-trigger"));
+        var shownTime=await ReadScheduleControlAsync(
+            visibility.Locator("#time-of-day-trigger"));
+        var ok=YouTubeStudioControlPolicy.MatchesScheduleDate(shownDate,target) &&
+            YouTubeStudioControlPolicy.MatchesScheduleTime(shownTime,target);
+        log?.Invoke("YouTube Shorts: final Schedule readback expected="+
+            target.ToString("yyyy-MM-dd HH:mm")+"; date='"+shownDate+
+            "'; time='"+shownTime+"'; verified="+ok+".");
+        if(!ok)await SaveScheduleStageDiagnosticAsync(
+            page,"Final-Readback-Mismatch",log);
+        return ok;
+    }
+
     private static async Task<bool> ChooseScheduleAsync(
         IPage page,DateTimeOffset target,Action<string>? log,CancellationToken ct)
     {
         var visibility=page.Locator("ytcp-uploads-dialog ytcp-video-visibility-select");
-        var radio=visibility.Locator(
-            "tp-yt-paper-radio-button[name='SCHEDULE'], " +
-            "[role='radio'][name='SCHEDULE']").First;
-        if(await radio.CountAsync()!=1 || !await radio.IsVisibleAsync())
+        if(await visibility.CountAsync()!=1 || !await visibility.IsVisibleAsync())
         {
-            log?.Invoke("YouTube Shorts: Schedule radio is missing or ambiguous.");
-            await SaveEvidenceAsync(page,"Schedule-Option-Missing",log);
-            return false;
-        }
-        await radio.ClickAsync(new(){Timeout=8000});
-        await Task.Delay(550,ct);
-
-        // Unlike TikTok, YouTube Studio uses its own date/time widgets and
-        // shows a channel timezone. Fill ONLY inputs under Visibility. Never
-        // locate a date by searching caption text across the page.
-        var date=visibility.Locator(
-            "ytcp-date-picker input:visible, " +
-            "input[aria-label*='Date' i]:visible, " +
-            "input[type=date]:visible").First;
-        var time=visibility.Locator(
-            "ytcp-time-of-day-picker input:visible, " +
-            "input[aria-label*='Time' i]:visible, " +
-            "input[type=time]:visible").First;
-        if(await date.CountAsync()!=1 || await time.CountAsync()!=1 ||
-           !await date.IsVisibleAsync() || !await time.IsVisibleAsync())
-        {
-            log?.Invoke("YouTube Shorts: schedule date/time widgets aren't " +
-                "editable or are not uniquely found. No final click.");
-            await SaveEvidenceAsync(page,"Schedule-Date-Time-Missing",log);
+            log?.Invoke("YouTube Shorts: Visibility scheduling widget unavailable.");
+            await SaveScheduleStageDiagnosticAsync(page,"Visibility-Not-Ready",log);
             return false;
         }
 
-        var dateValue=target.LocalDateTime.ToString("MMM d, yyyy",
-            System.Globalization.CultureInfo.GetCultureInfo("en-US"));
-        var timeValue=target.LocalDateTime.ToString("h:mm tt",
-            System.Globalization.CultureInfo.GetCultureInfo("en-US"));
-        await date.FillAsync(dateValue,new(){Timeout=8000});
-        await date.PressAsync("Tab");
-        await time.FillAsync(timeValue,new(){Timeout=8000});
-        await time.PressAsync("Tab");
-        await Task.Delay(450,ct);
-        var readDate=await date.InputValueAsync();
-        var readTime=await time.InputValueAsync();
-
-        // YouTube may normalize date/time formats. Parse instead of comparing
-        // unnormalized strings and NEVER accept a previous video's date.
-        var culture=System.Globalization.CultureInfo.GetCultureInfo("en-US");
-        var sameDate=DateTime.TryParse(readDate,culture,
-            System.Globalization.DateTimeStyles.None,out var parsedDate) &&
-            parsedDate.Date==target.LocalDateTime.Date;
-        var sameTime=DateTime.TryParse(readTime,culture,
-            System.Globalization.DateTimeStyles.None,out var parsedTime) &&
-            parsedTime.Hour==target.LocalDateTime.Hour &&
-            parsedTime.Minute==target.LocalDateTime.Minute;
-        if(!sameDate||!sameTime)
-        {
-            log?.Invoke("YouTube Shorts: schedule readback mismatch; expected="+
-                target.LocalDateTime.ToString("yyyy-MM-dd HH:mm")+
-                "; Studio date='"+readDate+"', time='"+readTime+"'. " +
-                "No final click.");
-            await SaveEvidenceAsync(page,"Schedule-Readback-Mismatch",log);
+        // YouTube's current interface calls this a Schedule CARD. The
+        // previous code searched for name='SCHEDULE' on a radio and always
+        // failed while the card was collapsed.
+        if(!await ExpandScheduleCardAsync(page,visibility,log,ct))
             return false;
-        }
-        log?.Invoke("YouTube Shorts: date/time readback verified: "+
-            target.LocalDateTime.ToString("yyyy-MM-dd HH:mm")+
-            ". Confirm Studio's displayed timezone matches your intended timezone.");
-        return true;
+
+        var requested=target.LocalDateTime;
+        if(!await SetScheduledDateAsync(page,visibility,requested,log,ct))
+            return false;
+        if(!await SetScheduledTimeAsync(page,visibility,requested,log,ct))
+            return false;
+
+        var confirmed=await ScheduleReadbackMatchesAsync(
+            page,visibility,requested,log);
+        if(confirmed)
+            log?.Invoke("YouTube Shorts: date/time verified in YouTube Studio's " +
+                "Schedule card. Confirm the Studio timezone is the intended one.");
+        return confirmed;
     }
 
     private static async Task<string> SubmitOnceAsync(
-        IPage page,bool scheduled,Action<string>? log,CancellationToken ct)
+        IPage page,DateTimeOffset? scheduledAt,Action<string>? log,
+        CancellationToken ct)
     {
+        var scheduled=scheduledAt.HasValue;
         var dialog=page.Locator("ytcp-uploads-dialog");
         var final=dialog.Locator("#done-button").First;
         if(await final.CountAsync()!=1 || !await final.IsVisibleAsync() ||
@@ -601,13 +894,28 @@ public sealed class YouTubeShortsPublishService(BrowserSession browser)
             return "YouTube: NOT_SUBMITTED; final button missing or disabled.";
         }
         var label=(await final.InnerTextAsync()).Trim();
-        if(!Regex.IsMatch(label,scheduled
-            ? @"^(Schedule|Save)$" : @"^(Publish|Save)$",RegexOptions.IgnoreCase))
+        // Screenshot showed "Saved as private" and a final "Save". A Save
+        // click would preserve a private draft, NOT schedule the Short.
+        // Require a literal "Schedule" for scheduled posts, or "Publish"
+        // for instant public posts.
+        if(!YouTubeStudioControlPolicy.IsExpectedFinalAction(scheduled,label))
         {
-            log?.Invoke("YouTube Shorts: unexpected final button label '"+label+
-                "'; no click attempted.");
+            log?.Invoke("YouTube Shorts: final button '"+label+
+                "' is NOT the authorized "+(scheduled?"Schedule":"Publish")+
+                " action. Refusing to save a private draft as if scheduled.");
+            await SaveScheduleStageDiagnosticAsync(
+                page,"Final-Button-Unexpected",log);
             await SaveEvidenceAsync(page,"Final-Button-Unexpected",log);
-            return "YouTube: NOT_SUBMITTED; unexpected final action.";
+            return "YouTube: NOT_SUBMITTED; final button '"+label+
+                "' does not match the requested publishing mode.";
+        }
+        if(scheduledAt.HasValue)
+        {
+            var visibility=dialog.Locator("ytcp-video-visibility-select");
+            if(!await ScheduleReadbackMatchesAsync(
+                page,visibility,scheduledAt.Value.LocalDateTime,log))
+                return "YouTube: NOT_SUBMITTED; final date/time no longer " +
+                    "matches this Short's assigned schedule.";
         }
 
         // Guard exactly-once semantics. Once attempted, even a browser error
@@ -725,7 +1033,7 @@ public sealed class YouTubeShortsPublishService(BrowserSession browser)
             if(!visibilityOk)
                 return "YouTube: NOT_SUBMITTED; visibility/date/time not verified.";
             stage="Final-Submission";
-            return await SubmitOnceAsync(page,slot.HasValue,log,ct);
+            return await SubmitOnceAsync(page,slot,log,ct);
         }
         catch(OperationCanceledException){throw;}
         catch(Exception ex) when(ex is PlaywrightException or InvalidOperationException
