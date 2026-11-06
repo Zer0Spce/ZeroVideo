@@ -254,6 +254,48 @@ Check(TikTokSubsequentDatePolicy.MatchesDisplayedDate(
     new DateTime(2026, 11, 6)),
     "Second video accepts the date visible in TikTok despite stale internal values");
 
+// Regression from user browser diagnostic (2026-11-06): a page-wide
+// date-text fallback selected the video description <span> because it
+// contained the historical date "February 9, 2004". NEVER authorize this.
+Check(!TikTokScheduleDateGuard.IsDateControl(
+    "", "", null, null, null,
+    "Episode 15 Maura Murray disappeared on February 9, 2004",
+    insideEditor: true, insideFinalSubmission: false),
+    "TikTok date selector rejects caption span containing historical date");
+Check(!TikTokScheduleDateGuard.IsDateControl(
+    "", "public-DraftStyleDefault-block public-DraftStyleDefault-ltr",
+    null, null, null, "February 9, 2004",
+    insideEditor: true, insideFinalSubmission: false),
+    "TikTok rejects browser's actual DraftJS caption ancestor");
+Check(!TikTokScheduleDateGuard.IsDateControl(
+    "", "", null, null, null, "November 10, 2026",
+    insideEditor: false, insideFinalSubmission: false),
+    "TikTok does not identify a date widget by date-like text alone");
+Check(TikTokScheduleDateGuard.IsDateControl(
+    "date-picker-input", "", null, null, null, "November 6, 2026",
+    insideEditor: false, insideFinalSubmission: false),
+    "TikTok accepts its actual dedicated date-picker-input widget");
+Check(TikTokScheduleDateGuard.IsDateControl(
+    "DatePicker__control", "", null, null, null, "November 6, 2026",
+    insideEditor: false, insideFinalSubmission: false),
+    "TikTok accepts DatePicker-named scheduling controls");
+Check(TikTokScheduleDateGuard.IsDateControl(
+    "input", "", "Choose date", null, null, "",
+    insideEditor: false, insideFinalSubmission: false),
+    "TikTok accepts explicitly date-labelled controls");
+Check(!TikTokScheduleDateGuard.IsDateControl(
+    "time-picker-input", "", null, null, null, "10:15",
+    insideEditor: false, insideFinalSubmission: false),
+    "TikTok refuses to confuse the time field with the date field");
+Check(!TikTokScheduleDateGuard.IsDateControl(
+    "date-picker-input", "", null, null, null, "November 6, 2026",
+    insideEditor: true, insideFinalSubmission: false),
+    "TikTok never clicks inside the caption editor even with date-like CSS");
+Check(!TikTokScheduleDateGuard.IsDateControl(
+    "date-picker-input", "", null, null, null, "November 6, 2026",
+    insideEditor: false, insideFinalSubmission: true),
+    "TikTok never clicks the final publish button as a calendar control");
+
 Check(!new ProjectOptions().EnableCharacterConsistency,
     "New projects keep Character Bible disabled by default");
 

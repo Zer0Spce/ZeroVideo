@@ -260,11 +260,134 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         }
     }
 
+    /// <summary>
+    /// Find ONLY TikTok's scheduling date widget. The previous page-wide
+    /// GetByText(date regex) matched "February 9, 2004" inside the VIDEO
+    /// DESCRIPTION when the schedule controls weren't mounted. Never search
+    /// the caption or arbitrary page text for a date.
+    /// </summary>
+    private static async Task<ILocator?> FindTikTokScheduleDateTriggerAsync(
+        IPage page, Action<string>? log, CancellationToken ct)
+    {
+        var preferred = page.Locator(".date-picker-input:visible");
+        for(var poll=0;poll<20;poll++)
+        {
+            ct.ThrowIfCancellationRequested();
+            if(await preferred.CountAsync()==1 &&
+                await preferred.First.IsVisibleAsync())
+            {
+                log?.Invoke("TikTok: date trigger resolved through dedicated " +
+                    ".date-picker-input control.");
+                return preferred.First;
+            }
+            if(poll<19) await Task.Delay(250,ct);
+        }
+
+        // TikTok sometimes changes the date widget's wrapper class.
+        // These alternatives require explicit DATE/CALENDAR semantics,
+        // not incidental dates in captions, titles, hashtags or descriptions.
+        const string inspect = """
+            () => {
+              document.querySelectorAll('[data-zerovideo-schedule-date-trigger]')
+                .forEach(n=>n.removeAttribute('data-zerovideo-schedule-date-trigger'));
+              const visible=n=>{
+                const r=n.getBoundingClientRect(),css=getComputedStyle(n);
+                return r.width>35 && r.height>10 &&
+                    css.display!=='none' && css.visibility!=='hidden';
+              };
+              const valid=n=>!n.closest('[contenteditable="true"],[role="textbox"]') &&
+                !n.matches('[contenteditable="true"]') &&
+                !n.closest('[data-e2e="post_video_button"]');
+              const scored=[];
+              for(const el of document.querySelectorAll(
+                'input,button,[role="button"],[role="combobox"],[class*="date-picker"],[class*="DatePicker"]')) {
+                if(!visible(el) || !valid(el))continue;
+                const cls=typeof el.className==='string'?el.className.toLowerCase():'';
+                const hint=[cls,el.getAttribute('aria-label')||'',
+                  el.getAttribute('placeholder')||'',
+                  el.getAttribute('data-testid')||''].join(' ').toLowerCase();
+                if(!/date|calendar/.test(hint) || /time|privacy|music|copyright/.test(hint))
+                    continue;
+                const rect=el.getBoundingClientRect();
+                if(rect.width>750 || rect.height>135)continue;
+                const text=(el.innerText||el.value||'').trim();
+                if(text.length>85)continue;
+                const interact=el.matches('input,button,[role="button"],[role="combobox"],[tabindex]');
+                const score=(cls.includes('date-picker-input')?100:0) +
+                  (/date|calendar/.test(el.getAttribute('aria-label')||'')?25:0) +
+                  (interact?16:0) + (/picker|input/.test(cls)?5:0);
+                scored.push({el,score,tag:el.tagName,cls:cls.slice(0,110),
+                  text:text.slice(0,80)});
+              }
+              scored.sort((a,b)=>b.score-a.score);
+              if(!scored.length)return {found:false,reason:'No visible date-labeled scheduling widget'};
+              const top=scored[0];
+              const unrelated=scored.filter(x=>x.score===top.score &&
+                x.el!==top.el && !x.el.contains(top.el) && !top.el.contains(x.el));
+              if(unrelated.length)return {found:false,
+                reason:'Ambiguous date controls at the same confidence'};
+              top.el.setAttribute('data-zerovideo-schedule-date-trigger','true');
+              return {found:true,tag:top.tag,cls:top.cls,text:top.text};
+            }
+            """;
+        var found=await page.EvaluateAsync<System.Text.Json.JsonElement>(inspect);
+        if(!found.GetProperty("found").GetBoolean())
+        {
+            log?.Invoke("TikTok: date widget NOT available after Schedule activation: " +
+                found.GetProperty("reason").GetString() +
+                ". Will not click dates in the video caption.");
+            await SaveDiagnosticAsync(page,"TikTok-Date-Widget-Unavailable",log);
+            return null;
+        }
+        var marked=page.Locator("[data-zerovideo-schedule-date-trigger='true']");
+        if(await marked.CountAsync()!=1 || !await marked.IsVisibleAsync())
+        {
+            log?.Invoke("TikTok: date widget rerendered during identification.");
+            return null;
+        }
+        log?.Invoke("TikTok: confirmed dedicated date control " +
+            found.GetProperty("tag").GetString() + " class='" +
+            found.GetProperty("cls").GetString() + "' text='" +
+            found.GetProperty("text").GetString() + "'.");
+        return marked.First;
+    }
+
     private static async Task<bool> SetTikTokDateStrictAsync(
         IPage page, ILocator dateTrigger, DateTime target,
         Action<string>? log, CancellationToken ct, bool subsequent = false)
     {
         var culture=System.Globalization.CultureInfo.GetCultureInfo("en-US");
+        // Gate EVERY click on real date-control semantics. This is the
+        // definitive regression guard for a video description containing
+        // "February 9, 2004": the old page-wide text regex picked a caption span.
+        var identity = await dateTrigger.EvaluateAsync<System.Text.Json.JsonElement>(
+            """
+            el => ({
+              elementClass:typeof el.className==='string'?el.className:'',
+              parentClass:typeof el.parentElement?.className==='string'
+                ?el.parentElement.className:'',
+              ariaLabel:el.getAttribute('aria-label')||'',
+              placeholder:el.getAttribute('placeholder')||'',
+              testId:el.getAttribute('data-testid')||'',
+              visibleText:(el.innerText||el.value||'').trim().slice(0,200),
+              insideEditor:!!el.closest('[contenteditable="true"],[role="textbox"]'),
+              insideFinalSubmission:!!el.closest('[data-e2e="post_video_button"]')
+            })
+            """);
+        string? Prop(string key) => identity.GetProperty(key).GetString();
+        if (!TikTokScheduleDateGuard.IsDateControl(
+            Prop("elementClass"), Prop("parentClass"), Prop("ariaLabel"),
+            Prop("placeholder"), Prop("testId"), Prop("visibleText"),
+            identity.GetProperty("insideEditor").GetBoolean(),
+            identity.GetProperty("insideFinalSubmission").GetBoolean()))
+        {
+            log?.Invoke("TikTok: rejected NON-DATE element. tag/label/class do not " +
+                "identify a scheduling calendar. Never click caption text as a date.");
+            await SaveTikTokDateTriggerDiagnosticAsync(
+                page,dateTrigger,"Wrong-Element-Blocked",target,log,subsequent);
+            return false;
+        }
+
         await SaveTikTokDateTriggerDiagnosticAsync(
             page,dateTrigger,"Before-Click",target,log,subsequent);
         var shown=(await dateTrigger.InnerTextAsync()).Trim();
@@ -589,16 +712,17 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         await page.Keyboard.PressAsync("Escape");
         await page.GetByText("Schedule",new(){Exact=true}).First.ClickAsync();
         await Task.Delay(450,ct);
+        log?.Invoke("TikTok: Schedule mode clicked; verifying that the date " +
+            "widget mounted before attempting any calendar interaction.");
         log?.Invoke("TikTok: strictly setting "+target.ToString("yyyy-MM-dd HH:mm")+
             "; privacy and music controls must remain untouched.");
 
-        var dateTrigger=page.Locator(".date-picker-input:visible").First;
-        if(await dateTrigger.CountAsync()==0)
-            dateTrigger=page.GetByText(new System.Text.RegularExpressions.Regex(
-                @"[A-Za-z]{3}\s+\d{1,2},?\s+\d{4}")).First;
-        if(await dateTrigger.CountAsync()==0||!await dateTrigger.IsVisibleAsync())
+        var dateTrigger=await FindTikTokScheduleDateTriggerAsync(page,log,ct);
+        if(dateTrigger is null)
         {
-            log?.Invoke("TikTok: date trigger not available.");return false;
+            log?.Invoke("TikTok: Schedule date control unavailable; the calendar " +
+                "will NOT be clicked through a page-wide text match.");
+            return false;
         }
         var dateOk=await SetTikTokDateStrictAsync(
             page,dateTrigger,target,log,ct,subsequent);

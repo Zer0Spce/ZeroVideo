@@ -16,6 +16,7 @@
     <Compile Include="../../src/ZeroVideo.App/Services/CaptionRenderPolicy.cs" Link="CaptionRenderPolicy.cs"/>
     <Compile Include="../../src/ZeroVideo.App/Services/ChatGptResponseRecovery.cs" Link="ChatGptResponseRecovery.cs"/>
     <Compile Include="../../src/ZeroVideo.App/Services/TikTokSubsequentDatePolicy.cs" Link="TikTokSubsequentDatePolicy.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/TikTokScheduleDateGuard.cs" Link="TikTokScheduleDateGuard.cs"/>
     <Compile Include="../../src/ZeroVideo.App/Services/ThumbnailHeadlineService.cs" Link="ThumbnailHeadlineService.cs"/>
     <Compile Include="../../src/ZeroVideo.App/Services/LocalImageResolutionService.cs" Link="LocalImageResolutionService.cs"/>
     <Compile Include="../../src/ZeroVideo.App/Models/ZeroVideoSettings.cs" Link="ZeroVideoSettings.cs"/>
