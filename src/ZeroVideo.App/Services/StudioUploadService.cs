@@ -14,7 +14,14 @@ public sealed class StudioUploadService(BrowserSession browser)
                 "ZeroVideo", "PublishingDiagnostics");
             Directory.CreateDirectory(dir);
             var path = Path.Combine(dir, destination + "-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".png");
-            await page.ScreenshotAsync(new() { Path = path, Timeout = 10000 });
+            await page.ScreenshotAsync(new()
+            {
+                Path = path, Timeout = 10000,
+                // Previous diagnostics captured only the top of the upload
+                // page; TikTok's schedule controls are below the fold.
+                FullPage = destination.StartsWith("TikTok-Schedule",
+                    StringComparison.OrdinalIgnoreCase)
+            });
             log?.Invoke("Publishing diagnostic screenshot: " + path);
             return path;
         }
@@ -818,14 +825,70 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             log?.Invoke("TikTok: invalid schedule; must be future and 5-minute interval.");
             return false;
         }
+        // The upload page can replace the contenteditable caption node after
+        // the video finishes processing. A detached editor must not abort the
+        // entire schedule before the Schedule selector is even reached.
+        log?.Invoke("TikTok: schedule stage=caption-blur.");
         var caption=page.Locator("[contenteditable=true]").First;
-        if(await caption.CountAsync()>0&&await caption.IsVisibleAsync())
-            await caption.PressAsync("Tab");
+        try
+        {
+            if(await caption.CountAsync()>0 && await caption.IsVisibleAsync())
+                await caption.PressAsync("Tab",new(){Timeout=3500});
+        }
+        catch(PlaywrightException ex)
+        {
+            log?.Invoke("TikTok: caption editor rerendered while blurring: " +
+                ex.Message.Split((char)10)[0] + "; continuing safely.");
+        }
+
         await page.Keyboard.PressAsync("Escape");
-        await page.GetByText("Schedule",new(){Exact=true}).First.ClickAsync();
+        ct.ThrowIfCancellationRequested();
+        log?.Invoke("TikTok: schedule stage=activate-radio.");
+        // Use the working text-based Schedule selector before any fallback.
+        // Do NOT touch the upload footer's final Schedule/Post button here.
+        var scheduleMode=page.GetByText("Schedule",new(){Exact=true}).First;
+        try
+        {
+            await scheduleMode.WaitForAsync(new()
+            {
+                State=WaitForSelectorState.Visible, Timeout=20000
+            });
+            await scheduleMode.ClickAsync(new(){Timeout=10000});
+        }
+        catch(PlaywrightException ex)
+        {
+            log?.Invoke("TikTok: schedule radio activation failed: " +
+                ex.Message.Split((char)10)[0]);
+            // Only an explicit radio-role match is safe as an alternative:
+            // a generic 'Schedule' button may be the FINAL submission CTA.
+            var radio=page.GetByRole(AriaRole.Radio,new(){Name="Schedule"});
+            if(await radio.CountAsync()==1 && await radio.IsVisibleAsync())
+            {
+                log?.Invoke("TikTok: recovering schedule mode with unique Schedule radio.");
+                try { await radio.ClickAsync(new(){Timeout=7000}); }
+                catch(PlaywrightException)
+                {
+                    await SaveTikTokLaterDateContextAsync(
+                        page,"Schedule-Radio-Not-Activated",log);
+                    return false;
+                }
+            }
+            else
+            {
+                await SaveTikTokLaterDateContextAsync(
+                    page,"Schedule-Radio-Not-Found",log);
+                return false;
+            }
+        }
+
         await Task.Delay(450,ct);
-        log?.Invoke("TikTok: strictly setting "+target.ToString("yyyy-MM-dd HH:mm")+
+        log?.Invoke("TikTok: schedule stage=radio-activated; requested="+
+            target.ToString("yyyy-MM-dd HH:mm")+
             "; privacy and music controls must remain untouched.");
+
+        // Log the actual stage rather than labeling a radio/caption exception
+        // as a date-picker failure.
+        log?.Invoke("TikTok: schedule stage=locate-date-trigger.");
 
         var dateTrigger=page.Locator(".date-picker-input:visible").First;
         if (laterVideo)
@@ -844,8 +907,11 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         }
         if(await dateTrigger.CountAsync()==0||!await dateTrigger.IsVisibleAsync())
         {
-            log?.Invoke("TikTok: date trigger not available.");return false;
+            log?.Invoke("TikTok: schedule stage=date-trigger-missing.");
+            await SaveTikTokLaterDateContextAsync(page,"Date-Trigger-Missing",log);
+            return false;
         }
+        log?.Invoke("TikTok: schedule stage=select-date; trigger located.");
         bool dateOk;
         if (laterVideo)
         {
@@ -870,6 +936,7 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             return false;
         }
 
+        log?.Invoke("TikTok: schedule stage=date-verified; selecting time.");
         // The date was verified. Only now touch the dedicated time control.
         var timeTrigger=page.Locator(".time-picker-input:visible").First;
         if(await timeTrigger.CountAsync()==0)
