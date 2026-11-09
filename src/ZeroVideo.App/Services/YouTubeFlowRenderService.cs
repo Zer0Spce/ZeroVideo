@@ -10,6 +10,35 @@ namespace ZeroVideo.App.Services;
 /// </summary>
 public sealed class YouTubeFlowRenderService(ProcessRunner runner, FfmpegService ffmpeg)
 {
+    public async Task<string> CombineNarrationAsync(
+        IReadOnlyList<string> parts, string output,
+        ZeroVideoSettings settings, Action<string>? log, CancellationToken ct)
+    {
+        if (parts.Count == 0) throw new InvalidDataException("No voiceover sections were generated.");
+        await ffmpeg.ValidateAsync(settings, log, ct);
+        // Normalize the audio format to WAV even for a single Clipchamp section.
+        var arguments = new StringBuilder("-hide_banner -loglevel error -y ");
+        for (var i = 0; i < parts.Count; i++)
+        {
+            if (!File.Exists(parts[i]))
+                throw new FileNotFoundException("Missing narration part.", parts[i]);
+            arguments.Append("-i ").Append(Quote(parts[i])).Append(' ');
+        }
+        var filters = new List<string>();
+        for (var i = 0; i < parts.Count; i++)
+            filters.Add($"[{i}:a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS[a{i}]");
+        filters.Add(string.Join("", Enumerable.Range(0, parts.Count).Select(i => $"[a{i}]")) +
+            $"concat=n={parts.Count}:v=0:a=1[out]");
+        arguments.Append("-filter_complex ").Append(Quote(string.Join(";", filters)))
+            .Append(" -map [out] -c:a pcm_s16le -ar 48000 ")
+            .Append(Quote(output));
+        log?.Invoke($"FFmpeg: joining {parts.Count} voiceover section(s).");
+        var result = await runner.RunAsync(settings.FfmpegPath, arguments.ToString(), ct: ct);
+        if (result.ExitCode != 0 || !File.Exists(output))
+            throw new InvalidOperationException("Could not join narration: " + Tail(result.StdErr));
+        return output;
+    }
+
     public async Task<string> RenderAsync(
         IReadOnlyList<PixabayFlowClip> clips, string voiceover, string output,
         string ratio, ZeroVideoSettings settings,
