@@ -214,9 +214,16 @@ public sealed partial class MainViewModel
                     : await _clip.GenerateChapterAsync(chapter, project, Settings, Log, _cts.Token);
                 if (string.IsNullOrWhiteSpace(generated))
                     throw new InvalidDataException("Voice generation did not return audio.");
-                await _ffmpeg.ValidateNarrationAudioAsync(
-                    generated, Settings, $"YouTube Flow part {index + 1}",
-                    chapter.Narration, Log, _cts.Token);
+                // The very last TTS chunk can be under eight seconds; the
+                // complete merged narration receives the stronger duration check.
+                if (chapter.Narration.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length < 40)
+                    await _ffmpeg.ValidateAudibleAudioAsync(
+                        generated, Settings, $"YouTube Flow short part {index + 1}",
+                        Log, _cts.Token);
+                else
+                    await _ffmpeg.ValidateNarrationAudioAsync(
+                        generated, Settings, $"YouTube Flow part {index + 1}",
+                        chapter.Narration, Log, _cts.Token);
                 narrationFiles.Add(generated);
             }
             var renderer = new YouTubeFlowRenderService(_runner, _ffmpeg);
