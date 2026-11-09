@@ -43,6 +43,7 @@ public sealed partial class MainViewModel
     public ICommand UseYouTubeFlowIdeaCommand { get; private set; } = null!;
     public ICommand GenerateYouTubeFlowScriptCommand { get; private set; } = null!;
     public ICommand BuildYouTubeFlowCommand { get; private set; } = null!;
+    public ICommand SaveYouTubeFlowSettingsCommand { get; private set; } = null!;
     public ICommand OpenYouTubeFlowOutputCommand { get; private set; } = null!;
 
     private void InitializeYouTubeFlowCommands()
@@ -57,6 +58,11 @@ public sealed partial class MainViewModel
         });
         GenerateYouTubeFlowScriptCommand = new AsyncCommand(() =>
             RunManagedJobAsync("YouTube Flow — Script", GenerateYouTubeFlowScriptAsync));
+        SaveYouTubeFlowSettingsCommand = new AsyncCommand(async () =>
+        {
+            await _settingsService.SaveAsync(Settings);
+            YouTubeFlowStatus = "Pixabay key/settings saved locally.";
+        });
         BuildYouTubeFlowCommand = new AsyncCommand(() =>
             RunManagedJobAsync("YouTube Flow — Stock Video", BuildYouTubeFlowAsync));
         OpenYouTubeFlowOutputCommand = new RelayCommand(() =>
