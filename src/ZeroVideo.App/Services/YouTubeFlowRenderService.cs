@@ -16,6 +16,17 @@ public sealed class YouTubeFlowRenderService(ProcessRunner runner, FfmpegService
     {
         if (parts.Count == 0) throw new InvalidDataException("No voiceover sections were generated.");
         await ffmpeg.ValidateAsync(settings, log, ct);
+        if (parts.Count == 1)
+        {
+            if (!File.Exists(parts[0]))
+                throw new FileNotFoundException("Missing narration part.", parts[0]);
+            var args = "-hide_banner -loglevel error -y -i " + Quote(parts[0]) +
+                " -vn -map 0:a:0 -ac 2 -ar 48000 -c:a pcm_s16le " + Quote(output);
+            var one = await runner.RunAsync(settings.FfmpegPath, args, ct: ct);
+            if (one.ExitCode != 0 || !File.Exists(output))
+                throw new InvalidOperationException("Could not normalize narration: " + Tail(one.StdErr));
+            return output;
+        }
         // Normalize the audio format to WAV even for a single Clipchamp section.
         var arguments = new StringBuilder("-hide_banner -loglevel error -y ");
         for (var i = 0; i < parts.Count; i++)
