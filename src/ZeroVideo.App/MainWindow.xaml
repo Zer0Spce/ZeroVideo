@@ -497,6 +497,23 @@
                                FontWeight="SemiBold" Margin="0,0,0,7"/>
                     <TextBlock Text="Uses your selected voice from Voice Studio (Clipchamp or licensed OmniVoice evaluation). Generates a complete voice track, searches Pixabay, downloads selected stock clips and renders an MP4."
                                Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                    <Label Content="VOICE ENGINE" Margin="0,12,0,0"/>
+                    <ComboBox Width="210" HorizontalAlignment="Left"
+                              ItemsSource="{Binding TextToSpeechEngines}"
+                              SelectedItem="{Binding Settings.TextToSpeechEngine, Mode=TwoWay}"/>
+                    <TextBlock Text="{Binding ActiveNarrationVoiceName}" Foreground="{StaticResource Muted}"
+                               Margin="0,6,0,2"/>
+                    <Label Content="SAVED LOCAL VOICE (optional)" Margin="0,8,0,0"/>
+                    <WrapPanel>
+                      <ComboBox Width="205" ItemsSource="{Binding OmniVoiceProfiles}"
+                                DisplayMemberPath="Name"
+                                SelectedItem="{Binding SelectedOmniProfile, Mode=TwoWay}"
+                                Margin="0,0,10,0"/>
+                      <Button Content="Use Local Voice" Command="{Binding UseOmniProfileCommand}"
+                              Style="{StaticResource SecondaryButton}"/>
+                    </WrapPanel>
+                    <TextBlock Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,6"
+                               Text="Existing Clipchamp voice selection happens during Create Video. Local OmniVoice requires a previously imported profile and is non-commercial/evaluation-only."/>
                     <TextBlock Text="NO CAPTIONS — no SRT, subtitles or burned-in text."
                                FontWeight="SemiBold" Margin="0,8,0,4"/>
                     <WrapPanel Margin="0,10,0,0">
