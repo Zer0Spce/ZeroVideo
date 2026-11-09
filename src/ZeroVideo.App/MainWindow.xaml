@@ -393,6 +393,135 @@
         </DockPanel>
       </TabItem>
 
+
+      <!-- Isolated Pixabay stock-footage workflow; existing creation tabs are unchanged. -->
+      <TabItem Header="YouTube Flow">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
+            <Button Style="{StaticResource SecondaryButton}" Content="Stop"
+                    Command="{Binding StopJobCommand}" IsEnabled="{Binding JobRunning}"/>
+            <Button Style="{StaticResource SecondaryButton}" Content="Force Stop"
+                    Command="{Binding ForceStopJobCommand}" IsEnabled="{Binding JobRunning}"/>
+            <TextBlock Text="{Binding YouTubeFlowStatus}" Foreground="{StaticResource Muted}"
+                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                       Margin="12,0,0,0" MaxWidth="750"/>
+          </StackPanel>
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <Grid Margin="0,12,0,12">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="390"/>
+                <ColumnDefinition Width="16"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <StackPanel Grid.Column="0">
+                <Border Style="{StaticResource CardBorder}">
+                  <StackPanel>
+                    <TextBlock Text="1. Idea Generator" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,7"/>
+                    <TextBlock Text="Create video titles and hooks inside this tab. Or skip ideas and paste your own script."
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                    <Label Content="VIDEO NICHE" Margin="0,9,0,0"/>
+                    <TextBox Text="{Binding YouTubeFlowNiche, UpdateSourceTrigger=PropertyChanged}"/>
+                    <Label Content="NUMBER OF IDEAS" Margin="0,9,0,0"/>
+                    <ComboBox Width="110" HorizontalAlignment="Left"
+                              ItemsSource="{Binding YouTubeFlowIdeaCounts}"
+                              SelectedItem="{Binding YouTubeFlowIdeaCount}"/>
+                    <Button Style="{StaticResource PrimaryButton}" Content="Generate Ideas"
+                            Command="{Binding GenerateYouTubeFlowIdeasCommand}" HorizontalAlignment="Left"
+                            Margin="0,12,0,8"/>
+                    <DataGrid ItemsSource="{Binding YouTubeFlowIdeas}"
+                              SelectedItem="{Binding YouTubeFlowSelectedIdea, Mode=TwoWay}"
+                              IsReadOnly="True" AutoGenerateColumns="False"
+                              Height="315" HeadersVisibility="Column"
+                              CanUserAddRows="False" RowHeaderWidth="0">
+                      <DataGrid.Columns>
+                        <DataGridTextColumn Header="Video title" Binding="{Binding Title}" Width="2*"/>
+                        <DataGridTextColumn Header="Hook" Binding="{Binding Hook}" Width="3*"/>
+                      </DataGrid.Columns>
+                    </DataGrid>
+                    <Button Content="Use Selected Idea" Style="{StaticResource SecondaryButton}"
+                            Command="{Binding UseYouTubeFlowIdeaCommand}"
+                            HorizontalAlignment="Left" Margin="0,10,0,0"/>
+                  </StackPanel>
+                </Border>
+                <Border Style="{StaticResource CardBorder}" Margin="0,14,0,0">
+                  <StackPanel>
+                    <TextBlock Text="Pixabay Footage Source" FontSize="17" FontWeight="SemiBold"/>
+                    <TextBlock Text="Pixabay only for this version. Enter your personal API key."
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
+                    <Label Content="PIXABAY API KEY"/>
+                    <PasswordBox x:Name="PixabayKeyInput" PasswordChanged="OnPixabayKeyChanged"/>
+                    <Button Content="Save Settings" Command="{Binding SaveSettingsCommand}"
+                            Style="{StaticResource SecondaryButton}" Margin="0,10,0,0"
+                            HorizontalAlignment="Left"/>
+                    <TextBlock Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,9,0,0"
+                               Text="API responses are cached for 24 hours. Maximum 10 videos per project. Keys are stored in your local ZeroVideo settings file."/>
+                    <TextBlock Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0">
+                      Pixabay Content License applies. Avoid using generic B-roll as purported real-event footage.
+                    </TextBlock>
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+              <StackPanel Grid.Column="2">
+                <Border Style="{StaticResource CardBorder}">
+                  <StackPanel>
+                    <TextBlock Text="2. Script Generator / Editor" FontSize="20"
+                               FontWeight="SemiBold" Margin="0,0,0,7"/>
+                    <Label Content="VIDEO TITLE"/>
+                    <TextBox Text="{Binding YouTubeFlowTitle, UpdateSourceTrigger=PropertyChanged}"/>
+                    <WrapPanel Margin="0,10,0,0">
+                      <StackPanel Margin="0,0,16,0">
+                        <Label Content="TARGET DURATION"/>
+                        <ComboBox Width="115" ItemsSource="{Binding YouTubeFlowDurations}"
+                                  SelectedItem="{Binding YouTubeFlowMinutes}"/>
+                      </StackPanel>
+                      <StackPanel>
+                        <Label Content="OUTPUT RATIO"/>
+                        <ComboBox Width="135" ItemsSource="{Binding AspectRatios}"
+                                  SelectedItem="{Binding YouTubeFlowRatio}"/>
+                      </StackPanel>
+                    </WrapPanel>
+                    <Button Content="Generate Script" Style="{StaticResource PrimaryButton}"
+                            Command="{Binding GenerateYouTubeFlowScriptCommand}"
+                            HorizontalAlignment="Left" Margin="0,12,0,10"/>
+                    <TextBlock Text="Paste or edit your narration script below. Generated scripts remain editable."
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                    <TextBox Text="{Binding YouTubeFlowScript, UpdateSourceTrigger=PropertyChanged}"
+                             AcceptsReturn="True" TextWrapping="Wrap"
+                             VerticalScrollBarVisibility="Auto"
+                             MinHeight="260" MaxHeight="430"/>
+                  </StackPanel>
+                </Border>
+                <Border Style="{StaticResource CardBorder}" Margin="0,14,0,0">
+                  <StackPanel>
+                    <TextBlock Text="3. Voiceover + Stock Video + FFmpeg" FontSize="20"
+                               FontWeight="SemiBold" Margin="0,0,0,7"/>
+                    <TextBlock Text="Uses your selected voice from Voice Studio (Clipchamp or licensed OmniVoice evaluation). Generates a complete voice track, searches Pixabay, downloads selected stock clips and renders an MP4."
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                    <TextBlock Text="NO CAPTIONS — no SRT, subtitles or burned-in text."
+                               FontWeight="SemiBold" Margin="0,8,0,4"/>
+                    <WrapPanel Margin="0,10,0,0">
+                      <Button Content="Create Video" Style="{StaticResource PrimaryButton}"
+                              Command="{Binding BuildYouTubeFlowCommand}"
+                              Margin="0,0,10,0"/>
+                      <Button Content="Continue TTS" Style="{StaticResource SecondaryButton}"
+                              Command="{Binding ContinueTtsCommand}"
+                              IsEnabled="{Binding WaitingForTtsContinue}"
+                              Margin="0,0,10,0"/>
+                      <Button Content="Open Output Folder" Style="{StaticResource SecondaryButton}"
+                              Command="{Binding OpenYouTubeFlowOutputCommand}"/>
+                    </WrapPanel>
+                    <TextBlock Text="{Binding YouTubeFlowStatus}" Foreground="{StaticResource Muted}"
+                               TextWrapping="Wrap" Margin="0,12,0,5"/>
+                    <TextBox Text="{Binding YouTubeFlowOutput}" IsReadOnly="True"
+                             Margin="0,3,0,0"/>
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+            </Grid>
+          </ScrollViewer>
+        </DockPanel>
+      </TabItem>
+
       <TabItem Header="Idea Generation">
         <DockPanel>
           <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
