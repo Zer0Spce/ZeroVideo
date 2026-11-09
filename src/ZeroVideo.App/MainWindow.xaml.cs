@@ -24,6 +24,13 @@ public partial class MainWindow : Window
     {
         AnimateShellIn();
         await _vm.InitializeAsync();
+        PixabayKeyInput.Password = _vm.Settings.PixabayApiKey;
+    }
+
+    private void OnPixabayKeyChanged(object sender, RoutedEventArgs e)
+    {
+        if (sender is System.Windows.Controls.PasswordBox box)
+            _vm.Settings.PixabayApiKey = box.Password;
     }
 
     private void AnimateShellIn()
