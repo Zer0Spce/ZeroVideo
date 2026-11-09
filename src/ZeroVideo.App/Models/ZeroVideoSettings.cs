@@ -7,6 +7,8 @@ public sealed class ZeroVideoSettings : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Notify(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     public string ProjectsRoot { get; set; } = "";
+    // Stored only in local user settings, never bundled into app builds or logs.
+    public string PixabayApiKey { get; set; } = "";
     public string FfmpegPath { get; set; } = "";
     public string FfprobePath { get; set; } = "";
     public string EdgeUserDataDirectory { get; set; } = "";

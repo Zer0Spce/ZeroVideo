@@ -3,7 +3,7 @@ name: Windows portable build
 on:
   workflow_dispatch:
   push:
-    branches: [ main, feat/windows-longform-generator ]
+    branches: [ main, feat/windows-longform-generator, feature/youtube-flow-pixabay-stock-2026-11-09 ]
     tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
