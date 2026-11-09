@@ -395,7 +395,7 @@
 
 
       <!-- Isolated Pixabay stock-footage workflow; existing creation tabs are unchanged. -->
-      <TabItem Header="YouTube Flow">
+      <TabItem Header="Youtube Flow">
         <DockPanel>
           <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
             <Button Style="{StaticResource SecondaryButton}" Content="Stop"
