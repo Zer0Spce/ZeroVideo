@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Text;
 using System.Windows.Input;
 using ZeroVideo.App.Infrastructure;
 using ZeroVideo.App.Models;
@@ -157,30 +159,33 @@ public sealed partial class MainViewModel
             await File.WriteAllTextAsync(
                 Path.Combine(folder, "script.txt"), YouTubeFlowScript, _cts.Token);
 
-            var chapter = new ProjectChapter
-            {
-                Number = 1, Title = YouTubeFlowTitle, Narration = YouTubeFlowScript
-            };
+            // Split longer scripts at sentence boundaries so Clipchamp/OmniVoice
+            // receive manageable narration chunks rather than a single giant TTS request.
+            var chapters = SplitYouTubeFlowNarration(YouTubeFlowScript)
+                .Select((narration, index) => new ProjectChapter
+                {
+                    Number = index + 1, Title = YouTubeFlowTitle,
+                    Narration = narration
+                }).ToList();
             var project = new VideoProject
             {
                 Title = YouTubeFlowTitle, Topic = YouTubeFlowTitle,
                 ProjectDirectory = folder, AspectRatio = YouTubeFlowRatio,
-                Chapters = [chapter],
+                Chapters = chapters,
                 Options = new ProjectOptions { GenerateCaptions = false, BurnInBoldCaptions = false }
             };
-            Status = YouTubeFlowStatus = "Generating the narration voiceover...";
+            Status = YouTubeFlowStatus = "Generating narration voiceover...";
             Progress = 10;
-            if (Settings.TextToSpeechEngine == "OmniVoice (Local)")
+            var localVoice = Settings.TextToSpeechEngine == "OmniVoice (Local)";
+            if (localVoice)
             {
                 if (!Settings.OmniVoiceNonCommercialAcknowledged)
                     throw new InvalidOperationException(
                         "OmniVoice is non-commercial/evaluation-only. Acknowledge the license in Voice Studio.");
-                chapter.AudioPath = await _omniVoice.GenerateChapterAsync(
-                    chapter, project, Settings, Log, _cts.Token);
             }
             else
             {
-                // Preserve the working Clipchamp manual voice-selection procedure.
+                // One manual checkpoint for the whole session, not per chunk.
                 _ttsContinueGate = new TaskCompletionSource<bool>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
                 WaitingForTtsContinue = true;
@@ -190,15 +195,30 @@ public sealed partial class MainViewModel
                 WaitingForTtsContinue = false;
                 _ttsContinueGate = null;
                 _clip.ConfirmManualVoiceSelection();
-                chapter.AudioPath = await _clip.GenerateChapterAsync(
-                    chapter, project, Settings, Log, _cts.Token);
             }
-
-            if (string.IsNullOrWhiteSpace(chapter.AudioPath))
-                throw new InvalidDataException("Voice generation did not return audio.");
-            await _ffmpeg.ValidateAsync(Settings, Log, _cts.Token);
+            var narrationFiles = new List<string>();
+            for (var index = 0; index < chapters.Count; index++)
+            {
+                _cts.Token.ThrowIfCancellationRequested();
+                var chapter = chapters[index];
+                Status = YouTubeFlowStatus =
+                    $"Narrating section {index + 1}/{chapters.Count}...";
+                var generated = localVoice
+                    ? await _omniVoice.GenerateChapterAsync(chapter, project, Settings, Log, _cts.Token)
+                    : await _clip.GenerateChapterAsync(chapter, project, Settings, Log, _cts.Token);
+                if (string.IsNullOrWhiteSpace(generated))
+                    throw new InvalidDataException("Voice generation did not return audio.");
+                await _ffmpeg.ValidateNarrationAudioAsync(
+                    generated, Settings, $"YouTube Flow part {index + 1}",
+                    chapter.Narration, Log, _cts.Token);
+                narrationFiles.Add(generated);
+            }
+            var renderer = new YouTubeFlowRenderService(_runner, _ffmpeg);
+            var voiceover = await renderer.CombineNarrationAsync(
+                narrationFiles, Path.Combine(folder, "audio", "voiceover.wav"),
+                Settings, Log, _cts.Token);
             await _ffmpeg.ValidateNarrationAudioAsync(
-                chapter.AudioPath, Settings, "YouTube Flow voiceover",
+                voiceover, Settings, "YouTube Flow complete voiceover",
                 YouTubeFlowScript, Log, _cts.Token);
             Progress = 35;
             Status = YouTubeFlowStatus = "Planning stock video queries...";
@@ -227,8 +247,7 @@ public sealed partial class MainViewModel
                 _cts.Token);
             Progress = 65;
             Status = YouTubeFlowStatus = "FFmpeg is stitching the stock footage...";
-            var renderer = new YouTubeFlowRenderService(_runner, _ffmpeg);
-            await renderer.RenderAsync(clips, chapter.AudioPath, output,
+            await renderer.RenderAsync(clips, voiceover, output,
                 YouTubeFlowRatio, Settings, Log, _cts.Token);
 
             Progress = 100;
@@ -276,6 +295,37 @@ public sealed partial class MainViewModel
         if (queries.Count == 0)
             throw new InvalidDataException("No usable Pixabay queries were generated.");
         return queries;
+    }
+
+    private static List<string> SplitYouTubeFlowNarration(string script)
+    {
+        const int maxCharacters = 1700;
+        var chunks = new List<string>();
+        var current = new StringBuilder();
+        var sentences = Regex.Split(script.Trim(), @"(?<=[.!?])\s+|\r?\n+");
+        foreach (var sentence in sentences.Where(x => !string.IsNullOrWhiteSpace(x)))
+        {
+            // Keep even unusually long sentences within browser TTS limits.
+            var words = sentence.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            foreach (var word in words)
+            {
+                if (current.Length > 0 && current.Length + word.Length + 1 > maxCharacters)
+                {
+                    chunks.Add(current.ToString().Trim());
+                    current.Clear();
+                }
+                if (word.Length > maxCharacters)
+                {
+                    for (var pos = 0; pos < word.Length; pos += maxCharacters)
+                        chunks.Add(word.Substring(pos, Math.Min(maxCharacters, word.Length - pos)));
+                    continue;
+                }
+                if (current.Length > 0) current.Append(' ');
+                current.Append(word);
+            }
+        }
+        if (current.Length > 0) chunks.Add(current.ToString().Trim());
+        return chunks;
     }
 
     private static string GetString(JsonElement node, string property)
