@@ -222,13 +222,81 @@ public sealed class PixabayVideoService
             }
         } while (selectedAny && clips.Count < target && !mediaRateLimited);
 
-        // If a scene lacks usable moving footage, fill only its own remaining
-        // visual slots with clearly licensed, relevant documentary photographs.
-        // Wikimedia image results are fetched sequentially and tagged to the
-        // same narration scene; an unrelated photo never fills another scene.
-        if (scenePlan is not null && imageFallback is not null)
+        // Rescue truly uncovered scenes before spending more budget on already
+        // illustrated ones. Try one broader, still subject-specific Pixabay query
+        // without hiding or bypassing rate limits.
+        if (scenePlan is not null)
         {
             for (var i = 0; i < scenePlan.Count; i++)
+            {
+                if (sceneCounts[i] != 0 || mediaRateLimited || rateLimit is not null) continue;
+                ct.ThrowIfCancellationRequested();
+                var scene = scenePlan[i];
+                var broader = BroadenSceneSearch(scene.SearchQuery);
+                if (string.IsNullOrWhiteSpace(broader) ||
+                    broader.Equals(scene.SearchQuery, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                log?.Invoke($"Scene {scene.SceneNumber}: broadening stock search to '{broader}'.");
+                try
+                {
+                    using var response = await QueryAsync(broader, apiKey.Trim(), cacheDir, log, ct);
+                    if (!response.RootElement.TryGetProperty("hits", out var hits) ||
+                        hits.ValueKind != JsonValueKind.Array) continue;
+                    foreach (var hit in hits.EnumerateArray())
+                    {
+                        if (sceneCounts[i] != 0) break;
+                        if (!hit.TryGetProperty("id", out var idNode) ||
+                            !idNode.TryGetInt64(out var id) || usedIds.Contains(id) ||
+                            !hit.TryGetProperty("videos", out var versions) ||
+                            !TrySelectVideo(versions, out var url, out _, out _)) continue;
+                        var tags = ReadString(hit, "tags");
+                        if (IsChromaKeyStockMetadata(tags) ||
+                            !IsScriptVisualMatch(broader, tags, scene.Mood)) continue;
+                        var local = Path.Combine(videoDir, id + "-medium.mp4");
+                        try
+                        {
+                            if (!File.Exists(local) || new FileInfo(local).Length < 4096)
+                                await DownloadAsync(url, local, ct);
+                            if (chromaScreenCheck is not null &&
+                                await chromaScreenCheck(local, ct)) continue;
+                            usedIds.Add(id);
+                            clips.Add(new PixabayFlowClip(id, local,
+                                ReadString(hit, "pageURL"), scene.SearchQuery, tags));
+                            sceneCounts[i]++;
+                            onClipReady?.Invoke(clips.Count, target);
+                            log?.Invoke($"Scene {scene.SceneNumber}: found a relevant clip using broader search.");
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (PixabayRateLimitException ex)
+                        {
+                            rateLimit = ex;
+                            RateLimitedDuringLastAcquire = true;
+                            mediaRateLimited = true;
+                            break;
+                        }
+                        catch (Exception ex)
+                        {
+                            log?.Invoke($"Scene {scene.SceneNumber}: broader clip download unavailable: {ex.Message}");
+                        }
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (PixabayRateLimitException ex)
+                {
+                    rateLimit = ex;
+                    RateLimitedDuringLastAcquire = true;
+                }
+            }
+        }
+
+        // First fill the EMPTY narration scenes, then add optional photos to
+        // the others. Otherwise a small AI budget can be exhausted on decorative
+        // early shots while later narration scenes have no illustration.
+        if (scenePlan is not null && imageFallback is not null)
+        {
+            var priority = Enumerable.Range(0, scenePlan.Count)
+                .OrderBy(i => sceneCounts[i] == 0 ? 0 : 1).ThenBy(i => i);
+            foreach (var i in priority)
             {
                 ct.ThrowIfCancellationRequested();
                 var missing = sceneTargets[i] - sceneCounts[i];
@@ -266,7 +334,6 @@ public sealed class PixabayVideoService
         }
 
         if (rateLimit is not null && (scenePlan is null ||
-            clips.Count < Math.Ceiling(target * MinSceneFootageCoverage) ||
             sceneCounts.Any(c => c == 0)))
         {
             log?.Invoke($"Pixabay rate limit: {clips.Count}/{target} cached/available clips. Saving the project for a quota-respecting retry; no incomplete MP4 will be labeled finished.");
@@ -283,13 +350,9 @@ public sealed class PixabayVideoService
                     $". {clips.Count}/{target} clips were saved. " +
                     "No unrelated footage was inserted; adjust those scenes' searches and retry.");
 
-            var coverage = clips.Count / (double)target;
-            if (coverage < MinSceneFootageCoverage)
-                throw new InvalidOperationException(
-                    $"Pixabay found only {clips.Count}/{target} relevant clips ({coverage:P0}), " +
-                    $"below the {MinSceneFootageCoverage:P0} scene-coverage requirement. " +
-                    "All downloaded clips and narration remain saved for retry.");
-
+            // Documentary quality is driven by complete scene coverage, not
+            // an artificial 150-download threshold. Each verified visual can
+            // remain on screen longer without repeating unrelated material.
             SceneFootageShortfall = target - clips.Count;
             if (SceneFootageShortfall > 0)
                 log?.Invoke($"Pixabay: {clips.Count}/{target} distinct matching clips across all {queries.Count} narration scenes. " +
@@ -304,6 +367,19 @@ public sealed class PixabayVideoService
         // Render in narration order, keeping each search's varied shot sequence.
         return clips.OrderBy(c => queries.FindIndex(q =>
             q.Equals(c.SearchQuery, StringComparison.OrdinalIgnoreCase))).ToList();
+    }
+
+    public static string BroadenSceneSearch(string query)
+    {
+        var words = Regex.Matches(query.ToLowerInvariant(), @"[a-z0-9]+")
+            .Select(m => m.Value)
+            .Where(w => w.Length > 2 &&
+                w is not ("luxury" or "perfect" or "beautiful" or "dramatic" or
+                          "cinematic" or "dark" or "bright" or "scary" or
+                          "creepy" or "eerie" or "happy" or "sunny" or
+                          "peaceful" or "ominous" or "behind" or "outside"))
+            .Take(3).ToArray();
+        return string.Join(" ", words.Take(2));
     }
 
     public static bool IsChromaKeyStockMetadata(string text)
