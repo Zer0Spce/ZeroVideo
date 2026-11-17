@@ -8,7 +8,9 @@ using System.Text.RegularExpressions;
 namespace ZeroVideo.App.Services;
 
 public sealed record PixabayFlowClip(
-    long Id, string FilePath, string SourcePage, string SearchQuery, string Tags);
+    long Id, string FilePath, string SourcePage, string SearchQuery, string Tags,
+    bool IsStillImage = false, string Attribution = "", string License = "",
+    string LicenseUrl = "");
 
 public sealed record PixabayFootageScene(
     int SceneNumber, string NarrationExcerpt, string SearchQuery, string Mood);
@@ -65,7 +67,10 @@ public sealed class PixabayVideoService
         IEnumerable<string> requestedQueries, string apiKey, string ratio,
         Action<string>? log, CancellationToken ct, int targetClipCount = 0,
         Action<int, int>? onClipReady = null,
-        IReadOnlyList<PixabayFootageScene>? scenePlan = null)
+        IReadOnlyList<PixabayFootageScene>? scenePlan = null,
+        Func<string, CancellationToken, Task<bool>>? chromaScreenCheck = null,
+        Func<PixabayFootageScene, int, CancellationToken,
+            Task<IReadOnlyList<PixabayFlowClip>>>? imageFallback = null)
     {
         if (string.IsNullOrWhiteSpace(apiKey))
             throw new InvalidOperationException("Enter your own Pixabay API key in YouTube Flow.");
@@ -135,6 +140,8 @@ public sealed class PixabayVideoService
                         continue;
                     var sourcePage = ReadString(hit, "pageURL");
                     var tags = ReadString(hit, "tags");
+                    if (IsChromaKeyStockMetadata(tags + " " + ReadString(hit, "pageURL")))
+                        continue;
                     var targetRatio = ratio == "9:16" ? 9d / 16 : 16d / 9;
                     var aspectPenalty = Math.Abs(Math.Log((double)width / height / targetRatio));
                     var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -180,6 +187,13 @@ public sealed class PixabayVideoService
                     {
                         if (!File.Exists(destination) || new FileInfo(destination).Length < 4096)
                             await DownloadAsync(candidate.Url, destination, ct);
+                        if (chromaScreenCheck is not null &&
+                            await chromaScreenCheck(destination, ct))
+                        {
+                            failedDownloads.Add(candidate.Id);
+                            log?.Invoke($"Pixabay clip {candidate.Id} rejected: green/blue-screen footage.");
+                            continue;
+                        }
                         usedIds.Add(candidate.Id);
                         clips.Add(new PixabayFlowClip(candidate.Id, destination,
                             candidate.Page, queries[i], candidate.Tags));
@@ -208,7 +222,32 @@ public sealed class PixabayVideoService
             }
         } while (selectedAny && clips.Count < target && !mediaRateLimited);
 
-        if (rateLimit is not null)
+        // If a scene lacks usable moving footage, fill only its own remaining
+        // visual slots with clearly licensed, relevant documentary photographs.
+        // Wikimedia image results are fetched sequentially and tagged to the
+        // same narration scene; an unrelated photo never fills another scene.
+        if (scenePlan is not null && imageFallback is not null)
+        {
+            for (var i = 0; i < scenePlan.Count; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var missing = sceneTargets[i] - sceneCounts[i];
+                if (missing <= 0) continue;
+                var photos = await imageFallback(scenePlan[i], Math.Min(3, missing), ct);
+                foreach (var photo in photos)
+                {
+                    if (sceneCounts[i] >= sceneTargets[i]) break;
+                    if (!photo.IsStillImage || !usedIds.Add(photo.Id)) continue;
+                    clips.Add(photo);
+                    sceneCounts[i]++;
+                    onClipReady?.Invoke(clips.Count, target);
+                }
+            }
+        }
+
+        if (rateLimit is not null && (scenePlan is null ||
+            clips.Count < Math.Ceiling(target * MinSceneFootageCoverage) ||
+            sceneCounts.Any(c => c == 0)))
         {
             log?.Invoke($"Pixabay rate limit: {clips.Count}/{target} cached/available clips. Saving the project for a quota-respecting retry; no incomplete MP4 will be labeled finished.");
             throw new PixabayRateLimitException(rateLimit.RetryAfter);
@@ -247,6 +286,15 @@ public sealed class PixabayVideoService
             q.Equals(c.SearchQuery, StringComparison.OrdinalIgnoreCase))).ToList();
     }
 
+    public static bool IsChromaKeyStockMetadata(string text)
+    {
+        var normalized = Regex.Replace(text.ToLowerInvariant(), @"[^a-z0-9]+", " ");
+        return Regex.IsMatch(normalized,
+            @"\b(green\s*screen|blue\s*screen|chroma\s*key|chromakey|" +
+            @"keyable|green\s*background|green\s*backdrop|isolated\s*on\s*green|" +
+            @"transparent\s*background|alpha\s*overlay)\b");
+    }
+
     private static readonly HashSet<string> NonVisualSearchWords = new(StringComparer.OrdinalIgnoreCase)
     {
         "and", "the", "for", "with", "from", "into", "that", "this", "over",
@@ -279,8 +327,9 @@ public sealed class PixabayVideoService
         var tagWords = Words(tags);
         var subjectWords = Words(query).Where(w => !NonVisualSearchWords.Contains(w)).ToArray();
         // No reliable metadata evidence of the requested object/action: skip it.
+        var subjectOverlap = subjectWords.Count(w => tagWords.Contains(w));
         if (subjectWords.Length == 0 ||
-            !subjectWords.Any(w => tagWords.Contains(w)))
+            subjectOverlap < Math.Min(2, subjectWords.Length))
             return false;
 
         if (mood.Equals("ominous", StringComparison.OrdinalIgnoreCase))
