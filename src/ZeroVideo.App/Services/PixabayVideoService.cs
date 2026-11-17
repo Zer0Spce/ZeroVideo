@@ -47,6 +47,10 @@ public sealed class PixabayVideoService
     private readonly string _dataDirectory;
     private readonly TimeSpan _maxAutoWait;
     public bool RateLimitedDuringLastAcquire { get; private set; }
+    // Small per-scene shortages are expected with sparse stock catalogs.
+    // Require visual coverage of every scene, not an arbitrary exact shot count.
+    public const double MinSceneFootageCoverage = 0.85;
+    public int SceneFootageShortfall { get; private set; }
 
     // Optional client and storage for deterministic tests without a live API key.
     public PixabayVideoService(HttpClient? http = null, string? dataDirectory = null,
@@ -83,6 +87,7 @@ public sealed class PixabayVideoService
             ? queries.Count // Preserve compatibility for older callers/tests.
             : Math.Clamp(targetClipCount, 1, MaxClipsPerVideo);
         RateLimitedDuringLastAcquire = false;
+        SceneFootageShortfall = 0;
         var usedIds = new HashSet<long>();
         var clips = new List<PixabayFlowClip>(target);
         var cacheDir = Path.Combine(_dataDirectory, "Pixabay", "ApiCache");
@@ -210,16 +215,33 @@ public sealed class PixabayVideoService
         }
         if (scenePlan is not null)
         {
-            var missing = Enumerable.Range(0, queries.Count)
-                .Where(i => sceneCounts[i] < sceneTargets[i]).ToList();
-            if (missing.Count > 0)
+            var emptyScenes = Enumerable.Range(0, queries.Count)
+                .Where(i => sceneCounts[i] == 0).ToList();
+            if (emptyScenes.Count > 0)
                 throw new InvalidOperationException(
-                    $"Pixabay footage does not match {missing.Count} narration scene(s) ({clips.Count}/{target} matching clips ready). " +
-                    "The project is saved, not rendered with unrelated stock. Refine the scene searches or retry when suitable footage is available.");
+                    $"Pixabay found no relevant, mood-compatible stock for {emptyScenes.Count} narration scene(s): " +
+                    string.Join(", ", emptyScenes.Select(i => scenePlan[i].SceneNumber)) +
+                    $". {clips.Count}/{target} clips were saved. " +
+                    "No unrelated footage was inserted; adjust those scenes' searches and retry.");
+
+            var coverage = clips.Count / (double)target;
+            if (coverage < MinSceneFootageCoverage)
+                throw new InvalidOperationException(
+                    $"Pixabay found only {clips.Count}/{target} relevant clips ({coverage:P0}), " +
+                    $"below the {MinSceneFootageCoverage:P0} scene-coverage requirement. " +
+                    "All downloaded clips and narration remain saved for retry.");
+
+            SceneFootageShortfall = target - clips.Count;
+            if (SceneFootageShortfall > 0)
+                log?.Invoke($"Pixabay: {clips.Count}/{target} distinct matching clips across all {queries.Count} narration scenes. " +
+                    $"Accepting {SceneFootageShortfall} missing shots: the renderer will extend the existing " +
+                    "relevant clips within their own scenes, without using mismatched stock.");
         }
-        if (clips.Count < target)
+        else if (clips.Count < target)
+        {
             throw new InvalidOperationException(
                 $"Pixabay provided {clips.Count}/{target} distinct clips across {queries.Count} searches. The job remains resumable; expand/change the footage searches or use more licensed media rather than repeating unrelated clips.");
+        }
         // Render in narration order, keeping each search's varied shot sequence.
         return clips.OrderBy(c => queries.FindIndex(q =>
             q.Equals(c.SearchQuery, StringComparison.OrdinalIgnoreCase))).ToList();
