@@ -19,6 +19,9 @@ try
     await DurationScaledFootageSelection();
     await SceneMoodAndNarrationOrdering();
     await RejectWrongMoodAndUnrelatedTags();
+    await SmallSceneShortfallCanRenderWithoutUnrelatedClips();
+    await EmptySceneStillBlockedEvenAboveCoverageThreshold();
+    await LargeSceneShortfallStillBlocked();
     Console.WriteLine("PASS: Pixabay 24h cache, HTTP 429, resume-safe footage and bounded retry");
 }
 finally
@@ -244,12 +247,87 @@ async Task RejectWrongMoodAndUnrelatedTags()
         throw new Exception("Wrong-mood footage was accepted.");
     }
     catch (InvalidOperationException ex) when (
-        ex.Message.Contains("does not match", StringComparison.Ordinal))
+        ex.Message.Contains("no relevant", StringComparison.OrdinalIgnoreCase))
     {
         Check(fake.VideoRequests == 0,
             "Unrelated footage must not even be downloaded.");
     }
     Console.WriteLine("PASS: mismatched stock clips are rejected rather than rendered");
+}
+
+async Task SmallSceneShortfallCanRenderWithoutUnrelatedClips()
+{
+    // Reproduces the screenshot: 41 usable Pixabay clips out of 45 slots,
+    // only two scene quotas slightly short. No unrelated replacements needed.
+    var stub = new PixabayStub { HitsPerQuery = 7 };
+    stub.HitsForQuery = q => q is "topic-0" or "topic-2" ? 3 : 7;
+    using var http = new HttpClient(stub);
+    var service = new PixabayVideoService(http,
+        Path.Combine(baseDir, "41-of-45"), TimeSpan.Zero);
+    var scenes = Enumerable.Range(0, 10)
+        .Select(i => new PixabayFootageScene(i + 1,
+            "Narration about topic " + i, "topic-" + i, "neutral")).ToArray();
+    var logs = new List<string>();
+    var clips = await service.AcquireAsync(scenes.Select(x => x.SearchQuery),
+        "TEST-KEY", "16:9", logs.Add, CancellationToken.None, 45, null, scenes);
+    Check(clips.Count == 41 && service.SceneFootageShortfall == 4,
+        "41/45 scene-covered clips should continue into rendering.");
+    Check(clips.Select(x => x.Id).Distinct().Count() == clips.Count,
+        "Scene shortage recovery must not fabricate duplicate downloaded footage.");
+    Check(scenes.All(x => clips.Any(c => c.SearchQuery == x.SearchQuery)),
+        "Every narration scene must retain at least one relevant clip.");
+    Check(logs.Any(x => x.Contains("extend", StringComparison.OrdinalIgnoreCase)),
+        "The app must explain that existing scene shots will be extended.");
+    Console.WriteLine("PASS: 41/45 relevant clips covers all 10 scenes with four extended shot slots");
+}
+
+async Task EmptySceneStillBlockedEvenAboveCoverageThreshold()
+{
+    // 40/45 is 89% coverage, but an entire missing scene must not
+    // get filled with unrelated footage from a different subject.
+    var stub = new PixabayStub { HitsPerQuery = 7,
+        HitsForQuery = q => q == "topic-0" ? 0 : 7 };
+    using var http = new HttpClient(stub);
+    var service = new PixabayVideoService(http,
+        Path.Combine(baseDir, "missing-scene"), TimeSpan.Zero);
+    var scenes = Enumerable.Range(0, 10).Select(i =>
+        new PixabayFootageScene(i + 1, "Scene " + i, "topic-" + i, "neutral")).ToArray();
+    try
+    {
+        await service.AcquireAsync(scenes.Select(x => x.SearchQuery),
+            "TEST-KEY", "16:9", null, CancellationToken.None, 45, null, scenes);
+        throw new Exception("Completely missing narration scene must block.");
+    }
+    catch (InvalidOperationException e) when
+        (e.Message.Contains("no relevant", StringComparison.OrdinalIgnoreCase))
+    {
+        Check(stub.VideoRequests == 40, "Only properly matched video files should download.");
+        Console.WriteLine("PASS: a missing scene is not silently replaced with unrelated footage");
+    }
+}
+
+async Task LargeSceneShortfallStillBlocked()
+{
+    var stub = new PixabayStub { HitsPerQuery = 5,
+        HitsForQuery = q =>
+            int.TryParse(q["topic-".Length..], out var i) && i is 0 or 2 or 4 or 6 ? 4 : 3 };
+    using var http = new HttpClient(stub);
+    var service = new PixabayVideoService(http,
+        Path.Combine(baseDir, "too-sparse"), TimeSpan.Zero);
+    var scenes = Enumerable.Range(0, 10).Select(i =>
+        new PixabayFootageScene(i + 1, "Scene " + i, "topic-" + i, "neutral")).ToArray();
+    try
+    {
+        await service.AcquireAsync(scenes.Select(x => x.SearchQuery),
+            "TEST-KEY", "16:9", null, CancellationToken.None, 45, null, scenes);
+        throw new Exception("Low-coverage video must not be marked complete.");
+    }
+    catch (InvalidOperationException e) when
+        (e.Message.Contains("below", StringComparison.OrdinalIgnoreCase))
+    {
+        Check(stub.VideoRequests == 34, "Downloaded footage should remain usable for retries.");
+        Console.WriteLine("PASS: insufficient coverage does not produce a misleading finished MP4");
+    }
 }
 
 static void Check(bool result, string message)
@@ -268,6 +346,7 @@ sealed class PixabayStub : HttpMessageHandler
     public string ResetHeader { get; set; } = "60";
     public int HitsPerQuery { get; set; } = 1;
     public Func<string, int, string>? TagForHit { get; set; }
+    public Func<string, int>? HitsForQuery { get; set; }
 
     protected override Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request, CancellationToken cancellationToken)
@@ -304,7 +383,7 @@ sealed class PixabayStub : HttpMessageHandler
             if (query == "sunny garden") id = 2200;
             var json = JsonSerializer.Serialize(new
             {
-                hits = Enumerable.Range(0, HitsPerQuery).Select(i => new {
+                hits = Enumerable.Range(0, HitsForQuery?.Invoke(query) ?? HitsPerQuery).Select(i => new {
                         id = id + i,
                         pageURL = "https://pixabay.com/videos/example-" + (id + i),
                         tags = TagForHit?.Invoke(query, i) ?? query,
