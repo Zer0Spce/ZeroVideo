@@ -26,6 +26,17 @@ public sealed partial class MainViewModel
     private string _youTubeFlowRatio = "16:9";
     private string _youTubeFlowStatus = "Enter a niche or paste a script to begin.";
     private string _youTubeFlowOutput = "";
+    private string _youTubeFlowSeoTitle = "";
+    private string _youTubeFlowSeoDescription = "";
+    private string _youTubeFlowSeoTags = "";
+    private string _youTubeFlowSeoHashtags = "";
+    private string _youTubeFlowPinnedComment = "";
+    private string _youTubeFlowSeoStatus = "";
+    private string _youTubeFlowThumbnailStyle = "Dark Documentary";
+    private string _youTubeFlowThumbnailHeadline = "";
+    private string _youTubeFlowThumbnailConcepts = "";
+    private string _youTubeFlowThumbnailOutput = "";
+    private string _youTubeFlowThumbnailStatus = "";
 
     public ObservableCollection<int> YouTubeFlowIdeaCounts { get; } = [3, 6, 10];
     public ObservableCollection<int> YouTubeFlowDurations { get; } = [1, 3, 5, 10, 15];
@@ -39,6 +50,19 @@ public sealed partial class MainViewModel
     public string YouTubeFlowRatio { get => _youTubeFlowRatio; set => Set(ref _youTubeFlowRatio, value); }
     public string YouTubeFlowStatus { get => _youTubeFlowStatus; private set => Set(ref _youTubeFlowStatus, value); }
     public string YouTubeFlowOutput { get => _youTubeFlowOutput; private set => Set(ref _youTubeFlowOutput, value); }
+    public string YouTubeFlowSeoTitle { get => _youTubeFlowSeoTitle; set => Set(ref _youTubeFlowSeoTitle, value); }
+    public string YouTubeFlowSeoDescription { get => _youTubeFlowSeoDescription; set => Set(ref _youTubeFlowSeoDescription, value); }
+    public string YouTubeFlowSeoTags { get => _youTubeFlowSeoTags; set => Set(ref _youTubeFlowSeoTags, value); }
+    public string YouTubeFlowSeoHashtags { get => _youTubeFlowSeoHashtags; set => Set(ref _youTubeFlowSeoHashtags, value); }
+    public string YouTubeFlowPinnedComment { get => _youTubeFlowPinnedComment; set => Set(ref _youTubeFlowPinnedComment, value); }
+    public string YouTubeFlowSeoStatus { get => _youTubeFlowSeoStatus; private set => Set(ref _youTubeFlowSeoStatus, value); }
+    public ObservableCollection<string> YouTubeFlowThumbnailStyles { get; } =
+        ["Dark Documentary", "Creepy Cartoon Commentary", "Clean Educational", "Dramatic Documentary"];
+    public string YouTubeFlowThumbnailStyle { get => _youTubeFlowThumbnailStyle; set => Set(ref _youTubeFlowThumbnailStyle, value); }
+    public string YouTubeFlowThumbnailHeadline { get => _youTubeFlowThumbnailHeadline; set => Set(ref _youTubeFlowThumbnailHeadline, value); }
+    public string YouTubeFlowThumbnailConcepts { get => _youTubeFlowThumbnailConcepts; private set => Set(ref _youTubeFlowThumbnailConcepts, value); }
+    public string YouTubeFlowThumbnailOutput { get => _youTubeFlowThumbnailOutput; private set => Set(ref _youTubeFlowThumbnailOutput, value); }
+    public string YouTubeFlowThumbnailStatus { get => _youTubeFlowThumbnailStatus; private set => Set(ref _youTubeFlowThumbnailStatus, value); }
 
     public ICommand GenerateYouTubeFlowIdeasCommand { get; private set; } = null!;
     public ICommand UseYouTubeFlowIdeaCommand { get; private set; } = null!;
@@ -46,6 +70,9 @@ public sealed partial class MainViewModel
     public ICommand BuildYouTubeFlowCommand { get; private set; } = null!;
     public ICommand SaveYouTubeFlowSettingsCommand { get; private set; } = null!;
     public ICommand OpenYouTubeFlowOutputCommand { get; private set; } = null!;
+    public ICommand GenerateYouTubeFlowSeoCommand { get; private set; } = null!;
+    public ICommand GenerateYouTubeFlowThumbnailConceptsCommand { get; private set; } = null!;
+    public ICommand GenerateYouTubeFlowThumbnailCommand { get; private set; } = null!;
 
     private void InitializeYouTubeFlowCommands()
     {
@@ -66,6 +93,13 @@ public sealed partial class MainViewModel
         });
         BuildYouTubeFlowCommand = new AsyncCommand(() =>
             RunManagedJobAsync("YouTube Flow — Stock Video", BuildYouTubeFlowAsync));
+        GenerateYouTubeFlowSeoCommand = new AsyncCommand(() =>
+            RunManagedJobAsync("YouTube Flow — SEO", GenerateYouTubeFlowSeoAsync));
+        GenerateYouTubeFlowThumbnailConceptsCommand = new AsyncCommand(() =>
+            RunManagedJobAsync("YouTube Flow — Thumbnail Concepts",
+                GenerateYouTubeFlowThumbnailConceptsAsync));
+        GenerateYouTubeFlowThumbnailCommand = new AsyncCommand(() =>
+            RunManagedJobAsync("YouTube Flow — Thumbnail", GenerateYouTubeFlowThumbnailAsync));
         OpenYouTubeFlowOutputCommand = new RelayCommand(() =>
         {
             if (string.IsNullOrWhiteSpace(YouTubeFlowOutput)) return;
