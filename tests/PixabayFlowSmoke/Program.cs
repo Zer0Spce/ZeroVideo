@@ -242,7 +242,6 @@ sealed class PixabayStub : HttpMessageHandler
                                 size = 8192L
                             }
                         }
-                    }
                 }).ToArray()
             });
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
