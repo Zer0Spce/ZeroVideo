@@ -53,7 +53,8 @@ public sealed class YouTubeFlowRenderService(ProcessRunner runner, FfmpegService
     public async Task<string> RenderAsync(
         IReadOnlyList<PixabayFlowClip> clips, string voiceover, string output,
         string ratio, ZeroVideoSettings settings,
-        Action<string>? log, CancellationToken ct)
+        Action<string>? log, CancellationToken ct,
+        IReadOnlyList<PixabayFootageScene>? scenes = null)
     {
         if (clips.Count == 0) throw new InvalidOperationException("No Pixabay video clips available.");
         if (!File.Exists(voiceover)) throw new FileNotFoundException("Narration file missing.", voiceover);
@@ -66,6 +67,33 @@ public sealed class YouTubeFlowRenderService(ProcessRunner runner, FfmpegService
         var work = Path.Combine(Path.GetDirectoryName(output)!, "rendered");
         Directory.CreateDirectory(work);
         const double shotLength = 6d;
+        var shotDurations = new List<double>(clips.Count);
+        if (scenes is not null && scenes.Count > 0)
+        {
+            // Distribute narration time across its chronological script segments.
+            // A group's video shots fill only that segment, preventing the next
+            // subject from starting 5-10 seconds before/after its spoken lines.
+            var sceneDuration = duration / scenes.Count;
+            var orderedSceneClips = scenes.SelectMany(scene =>
+                clips.Where(c => c.SearchQuery.Equals(scene.SearchQuery,
+                    StringComparison.OrdinalIgnoreCase))).ToList();
+            if (orderedSceneClips.Count != clips.Count ||
+                !orderedSceneClips.Select(x => x.Id).SequenceEqual(clips.Select(x => x.Id)))
+                throw new InvalidDataException("Pixabay footage is not in the order of the narration storyboard.");
+            foreach (var scene in scenes)
+            {
+                var count = clips.Count(c => c.SearchQuery.Equals(scene.SearchQuery,
+                    StringComparison.OrdinalIgnoreCase));
+                if (count == 0) throw new InvalidDataException(
+                    $"No relevant footage for narration scene {scene.SceneNumber}.");
+                for (var k = 0; k < count; k++)
+                    shotDurations.Add(sceneDuration / count);
+            }
+        }
+        else
+        {
+            shotDurations.AddRange(Enumerable.Repeat(shotLength, clips.Count));
+        }
         var rendered = new List<string>();
         for (var i = 0; i < clips.Count; i++)
         {
@@ -73,13 +101,16 @@ public sealed class YouTubeFlowRenderService(ProcessRunner runner, FfmpegService
             // A resumed project can insert newly recovered clips earlier in the plan.
             // Key the normalized shot by its real Pixabay ID and aspect dimensions,
             // not just the position (shot-01), or we would reuse unrelated footage.
-            var file = Path.Combine(work, $"shot-{i + 1:00}-{clips[i].Id}-{width}x{height}.mp4");
+            var seconds = shotDurations[i];
+            var frames = Math.Max(1, (int)Math.Round(seconds * 30d));
+            var file = Path.Combine(work, $"shot-{i + 1:00}-{clips[i].Id}-{width}x{height}-{frames}f.mp4");
             if (!File.Exists(file) || new FileInfo(file).Length < 4096)
             {
                 var filter = $"scale={width}:{height}:force_original_aspect_ratio=increase," +
                     $"crop={width}:{height},setsar=1,fps=30,format=yuv420p";
                 var args = "-hide_banner -loglevel error -y -stream_loop -1 " +
-                    "-i " + Quote(clips[i].FilePath) + " -t 6.0 -an " +
+                    "-i " + Quote(clips[i].FilePath) + " -t " +
+                    seconds.ToString("0.000", CultureInfo.InvariantCulture) + " -an " +
                     "-vf " + Quote(filter) +
                     " -c:v libx264 -preset veryfast -crf 22 " +
                     "-pix_fmt yuv420p -r 30 " + Quote(file);
@@ -95,7 +126,7 @@ public sealed class YouTubeFlowRenderService(ProcessRunner runner, FfmpegService
         // Short shots provide movement while the exact narration duration is
         // the master clock. Reusing downloaded clips avoids bulk downloads.
         // Exactly one six-second segment per shot. No extra trailing repeat.
-        var segments = (int)Math.Ceiling(duration / shotLength);
+        var segments = scenes is null ? (int)Math.Ceiling(duration / shotLength) : rendered.Count;
         var concatList = Path.Combine(work, "shots.txt");
         var sb = new StringBuilder("ffconcat version 1.0\n");
         for (var i = 0; i < segments; i++)
