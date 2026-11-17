@@ -70,7 +70,10 @@ public sealed class YouTubeFlowRenderService(ProcessRunner runner, FfmpegService
         for (var i = 0; i < clips.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
-            var file = Path.Combine(work, "shot-" + (i + 1).ToString("00") + ".mp4");
+            // A resumed project can insert newly recovered clips earlier in the plan.
+            // Key the normalized shot by its real Pixabay ID and aspect dimensions,
+            // not just the position (shot-01), or we would reuse unrelated footage.
+            var file = Path.Combine(work, $"shot-{i + 1:00}-{clips[i].Id}-{width}x{height}.mp4");
             if (!File.Exists(file) || new FileInfo(file).Length < 4096)
             {
                 var filter = $"scale={width}:{height}:force_original_aspect_ratio=increase," +
