@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -15,7 +17,10 @@ public static class SceneFactCardService
     public static string Create(PixabayFootageScene scene, string folder)
     {
         Directory.CreateDirectory(folder);
-        var filename = Path.Combine(folder, $"scene-{scene.SceneNumber:00}-fact-card.png");
+        var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            scene.NarrationExcerpt + "\n" + scene.SearchQuery + "\n" + scene.Mood)))[..10];
+        var filename = Path.Combine(folder,
+            $"scene-{scene.SceneNumber:00}-{fingerprint}-fact-card.png");
         if (File.Exists(filename) && new FileInfo(filename).Length > 2000)
             return filename;
         if (Application.Current is { } app && !app.Dispatcher.CheckAccess())
