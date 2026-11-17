@@ -291,19 +291,21 @@ public sealed class PixabayVideoService
         var temporary = destination + "." + Guid.NewGuid().ToString("N") + ".part";
         try
         {
-            await using var source = await response.Content.ReadAsStreamAsync(ct);
-            await using var target = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-            var buffer = new byte[64 * 1024];
             long total = 0;
-            int read;
-            while ((read = await source.ReadAsync(buffer, ct)) > 0)
+            await using (var source = await response.Content.ReadAsStreamAsync(ct))
+            await using (var target = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
-                total += read;
-                if (total > MaxClipBytes)
-                    throw new InvalidDataException("Stock footage download exceeded 100 MB.");
-                await target.WriteAsync(buffer.AsMemory(0, read), ct);
-            }
-            await target.FlushAsync(ct);
+                var buffer = new byte[64 * 1024];
+                int read;
+                while ((read = await source.ReadAsync(buffer, ct)) > 0)
+                {
+                    total += read;
+                    if (total > MaxClipBytes)
+                        throw new InvalidDataException("Stock footage download exceeded 100 MB.");
+                    await target.WriteAsync(buffer.AsMemory(0, read), ct);
+                }
+                await target.FlushAsync(ct);
+            } // Both streams must be closed before File.Move on Windows.
             if (total < 4096)
                 throw new InvalidDataException("Pixabay clip was incomplete.");
             File.Move(temporary, destination, true);
