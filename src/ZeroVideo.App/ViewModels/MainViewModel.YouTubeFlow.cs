@@ -477,6 +477,9 @@ public sealed partial class MainViewModel
                 throw new InvalidOperationException(
                     "Pixabay is checked. Enter your Pixabay API key or uncheck Pixabay to use the other sources.");
             Log("YouTube Flow source priority: " + string.Join(" > ", mediaSourceOrder));
+            // Keep import location stable even if the output later switches to
+            // a recovered project folder.
+            var mediaImportWorkspace = YouTubeFlowPublishingFolder();
 
             // Separate workspace: never change the current Create/Shorts project.
             var safeName = new string((string.IsNullOrWhiteSpace(YouTubeFlowTitle)
@@ -505,9 +508,7 @@ public sealed partial class MainViewModel
                         Path.DirectorySeparatorChar;
                     if (candidate.StartsWith(permittedRoot, StringComparison.OrdinalIgnoreCase) &&
                         File.Exists(Path.Combine(candidate, "script.txt")) &&
-                        !File.Exists(Path.Combine(candidate, "youtube-flow-hybrid-v4.mp4")) &&
-                        (!File.Exists(Path.Combine(candidate, "youtube-flow.mp4")) ||
-                         IsIncompletePixabayPreview(candidate, expectedTarget)) &&
+                        File.Exists(Path.Combine(candidate, "audio", "voiceover.wav")) &&
                         await File.ReadAllTextAsync(Path.Combine(candidate, "script.txt"), _cts.Token) ==
                             YouTubeFlowScript)
                     {
@@ -532,17 +533,14 @@ public sealed partial class MainViewModel
                     var savedAudio = Path.Combine(previous, "audio", "voiceover.wav");
                     if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(previous) > TimeSpan.FromDays(7))
                         continue;
-                    if (!File.Exists(savedScript) || !File.Exists(savedAudio) ||
-                        File.Exists(Path.Combine(previous, "youtube-flow-hybrid-v4.mp4")) ||
-                        (File.Exists(Path.Combine(previous, "youtube-flow.mp4")) &&
-                            !IsIncompletePixabayPreview(previous, expectedTarget)))
+                    if (!File.Exists(savedScript) || !File.Exists(savedAudio))
                         continue;
                     try
                     {
                         if (await File.ReadAllTextAsync(savedScript, _cts.Token) == YouTubeFlowScript)
                         {
                             folder = previous;
-                            Log("YouTube Flow: found matching unfinished project from an older build; checking existing voiceover.");
+                            Log("YouTube Flow: reusing narration from matching previous project (old video will be preserved).");
                             break;
                         }
                     }
@@ -554,16 +552,12 @@ public sealed partial class MainViewModel
                     "-" + safeName);
             Directory.CreateDirectory(folder);
             Directory.CreateDirectory(Path.Combine(folder, "audio"));
-            // A previous video rendered using the old stock-only engine may
-            // be complete yet visually unrelated. Preserve it and reuse its
-            // existing voiceover to produce a distinctly named hybrid revision.
-            var existingPreview = Path.Combine(folder, "youtube-flow.mp4");
-            var previousHybrid = Path.Combine(folder, "youtube-flow-hybrid-v3.mp4");
-            var output = File.Exists(previousHybrid) ||
-                    (File.Exists(existingPreview) &&
-                     IsIncompletePixabayPreview(folder, expectedTarget))
-                ? Path.Combine(folder, "youtube-flow-hybrid-v4.mp4")
-                : existingPreview;
+            // Every choice/order has a stable distinct output. Reordering
+            // providers never overwrites the old stock-only or hybrid MP4.
+            var mediaFingerprint = Convert.ToHexString(SHA256.HashData(
+                Encoding.UTF8.GetBytes("priority-v1|" + string.Join(">", mediaSourceOrder))))[..12];
+            var output = Path.Combine(folder,
+                $"youtube-flow-sources-{mediaFingerprint}.mp4");
             YouTubeFlowOutput = output; // Open Output Folder works after a failed job.
             await File.WriteAllTextAsync(
                 Path.Combine(folder, "script.txt"), YouTubeFlowScript, _cts.Token);
@@ -692,10 +686,14 @@ public sealed partial class MainViewModel
             }
             var queries = scenes.Select(scene => scene.SearchQuery).ToList();
             Log($"YouTube Flow: {scenes.Count} narration-matched scenes ready. Incompatible visual moods or unrelated tags will be rejected.");
-            var screencapWorkspace = YouTubeFlowPublishingFolder();
+            var screencapWorkspace = mediaImportWorkspace;
             await YouTubeFlowScreencapReviewService.WriteReviewQueueAsync(
                 screencapWorkspace, YouTubeFlowTitle, scenes,
                 mediaSourceOrder, _cts.Token);
+            if (!Path.GetFullPath(folder).Equals(
+                    Path.GetFullPath(screencapWorkspace), StringComparison.OrdinalIgnoreCase))
+                await YouTubeFlowScreencapReviewService.WriteReviewQueueAsync(
+                    folder, YouTubeFlowTitle, scenes, mediaSourceOrder, _cts.Token);
 
             Progress = 45;
             Status = YouTubeFlowStatus = $"Selecting {targetClips} script-relevant Pixabay clips...";
@@ -971,9 +969,13 @@ public sealed partial class MainViewModel
                     local_file = c.FilePath
                 }).ToArray()
             };
+            var sourceManifestJson = JsonSerializer.Serialize(manifest,
+                new JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(Path.Combine(folder, "stock-sources.json"),
-                JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }),
-                _cts.Token);
+                sourceManifestJson, _cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(folder,
+                $"stock-sources-{mediaFingerprint}.json"),
+                sourceManifestJson, _cts.Token);
             Progress = 65;
             Status = YouTubeFlowStatus = "FFmpeg is stitching the stock footage...";
             await renderer.RenderAsync(clips, voiceover, output,
