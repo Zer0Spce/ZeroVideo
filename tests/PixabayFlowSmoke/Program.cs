@@ -27,6 +27,7 @@ try
     await VerifyChatGptArtworkMixedIntoChronologicalScenes();
     await RescueEmptySceneWithAiImage();
     VerifyTopicSpecificArtPrompts();
+    VerifyChatGptGuardrailResponseFallback();
     VerifyActualNarrationCardRender();
     ValidateNarrationTiming();
     Console.WriteLine("PASS: Pixabay 24h cache, HTTP 429, resume-safe footage and bounded retry");
@@ -517,24 +518,47 @@ void VerifyTopicSpecificArtPrompts()
         "cartoon spider episode", "ominous");
     var prompt = YouTubeFlowVisualPromptService.BuildScenePrompt(
         "The Dark Side of Peppa Pig", scene, "16:9");
-    Check(prompt.Contains("Peppa Pig", StringComparison.Ordinal) &&
-        prompt.Contains("pink piglet", StringComparison.OrdinalIgnoreCase) &&
-        prompt.Contains("not official", StringComparison.OrdinalIgnoreCase),
-        "Cartoon commentary prompts must be recognizable, illustrative and non-official.");
+    Check(!prompt.Contains("Peppa Pig", StringComparison.OrdinalIgnoreCase) &&
+        !prompt.Contains("piglet", StringComparison.OrdinalIgnoreCase) &&
+        prompt.Contains("spider", StringComparison.OrdinalIgnoreCase) &&
+        prompt.Contains("No franchise characters", StringComparison.OrdinalIgnoreCase),
+        "Franchise scenes must request contextual art, not recognizable character likenesses.");
     var historical = YouTubeFlowVisualPromptService.BuildScenePrompt(
         "Disney's Town of Celebration", new PixabayFootageScene(
             28, "Neighborhood homes and privately governed property arrangements.",
             "suburban community agreements", "ominous"), "16:9");
     Check(historical.Contains("Celebration, Florida") &&
-        historical.Contains("Do NOT invent a futuristic EPCOT city"),
-        "Celebration scenes must not hallucinate unrelated futuristic cities.");
+        historical.Contains("futuristic cities"),
+        "Real-location scenes must avoid invented futuristic infrastructure.");
     var thumb = YouTubeFlowVisualPromptService.BuildThumbnailPrompt(
         "The Dark Side of Peppa Pig", scene.NarrationExcerpt,
         "Creepy Cartoon Commentary", "TOO SCARY?");
-    Check(thumb.Contains("piglet", StringComparison.OrdinalIgnoreCase) &&
-        thumb.Contains("TOO SCARY?"),
-        "Thumbnail prompts should anchor the actual show and user headline.");
-    Console.WriteLine("PASS: cartoon-aware imagery, historical context and thumbnail prompt rules");
+    Check(!thumb.Contains("Peppa Pig", StringComparison.OrdinalIgnoreCase) &&
+        !thumb.Contains("piglet", StringComparison.OrdinalIgnoreCase) &&
+        thumb.Contains("TOO SCARY?") && thumb.Contains("spider"),
+        "A franchise thumbnail must keep scene context without copyrighted character prompts.");
+    Check(ChatGptComposer.IsImageGenerationPrompt(prompt) &&
+        ChatGptComposer.IsImageGenerationPrompt(thumb),
+        "Both illustration and thumbnail prompts must enter ChatGPT image mode.");
+    Console.WriteLine("PASS: copyright-safe contextual visuals, correct image routing and truthful subject prompts");
+}
+
+void VerifyChatGptGuardrailResponseFallback()
+{
+    var refusal = "We’re so sorry, but the image we created may violate our " +
+        "guardrails concerning similarity to third-party content. Please retry or edit your prompt.";
+    Check(ChatGptImageResponseGuard.IsRefusal(refusal),
+        "Real ChatGPT third-party similarity refusal must be detected immediately.");
+    Check(ChatGptImageResponseGuard.IsRefusal(
+        "I cannot generate this image due to image policy restrictions."),
+        "Explicit image-generation denial must enter fallback.");
+    Check(!ChatGptImageResponseGuard.IsRefusal(
+        "The documentary scene illustrates a spider and children's TV controversy."),
+        "Normal image-related replies must not be marked refused.");
+    Check(!ChatGptImageResponseGuard.IsRefusal(
+        "Do not copy third-party cartoon art or official character screenshots."),
+        "User prompt rules must not falsely trigger guardrail detection.");
+    Console.WriteLine("PASS: image guardrail refusal recognized and normal scene text preserved");
 }
 
 void VerifyActualNarrationCardRender()
