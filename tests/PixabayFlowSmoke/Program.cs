@@ -26,6 +26,7 @@ try
     await VerifyCommonsLicenseAndImageFallback();
     await VerifyCommonsVideosAndLicenses();
     await VerifyOversizedCommonsDerivativeFallback();
+    await VerifyMediumSizedCommonsVideoAllowed();
     VerifyHistoricalVideoContextFiltering();
     await VerifyCommonsVideosInNarrationSequence();
     await VerifyChatGptArtworkMixedIntoChronologicalScenes();
@@ -598,8 +599,8 @@ async Task VerifyCommonsVideosAndLicenses()
 
 async Task VerifyOversizedCommonsDerivativeFallback()
 {
-    // Real-world regression: an ~80+ MB Commons documentary original/transcode
-    // must not block the scene or produce an oversized local cache.
+    // The 500 MB hard cap remains a safety limit; a 600 MB transcode must
+    // fall through to a smaller eligible rendition instead of aborting.
     var fake = new CommonsVideoStub { OversizedFirstDerivative = true };
     using var client = new HttpClient(fake);
     var service = new WikimediaCommonsVideoService(client,
@@ -611,12 +612,34 @@ async Task VerifyOversizedCommonsDerivativeFallback()
     var matched = await service.FindVideosAsync(
         scene, 1, null, log.Add, CancellationToken.None);
     Check(matched.Count == 1 && File.Exists(matched[0].FilePath) &&
-        new FileInfo(matched[0].FilePath).Length < 80L * 1024 * 1024,
-        "Oversized 480p derivative must not prevent selecting a smaller file.");
+        new FileInfo(matched[0].FilePath).Length <=
+            WikimediaCommonsVideoService.MaxVideoMegabytes * 1024L * 1024,
+        "A 600 MB 480p transcode must not prevent selecting a smaller file.");
     Check(fake.VideoCalls == 2 && matched[0].FilePath.EndsWith(".webm") &&
         log.Any(x => x.Contains("Wikimedia video: scene 1", StringComparison.Ordinal)),
-        "Service must skip >80MB file from headers before download and try smaller WebM.");
-    Console.WriteLine("PASS: oversized Wikimedia video falls back to smaller WebM transcode");
+        "Service must skip >500MB file from headers before download and try smaller WebM.");
+    Console.WriteLine("PASS: >500MB Wikimedia video falls back to smaller WebM transcode");
+}
+
+async Task VerifyMediumSizedCommonsVideoAllowed()
+{
+    // Real user issue: Wikimedia videos between 80 and 500 MB must now be
+    // eligible, rather than automatically rejected as oversized.
+    Check(WikimediaCommonsVideoService.MaxVideoMegabytes == 500,
+        "Commons video download limit must be 500 MB.");
+    var fake = new CommonsVideoStub { MediumFirstDerivative = true };
+    using var client = new HttpClient(fake);
+    var service = new WikimediaCommonsVideoService(client,
+        Path.Combine(baseDir, "commons-96mb"));
+    var scene = new PixabayFootageScene(1,
+        "A dark forest stands silent through the night.",
+        "dark forest night", "ominous");
+    var matched = await service.FindVideosAsync(
+        scene, 1, null, null, CancellationToken.None);
+    Check(matched.Count == 1 && fake.VideoCalls == 1 &&
+        matched[0].FilePath.EndsWith(".webm", StringComparison.OrdinalIgnoreCase),
+        "A 96 MB Content-Length from Commons must be allowed as a valid video.");
+    Console.WriteLine("PASS: Wikimedia video advertised at 96MB is accepted under 500MB limit");
 }
 
 void VerifyHistoricalVideoContextFiltering()
@@ -876,6 +899,7 @@ sealed class CommonsVideoStub : HttpMessageHandler
     public int ApiCalls { get; private set; }
     public int VideoCalls { get; private set; }
     public bool OversizedFirstDerivative { get; init; }
+    public bool MediumFirstDerivative { get; init; }
 
     protected override Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request, CancellationToken cancellationToken)
@@ -963,8 +987,13 @@ sealed class CommonsVideoStub : HttpMessageHandler
         {
             VideoCalls++;
             var body = new ByteArrayContent(new byte[8192]);
-            if (OversizedFirstDerivative && url.EndsWith("/forest.webm", StringComparison.OrdinalIgnoreCase))
-                body.Headers.ContentLength = 96L * 1024 * 1024;
+            if (url.EndsWith("/forest.webm", StringComparison.OrdinalIgnoreCase))
+            {
+                if (OversizedFirstDerivative)
+                    body.Headers.ContentLength = 600L * 1024 * 1024;
+                else if (MediumFirstDerivative)
+                    body.Headers.ContentLength = 96L * 1024 * 1024;
+            }
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = body
