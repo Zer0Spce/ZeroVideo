@@ -16,6 +16,7 @@ try
     await RepeatedRateLimitsEventuallyRecover();
     await InsufficientFootageDoesNotClaimCompletion();
     await OlderCacheCanRecoverWhenThrottled();
+    await DurationScaledFootageSelection();
     Console.WriteLine("PASS: Pixabay 24h cache, HTTP 429, resume-safe footage and bounded retry");
 }
 finally
@@ -147,6 +148,37 @@ async Task OlderCacheCanRecoverWhenThrottled()
     Check(fallback.Count == 1, "Stale local response may be used during API outage.");
     Check(handler.ApiRequests == 2, "Stale fallback should not generate repeated API requests.");
     Console.WriteLine("PASS: older valid cache remains useful during 429");
+}
+
+
+async Task DurationScaledFootageSelection()
+{
+    foreach (var minutes in new[] { 1, 3, 5, 10, 15 })
+    {
+        int expected = minutes * 10;
+        int planned = PixabayVideoService.TargetClipCount(TimeSpan.FromMinutes(minutes));
+        int searches = PixabayVideoService.SuggestedQueryCount(planned);
+        Check(planned == expected, "Target count mismatch for " + minutes + " minutes.");
+        Check(searches == Math.Clamp((int)Math.Ceiling(expected / 5d), 6, 30),
+            "Search plan size mismatch.");
+        var handler = new PixabayStub { HitsPerQuery = 8 };
+        using var http = new HttpClient(handler);
+        var service = new PixabayVideoService(http,
+            Path.Combine(baseDir, "duration-" + minutes), TimeSpan.Zero);
+        var queries = Enumerable.Range(0, searches).Select(i => "topic-" + i).ToArray();
+        var clips = await service.AcquireAsync(
+            queries, "TEST-KEY", "16:9", null, CancellationToken.None, expected);
+        Check(clips.Count == expected, "Not enough distinct clips.");
+        Check(clips.Select(x => x.Id).Distinct().Count() == expected,
+            "Duplicate clip IDs in the finished plan.");
+        Check(handler.ApiRequests == searches && handler.VideoRequests == expected,
+            "Every video was not sourced efficiently from one query result per topic.");
+        var cached = await service.AcquireAsync(
+            queries, "TEST-KEY", "16:9", null, CancellationToken.None, expected);
+        Check(cached.Count == expected && handler.ApiRequests == searches &&
+            handler.VideoRequests == expected, "Cached results were fetched again.");
+        Console.WriteLine($"PASS: {minutes} min, {expected} unique shots from {searches} API requests");
+    }
 }
 
 static void Check(bool result, string message)
