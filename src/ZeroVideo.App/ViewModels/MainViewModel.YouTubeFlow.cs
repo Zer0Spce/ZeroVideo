@@ -176,6 +176,172 @@ public sealed partial class MainViewModel
         catch (Exception ex) { YouTubeFlowStatus = "Script failed: " + ex.Message; Fail(ex); }
     }
 
+    private string YouTubeFlowPublishingFolder()
+    {
+        if (!string.IsNullOrWhiteSpace(YouTubeFlowOutput))
+        {
+            var existing = Path.GetDirectoryName(YouTubeFlowOutput);
+            if (!string.IsNullOrWhiteSpace(existing) && Directory.Exists(existing) &&
+                File.Exists(Path.Combine(existing, "script.txt")))
+                return existing;
+        }
+        var filename = new string(YouTubeFlowTitle
+            .Where(c => !Path.GetInvalidFileNameChars().Contains(c)).Take(70).ToArray()).Trim();
+        if (string.IsNullOrWhiteSpace(filename)) filename = "Untitled Documentary";
+        var folder = Path.Combine(Settings.ProjectsRoot, "YouTube Flow",
+            "Publishing Assets", filename);
+        Directory.CreateDirectory(folder);
+        return folder;
+    }
+
+    private async Task GenerateYouTubeFlowSeoAsync()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(YouTubeFlowTitle) ||
+                YouTubeFlowScript.Trim().Length < 100)
+                throw new InvalidOperationException(
+                    "Enter a title and narration script to generate accurate YouTube metadata.");
+            YouTubeFlowSeoStatus = "Creating accurate YouTube SEO title, description and tags...";
+            var prompt = "Write an accurate, copy-paste-ready YouTube documentary SEO pack. " +
+                "DO NOT invent facts, quote nonexistent sources, or claim hidden/official footage. " +
+                "Optimize for human readability and search relevance, not keyword spam. " +
+                "Title maximum 100 characters. Include a clear 150-400 word description, " +
+                "10-20 descriptive single-line keyword tags and 3-6 hashtags and an optional pinned question. " +
+                "Include a note that any AI images are illustrative and not authentic archival footage " +
+                "when appropriate. Return exactly one JSON object, no prose, with schema " +
+                "{\"response_type\":\"youtube_flow_seo_v1\",\"title\":\"...\", " +
+                "\"description\":\"...\",\"tags\":[\"...\"],\"hashtags\":[\"#...\"]," +
+                "\"pinned_comment\":\"...\"}. " +
+                "VIDEO TITLE: " + YouTubeFlowTitle + "\nFULL NARRATION:\n" + YouTubeFlowScript;
+            var raw = await _chat.GenerateTextAsync(
+                new VideoProject { Title = YouTubeFlowTitle, Topic = YouTubeFlowTitle },
+                Settings, prompt, Log, _cts.Token);
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            if (GetString(root, "response_type") != "youtube_flow_seo_v1")
+                throw new InvalidDataException("SEO response was not in the expected format.");
+            var newTitle = GetString(root, "title");
+            var newDescription = GetString(root, "description");
+            if (string.IsNullOrWhiteSpace(newTitle) || newTitle.Length > 100 ||
+                string.IsNullOrWhiteSpace(newDescription))
+                throw new InvalidDataException("SEO title or description is missing/invalid.");
+            static string ListField(JsonElement obj, string key)
+            {
+                if (!obj.TryGetProperty(key, out var array) ||
+                    array.ValueKind != JsonValueKind.Array)
+                    throw new InvalidDataException($"SEO '{key}' must be an array.");
+                return string.Join(", ", array.EnumerateArray()
+                    .Where(x => x.ValueKind == JsonValueKind.String)
+                    .Select(x => x.GetString()?.Trim())
+                    .Where(x => !string.IsNullOrWhiteSpace(x)));
+            }
+            YouTubeFlowSeoTitle = newTitle;
+            YouTubeFlowSeoDescription = newDescription;
+            YouTubeFlowSeoTags = ListField(root, "tags");
+            YouTubeFlowSeoHashtags = ListField(root, "hashtags");
+            YouTubeFlowPinnedComment = GetString(root, "pinned_comment");
+            var directory = YouTubeFlowPublishingFolder();
+            await File.WriteAllTextAsync(Path.Combine(directory, "youtube-seo-pack.json"),
+                JsonSerializer.Serialize(new
+                {
+                    title = YouTubeFlowSeoTitle,
+                    description = YouTubeFlowSeoDescription,
+                    tags = YouTubeFlowSeoTags.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+                    hashtags = YouTubeFlowSeoHashtags.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+                    pinned_comment = YouTubeFlowPinnedComment
+                }, new JsonSerializerOptions { WriteIndented = true }), _cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(directory, "youtube-seo-copy.txt"),
+                YouTubeFlowSeoTitle + "\n\n" + YouTubeFlowSeoDescription +
+                "\n\n" + YouTubeFlowSeoHashtags +
+                "\n\nTags: " + YouTubeFlowSeoTags +
+                "\n\nPinned comment: " + YouTubeFlowPinnedComment, _cts.Token);
+            YouTubeFlowSeoStatus = "SEO pack ready and saved. All fields are editable.";
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { YouTubeFlowSeoStatus = "SEO failed: " + ex.Message; Fail(ex); }
+    }
+
+    private async Task GenerateYouTubeFlowThumbnailConceptsAsync()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(YouTubeFlowTitle) ||
+                YouTubeFlowScript.Trim().Length < 100)
+                throw new InvalidOperationException("Provide the title and narration first.");
+            YouTubeFlowThumbnailStatus = "Creating three subject-specific thumbnail concepts...";
+            var prompt = "Produce EXACTLY three distinct YouTube thumbnail concepts for this actual " +
+                "documentary narration. Each must focus on a concrete subject named in the script, " +
+                "not generic architecture, people in meetings, or random stock. " +
+                "If this is a cartoon/show controversy, suggest a transformative original " +
+                "cartoon-like subject illustration with an eerie treatment when appropriate. " +
+                "No copyrighted episode screenshots, misleading historical claims, gore, " +
+                "official logos or fabricated evidence. " +
+                "Return exactly one JSON object: " +
+                "{\"response_type\":\"youtube_flow_thumbnail_concepts_v1\"," +
+                "\"concepts\":[{\"name\":\"...\",\"visual\":\"...\",\"headline\":\"...\"}]}. " +
+                "STYLE: " + YouTubeFlowThumbnailStyle +
+                "\nTITLE: " + YouTubeFlowTitle +
+                "\nNARRATION:\n" + YouTubeFlowScript;
+            var raw = await _chat.GenerateTextAsync(
+                new VideoProject { Title = YouTubeFlowTitle, Topic = YouTubeFlowTitle },
+                Settings, prompt, Log, _cts.Token);
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            if (GetString(root, "response_type") != "youtube_flow_thumbnail_concepts_v1" ||
+                !root.TryGetProperty("concepts", out var array) ||
+                array.ValueKind != JsonValueKind.Array || array.GetArrayLength() != 3)
+                throw new InvalidDataException("Thumbnail concepts must contain three entries.");
+            var pieces = array.EnumerateArray().Select((c, i) =>
+                $"{i + 1}. {GetString(c, "name")}\n" +
+                $"Visual: {GetString(c, "visual")}\n" +
+                $"Headline: {GetString(c, "headline")}").ToArray();
+            YouTubeFlowThumbnailConcepts = string.Join("\n\n", pieces);
+            var preferred = GetString(array[0], "headline");
+            if (string.IsNullOrWhiteSpace(YouTubeFlowThumbnailHeadline) &&
+                preferred.Length <= 48)
+                YouTubeFlowThumbnailHeadline = preferred;
+            await File.WriteAllTextAsync(Path.Combine(
+                YouTubeFlowPublishingFolder(), "thumbnail-concepts.json"),
+                raw, _cts.Token);
+            YouTubeFlowThumbnailStatus = "Three concepts ready. Edit the headline and generate your thumbnail.";
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { YouTubeFlowThumbnailStatus = "Concepts failed: " + ex.Message; Fail(ex); }
+    }
+
+    private async Task GenerateYouTubeFlowThumbnailAsync()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(YouTubeFlowTitle) ||
+                YouTubeFlowScript.Trim().Length < 100)
+                throw new InvalidOperationException("Provide the title and narration first.");
+            var folder = YouTubeFlowPublishingFolder();
+            var output = Path.Combine(folder, "thumbnail-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".png");
+            YouTubeFlowThumbnailStatus = "Generating 16:9 documentary thumbnail illustration...";
+            var project = new VideoProject
+            {
+                Title = YouTubeFlowTitle, Topic = YouTubeFlowTitle,
+                AspectRatio = "16:9", Style = YouTubeFlowThumbnailStyle,
+                ProjectDirectory = folder
+            };
+            var file = await _chat.GenerateYouTubeFlowThumbnailAsync(
+                project, YouTubeFlowScript, YouTubeFlowThumbnailStyle,
+                YouTubeFlowThumbnailHeadline, Settings, output, Log, _cts.Token);
+            YouTubeFlowThumbnailOutput = file;
+            await File.WriteAllTextAsync(Path.Combine(folder, "thumbnail-provenance.txt"),
+                "Original AI-generated editorial documentary illustration.\n" +
+                "Not an authentic episode frame, licensed character artwork or archival photograph.\n" +
+                "Title: " + YouTubeFlowTitle + "\nStyle: " + YouTubeFlowThumbnailStyle +
+                "\nHeadline: " + YouTubeFlowThumbnailHeadline + "\nImage: " + file,
+                _cts.Token);
+            YouTubeFlowThumbnailStatus = "Thumbnail saved: " + file;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { YouTubeFlowThumbnailStatus = "Thumbnail failed: " + ex.Message; Fail(ex); }
+    }
+
     private async Task BuildYouTubeFlowAsync()
     {
         try
