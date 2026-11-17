@@ -381,11 +381,24 @@ public sealed partial class MainViewModel
             // a new image for a scene if its previously saved file is usable.
             var maxAiImages = Math.Min(6, Math.Max(1, scenes.Count / 5));
             var aiImagesAttempted = 0;
+            var mandatoryAiRescues = 0;
             async Task<PixabayFlowClip?> TryAiImageAsync(
-                PixabayFootageScene scene, CancellationToken cancellation)
+                PixabayFootageScene scene, CancellationToken cancellation,
+                bool mandatory = false)
             {
-                if (aiImagesAttempted >= maxAiImages) return null;
-                aiImagesAttempted++;
+                // The optional illustration budget is separate from mandatory
+                // rescue. Missing scenes must not fail just because earlier
+                // scenes used the decorative AI slots.
+                if (mandatory)
+                {
+                    if (mandatoryAiRescues >= 10) return null;
+                    mandatoryAiRescues++;
+                }
+                else
+                {
+                    if (aiImagesAttempted >= maxAiImages) return null;
+                    aiImagesAttempted++;
+                }
                 // Bind the saved illustration to its exact script content.
                 // Replanned narration cannot accidentally reuse the wrong art.
                 var fingerprint = Convert.ToHexString(SHA256.HashData(
@@ -416,11 +429,19 @@ public sealed partial class MainViewModel
             async Task<IReadOnlyList<PixabayFlowClip>> HybridStillFallbackAsync(
                 PixabayFootageScene scene, int needed, CancellationToken cancellation)
             {
+                var mandatory = needed < 0;
+                needed = Math.Abs(needed);
                 var found = new List<PixabayFlowClip>();
-                // Each fifth scene is deliberately reserved for one scene-
-                // specific generated illustration if it can be created.
-                var preferAi = scene.SceneNumber % 5 == 3;
-                if (preferAi)
+                if (mandatory)
+                {
+                    Log($"Scene {scene.SceneNumber} has no matched footage. Rescue: ChatGPT character/subject art, licensed Commons, then a narration fact card.");
+                    // The important scene-specific illustration is attempted
+                    // BEFORE optional stock-photo decoration, even when all
+                    // regular AI slots have already been spent.
+                    var ai = await TryAiImageAsync(scene, cancellation, mandatory: true);
+                    if (ai is not null) found.Add(ai);
+                }
+                else if (scene.SceneNumber % 5 == 3)
                 {
                     var ai = await TryAiImageAsync(scene, cancellation);
                     if (ai is not null) found.Add(ai);
@@ -436,14 +457,26 @@ public sealed partial class MainViewModel
                     catch (OperationCanceledException) { throw; }
                     catch (Exception ex)
                     {
-                        Log($"Wikimedia scene {scene.SceneNumber} unavailable: {ex.Message}. " +
-                            "Continuing with verified videos or an original illustration.");
+                        Log($"Wikimedia scene {scene.SceneNumber} unavailable: {ex.Message}.");
                     }
                 }
-                if (found.Count < needed && !preferAi)
+                if (!mandatory && found.Count < needed)
                 {
                     var ai = await TryAiImageAsync(scene, cancellation);
                     if (ai is not null) found.Add(ai);
+                }
+                if (mandatory && found.Count == 0)
+                {
+                    // A fully local, truthful and clearly marked visual is a
+                    // better last resort than unrelated stock or a hard fail.
+                    var file = SceneFactCardService.Create(scene,
+                        Path.Combine(folder, "stock-images", "scene-cards"));
+                    found.Add(new PixabayFlowClip(
+                        long.MinValue / 2 + scene.SceneNumber, file,
+                        "Generated from the actual narration by ZeroVideo",
+                        scene.SearchQuery, scene.NarrationExcerpt, true,
+                        "ZeroVideo editorial card", "Original narration text card", ""));
+                    Log($"Scene {scene.SceneNumber}: used a narration-specific editorial card after all image providers failed.");
                 }
                 return found;
             }
@@ -461,7 +494,9 @@ public sealed partial class MainViewModel
                     .ContainsChromaScreenAsync(path, Settings.FfmpegPath, cancellation),
                 HybridStillFallbackAsync);
             var photos = clips.Where(c => c.IsStillImage).ToArray();
-            var commonsPhotos = photos.Where(c => c.License != "AI-generated illustration").ToArray();
+            var commonsPhotos = photos.Where(c => c.License != "AI-generated illustration" &&
+                c.License != "Original narration text card").ToArray();
+            var editorialCards = photos.Where(c => c.License == "Original narration text card").ToArray();
             var aiIllustrations = photos.Where(c => c.License == "AI-generated illustration").ToArray();
             if (commonsPhotos.Length > 0)
             {
@@ -498,7 +533,8 @@ public sealed partial class MainViewModel
             }
             Log($"YouTube Flow media: {clips.Count - photos.Length} Pixabay videos, " +
                 $"{commonsPhotos.Length} Wikimedia licensed photos, " +
-                $"{aiIllustrations.Length} ChatGPT-generated illustrations.");
+                $"{aiIllustrations.Length} ChatGPT-generated illustrations, " +
+                $"{editorialCards.Length} truthful narration cards.");
             var sceneDurations = YouTubeFlowRenderService.PlanSceneDurations(
                 scenes, narrationSeconds);
             var manifest = new
@@ -513,6 +549,7 @@ public sealed partial class MainViewModel
                 video_clip_count = clips.Count(c => !c.IsStillImage),
                 licensed_still_image_count = commonsPhotos.Length,
                 ai_generated_image_count = aiIllustrations.Length,
+                narration_card_count = editorialCards.Length,
                 shortfall_compensated_by_scene_duration = pixabay.SceneFootageShortfall,
                 narration_seconds = narrationSeconds,
                 searches = queries,
