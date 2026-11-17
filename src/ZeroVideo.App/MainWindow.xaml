@@ -446,15 +446,52 @@
                 <Border Style="{StaticResource CardBorder}" Margin="0,14,0,0">
                   <StackPanel>
                     <TextBlock Text="Documentary Media Sources" FontSize="17" FontWeight="SemiBold"/>
-                    <TextBlock Text="Pixabay stock video + Wikimedia Commons licensed videos and photos + original ChatGPT images. Wikimedia requires no API key; Pixabay uses your personal key."
+                    <TextBlock Text="Choose which sources ZeroVideo can use. Move a source UP to make it a higher priority for each script scene. Choices and order are saved automatically."
                                Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
-                    <Label Content="PIXABAY API KEY"/>
+                    <ItemsControl ItemsSource="{Binding YouTubeFlowMediaSources}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <Border BorderBrush="{StaticResource Muted}" BorderThickness="0,0,0,0"
+                                  Margin="0,4,0,4" Padding="2">
+                            <DockPanel LastChildFill="True">
+                              <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+                                <Button Content="↑" ToolTip="Move this media source higher"
+                                        Style="{StaticResource SecondaryButton}" Width="32"
+                                        Margin="3,0,2,0"
+                                        Command="{Binding DataContext.MoveYouTubeFlowSourceUpCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                        CommandParameter="{Binding}"/>
+                                <Button Content="↓" ToolTip="Move this media source lower"
+                                        Style="{StaticResource SecondaryButton}" Width="32"
+                                        Command="{Binding DataContext.MoveYouTubeFlowSourceDownCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                        CommandParameter="{Binding}"/>
+                              </StackPanel>
+                              <StackPanel Margin="0,0,4,0">
+                                <CheckBox IsChecked="{Binding IsEnabled, Mode=TwoWay}"
+                                          Content="{Binding Name}" FontWeight="SemiBold"/>
+                                <TextBlock Text="{Binding Description}"
+                                           Foreground="{StaticResource Muted}" FontSize="11"
+                                           TextWrapping="Wrap" Margin="23,2,0,0"/>
+                              </StackPanel>
+                            </DockPanel>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Text="{Binding YouTubeFlowSourceStatus}"
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,7"/>
+                    <TextBlock Text="Cartoon episode screencap sites are not royalty-free sources. Enabling them creates a review list, not automatic scraping; only explicitly rights-reviewed screenshots you import are used."
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,3,0,7"/>
+                    <Button Content="Open Approved Screencaps Folder"
+                            Command="{Binding OpenYouTubeFlowScreencapFolderCommand}"
+                            Style="{StaticResource SecondaryButton}" HorizontalAlignment="Left"
+                            Margin="0,0,0,12"/>
+                    <Label Content="PIXABAY API KEY (only needed when Pixabay is checked)"/>
                     <PasswordBox x:Name="PixabayKeyInput" PasswordChanged="OnPixabayKeyChanged"/>
                     <Button Content="Save Pixabay Key" Command="{Binding SaveYouTubeFlowSettingsCommand}"
                             Style="{StaticResource SecondaryButton}" Margin="0,10,0,0"
                             HorizontalAlignment="Left"/>
                     <TextBlock Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,9,0,0"
-                               Text="Scene-aligned source mix: Pixabay videos, Wikimedia Commons WebM documentary videos and licensed photos, plus ChatGPT illustrations. Commons items are checked individually (PD, CC0, CC BY). Credits for both Commons video and photos are saved with the project. Media search responses are cached."/>
+                               Text="Enabled sources are tried in the displayed priority order for each narration scene. Pixabay matches both the video topic and spoken scene; it rejects unrelated generic footage and chroma screens. Wikimedia rights and attribution are checked per file; original ChatGPT images and local narration cards rescue uncovered scenes."/>
                     <TextBlock Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0">
                       Pixabay Content License applies. Avoid using generic B-roll as purported real-event footage.
                     </TextBlock>
