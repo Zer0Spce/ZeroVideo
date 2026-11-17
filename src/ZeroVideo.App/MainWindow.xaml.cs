@@ -28,20 +28,33 @@ public partial class MainWindow : Window
             await _vm.InitializeAsync();
             PixabayKeyInput.Password = _vm.Settings.PixabayApiKey ?? "";
 
-            // CI launches the actual published executable. This marker is written
-            // only once the main window has loaded and user data initialization passed.
+            // CI tests the exact published EXE, not only a successful build.
             var marker = Environment.GetEnvironmentVariable("ZEROVIDEO_STARTUP_SMOKE_MARKER");
             if (!string.IsNullOrWhiteSpace(marker))
             {
                 System.IO.File.WriteAllText(marker, "ZeroVideo main window and settings loaded.");
                 Application.Current.Shutdown(0);
+                return;
+            }
+
+            // Also prove that the packaged .playwright/node driver actually runs.
+            // This catches missing hidden files before sending a test ZIP to users.
+            var playwrightMarker = Environment.GetEnvironmentVariable("ZEROVIDEO_PLAYWRIGHT_SMOKE_MARKER");
+            if (!string.IsNullOrWhiteSpace(playwrightMarker))
+            {
+                using var playwright = await Microsoft.Playwright.Playwright.CreateAsync();
+                System.IO.File.WriteAllText(playwrightMarker, "Playwright driver started from portable build.");
+                Application.Current.Shutdown(0);
+                return;
             }
         }
         catch (Exception ex)
         {
             StartupDiagnostics.Report(ex, "MainWindow loaded / user settings initialization");
             if (string.IsNullOrWhiteSpace(
-                Environment.GetEnvironmentVariable("ZEROVIDEO_STARTUP_SMOKE_MARKER")))
+                    Environment.GetEnvironmentVariable("ZEROVIDEO_STARTUP_SMOKE_MARKER")) &&
+                string.IsNullOrWhiteSpace(
+                    Environment.GetEnvironmentVariable("ZEROVIDEO_PLAYWRIGHT_SMOKE_MARKER")))
             {
                 MessageBox.Show(
                     "ZeroVideo could not finish starting.\n\n" +
