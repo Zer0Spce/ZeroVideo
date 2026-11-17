@@ -131,6 +131,86 @@ QUALITY REQUIREMENTS:
     }
 
     /// <summary>
+    /// Generate one contextual documentary illustration for a missing or
+    /// visually generic stock shot. It is not archival footage or a real
+    /// photograph. Uses the already-proven browser image saving pipeline.
+    /// </summary>
+    public async Task<string> GenerateYouTubeFlowIllustrationAsync(
+        VideoProject project, PixabayFootageScene scene,
+        ZeroVideoSettings settings, string destination,
+        Action<string>? log = null, CancellationToken ct = default)
+    {
+        if (scene.SceneNumber < 1 || string.IsNullOrWhiteSpace(scene.NarrationExcerpt) ||
+            string.IsNullOrWhiteSpace(scene.SearchQuery))
+            throw new ArgumentException("Storyboard scene is missing required context.");
+        if (File.Exists(destination) && new FileInfo(destination).Length >= 24 * 1024)
+        {
+            log?.Invoke($"ChatGPT: reusing previously saved illustration for scene {scene.SceneNumber}.");
+            return destination;
+        }
+
+        var profile = await profiles.LoadAsync(settings.AutomationProfilePath);
+        var page = await GetProjectPageAsync(project, settings, log, ct);
+        var baseline = await CaptureImageBaselineAsync(
+            page, profile.ChatGpt.GeneratedImages);
+        var dimensions = project.AspectRatio == "9:16"
+            ? "vertical portrait 9:16" : "widescreen landscape 16:9";
+        var moodDirection = scene.Mood switch
+        {
+            "ominous" => "DARK, ominous, eerie shadows, low-key lighting; never sunny, cute or cheerful.",
+            "tense" => "Suspenseful, uneasy, high-contrast lighting, grounded documentary realism.",
+            "somber" => "Muted, serious, respectful, understated documentary lighting.",
+            "upbeat" => "Hopeful, inviting and optimistic, appropriately natural lighting.",
+            "calm" => "Peaceful, neutral and understated atmospheric lighting.",
+            _ => "Grounded, natural documentary illustration with no artificial drama."
+        };
+
+        var prompt = $"""
+Generate EXACTLY ONE original, high-quality {dimensions} documentary illustration for this ONE narration scene.
+
+VIDEO TITLE: {project.Title}
+NUMBERED SCENE: {scene.SceneNumber}
+EXACT NARRATION FOR THIS SCENE:
+{scene.NarrationExcerpt}
+PRIMARY VISUAL SUBJECT: {scene.SearchQuery}
+EMOTIONAL MOOD: {scene.Mood}
+ART DIRECTION: {moodDirection}
+
+MUST FOLLOW:
+- Show an actual object, location, action or historical *context* mentioned in the exact scene.
+- Use the PRIMARY VISUAL SUBJECT to anchor the frame, but prioritize the exact narration if they conflict.
+- Do not insert random cats, squirrels, food, puzzle pieces, neon green backgrounds, chroma-key screens or out-of-context scenery.
+- Consistent cinematic documentary illustration: muted filmic grading, photographic composition and subtle illustrative texture. Compatible with real stock video and historical photographs in a mixed documentary.
+- This is clearly an ORIGINAL ILLUSTRATION, not an authentic archival photograph or a recorded historical event. Do not fabricate supposed evidence, crime scenes or screenshots of real broadcasts.
+- For factual people or events, do not invent faces, uniforms, documents, signage or historically specific details that cannot be verified from the scene. Prefer a grounded contextual representation.
+- Fill the entire frame. No green screen, plain chroma-key backdrop, text, captions, labels, logos, watermark, UI, browser frames, photo borders or collage panels.
+- Only ONE final image, at the highest available resolution. No explanation.
+""";
+        await ChatGptComposer.EnterPromptAsync(
+            page, profile.ChatGpt.PromptInputs, prompt, ct);
+        await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
+        log?.Invoke($"ChatGPT: generating scene {scene.SceneNumber} original documentary illustration...");
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        try
+        {
+            await WaitForGeneratedImageAndSaveAsync(
+                page, profile.ChatGpt.GeneratedImages,
+                profile.ChatGpt.StopButtons, baseline, destination,
+                $"YouTube Flow illustration scene {scene.SceneNumber}", log, ct);
+            if (!File.Exists(destination) || new FileInfo(destination).Length < 24 * 1024)
+                throw new InvalidDataException("ChatGPT scene illustration was not saved at usable resolution.");
+            RememberConversation(project, page);
+            return destination;
+        }
+        catch
+        {
+            try { if (File.Exists(destination)) File.Delete(destination); }
+            catch (IOException) { }
+            throw;
+        }
+    }
+
+    /// <summary>
     /// Generate ONE isolated, clearly labeled AI-approximate portrait in the
     /// user's existing ChatGPT automation chat. Capture the actual original
     /// PNG via the same proven image saver used for scene images; no webpage
