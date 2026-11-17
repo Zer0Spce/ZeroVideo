@@ -468,8 +468,15 @@ public sealed partial class MainViewModel
         {
             if (YouTubeFlowScript.Trim().Length < 100)
                 throw new InvalidOperationException("Paste a full narration script or generate one first.");
-            if (string.IsNullOrWhiteSpace(Settings.PixabayApiKey))
-                throw new InvalidOperationException("Enter your Pixabay API key and click Save Settings.");
+            var mediaSourceOrder = EnabledYouTubeFlowMediaSources();
+            if (mediaSourceOrder.Length == 0)
+                throw new InvalidOperationException(
+                    "Enable at least one Youtube Flow media source using the checkboxes.");
+            if (mediaSourceOrder.Contains(YouTubeFlowSourceRouter.Pixabay) &&
+                string.IsNullOrWhiteSpace(Settings.PixabayApiKey))
+                throw new InvalidOperationException(
+                    "Pixabay is checked. Enter your Pixabay API key or uncheck Pixabay to use the other sources.");
+            Log("YouTube Flow source priority: " + string.Join(" > ", mediaSourceOrder));
 
             // Separate workspace: never change the current Create/Shorts project.
             var safeName = new string((string.IsNullOrWhiteSpace(YouTubeFlowTitle)
@@ -661,7 +668,7 @@ public sealed partial class MainViewModel
 
             Progress = 35;
             Status = YouTubeFlowStatus = $"Storyboarding {desiredQueries} script scenes and their visual tone...";
-            var scenePlanFile = Path.Combine(folder, "pixabay-scenes-v3.json");
+            var scenePlanFile = Path.Combine(folder, "pixabay-scenes-v4.json");
             List<PixabayFootageScene>? scenes = null;
             if (File.Exists(scenePlanFile))
             {
@@ -685,6 +692,10 @@ public sealed partial class MainViewModel
             }
             var queries = scenes.Select(scene => scene.SearchQuery).ToList();
             Log($"YouTube Flow: {scenes.Count} narration-matched scenes ready. Incompatible visual moods or unrelated tags will be rejected.");
+            var screencapWorkspace = YouTubeFlowPublishingFolder();
+            await YouTubeFlowScreencapReviewService.WriteReviewQueueAsync(
+                screencapWorkspace, YouTubeFlowTitle, scenes,
+                mediaSourceOrder, _cts.Token);
 
             Progress = 45;
             Status = YouTubeFlowStatus = $"Selecting {targetClips} script-relevant Pixabay clips...";
@@ -763,78 +774,90 @@ public sealed partial class MainViewModel
                 }
             }
 
-            async Task<IReadOnlyList<PixabayFlowClip>> HybridStillFallbackAsync(
-                PixabayFootageScene scene, int needed, CancellationToken cancellation)
+            async Task<IReadOnlyList<PixabayFlowClip>> AcquireFromPrioritySource(
+                string source, PixabayFootageScene scene, int maximum,
+                CancellationToken cancellation)
             {
-                var mandatory = needed < 0;
-                needed = Math.Abs(needed);
-                var found = new List<PixabayFlowClip>();
-                if (mandatory)
+                if (source == YouTubeFlowSourceRouter.CommonsVideo)
+                    return await commonsVideos.FindVideosAsync(
+                        scene, maximum,
+                        async (file, token) => await StockVideoQualityService
+                            .ContainsChromaScreenAsync(file, Settings.FfmpegPath, token),
+                        Log, cancellation);
+                if (source == YouTubeFlowSourceRouter.CommonsPhoto)
+                    return await commons.FindImagesAsync(scene, maximum, Log, cancellation);
+                if (source == YouTubeFlowSourceRouter.ChatGpt)
                 {
-                    Log($"Scene {scene.SceneNumber} has no matched footage. Rescue: ChatGPT character/subject art, licensed Commons, then a narration fact card.");
-                    // The important scene-specific illustration is attempted
-                    // BEFORE optional stock-photo decoration, even when all
-                    // regular AI slots have already been spent.
-                    var ai = await TryAiImageAsync(scene, cancellation, mandatory: true);
-                    if (ai is not null) found.Add(ai);
+                    var image = await TryAiImageAsync(scene, cancellation);
+                    return image is null ? [] : [image];
                 }
-                else if (scene.SceneNumber % 5 == 3)
+                if (YouTubeFlowSourceRouter.IsReviewOnly(source))
                 {
-                    var ai = await TryAiImageAsync(scene, cancellation);
-                    if (ai is not null) found.Add(ai);
+                    var fromProject = YouTubeFlowScreencapReviewService
+                        .FindApprovedImages(folder, scene, source);
+                    return fromProject.Count > 0 ? fromProject :
+                        YouTubeFlowScreencapReviewService.FindApprovedImages(
+                            screencapWorkspace, scene, source);
                 }
-                if (found.Count < needed)
-                {
-                    try
-                    {
-                        var photos = await commons.FindImagesAsync(
-                            scene, needed - found.Count, Log, cancellation);
-                        found.AddRange(photos);
-                    }
-                    catch (OperationCanceledException) { throw; }
-                    catch (Exception ex)
-                    {
-                        Log($"Wikimedia scene {scene.SceneNumber} unavailable: {ex.Message}.");
-                    }
-                }
-                if (!mandatory && found.Count < needed)
-                {
-                    var ai = await TryAiImageAsync(scene, cancellation);
-                    if (ai is not null) found.Add(ai);
-                }
-                if (mandatory && found.Count == 0)
-                {
-                    // A fully local, truthful and clearly marked visual is a
-                    // better last resort than unrelated stock or a hard fail.
-                    var file = SceneFactCardService.Create(scene,
-                        Path.Combine(folder, "stock-images", "scene-cards"));
-                    found.Add(new PixabayFlowClip(
-                        long.MinValue / 2 + scene.SceneNumber, file,
-                        "Generated from the actual narration by ZeroVideo",
-                        scene.SearchQuery, scene.NarrationExcerpt, true,
-                        "ZeroVideo editorial card", "Original narration text card", "", "ZeroVideo"));
-                    Log($"Scene {scene.SceneNumber}: used a narration-specific editorial card after all image providers failed.");
-                }
-                return found;
+                return [];
             }
 
-            var clips = await pixabay.AcquireAsync(
-                queries, Settings.PixabayApiKey, YouTubeFlowRatio, Log, _cts.Token,
-                targetClips,
-                (ready, total) =>
+            async Task<PixabayFlowClip> CreateSceneRescueAsync(
+                PixabayFootageScene scene, CancellationToken cancellation)
+            {
+                if (mediaSourceOrder.Contains(YouTubeFlowSourceRouter.ChatGpt))
                 {
-                    Progress = 45 + (int)Math.Round(15d * ready / total);
-                    Status = YouTubeFlowStatus = $"Script-matched videos and illustrations: {ready}/{total} assets...";
-                },
-                scenes,
-                async (path, cancellation) => await StockVideoQualityService
-                    .ContainsChromaScreenAsync(path, Settings.FfmpegPath, cancellation),
-                HybridStillFallbackAsync,
-                async (scene, needed, cancellation) => await commonsVideos.FindVideosAsync(
-                    scene, needed,
+                    var ai = await TryAiImageAsync(scene, cancellation, mandatory: true);
+                    if (ai is not null) return ai;
+                }
+                cancellation.ThrowIfCancellationRequested();
+                var file = SceneFactCardService.Create(scene,
+                    Path.Combine(folder, "stock-images", "scene-cards"));
+                return new PixabayFlowClip(
+                    long.MinValue / 2 + scene.SceneNumber, file,
+                    "Generated from the actual narration by ZeroVideo",
+                    scene.SearchQuery, scene.NarrationExcerpt, true,
+                    "ZeroVideo editorial card", "Original narration text card",
+                    "", "ZeroVideo");
+            }
+
+            var clips = await YouTubeFlowSourceRouter.AssembleAsync(
+                scenes, targetClips, mediaSourceOrder,
+                async (budgets, cancellation) => await pixabay.AcquireAsync(
+                    queries, Settings.PixabayApiKey, YouTubeFlowRatio,
+                    Log, cancellation, budgets.Sum(),
+                    (ready, total) =>
+                    {
+                        Progress = 45 + (int)Math.Round(15d * ready / Math.Max(1,total));
+                        Status = YouTubeFlowStatus =
+                            $"Pixabay: {ready}/{total} video slots filled with narration-grounded clips...";
+                    },
+                    scenes,
                     async (file, token) => await StockVideoQualityService
                         .ContainsChromaScreenAsync(file, Settings.FfmpegPath, token),
-                    Log, cancellation));
+                    null, null, budgets, true, YouTubeFlowTitle),
+                AcquireFromPrioritySource, CreateSceneRescueAsync, Log, _cts.Token);
+            var shotShortfall = Math.Max(0, targetClips - clips.Count);
+            var reviewedScreencaps = clips.Where(c =>
+                YouTubeFlowSourceRouter.IsReviewOnly(c.MediaSource)).ToArray();
+            if (reviewedScreencaps.Length > 0)
+            {
+                var credits = new StringBuilder(
+                    "USER-APPROVED CARTOON SCREENSHOT SOURCES\n" +
+                    "These screenshots are not automatically licensed by ZeroVideo. " +
+                    "The user supplied a per-file use justification; verify permissions " +
+                    "and rights before publishing.\n\n");
+                foreach (var screen in reviewedScreencaps)
+                    credits.AppendLine("Gallery: " + screen.MediaSource)
+                        .AppendLine("File: " + screen.FilePath)
+                        .AppendLine("Source URL: " + screen.SourcePage)
+                        .AppendLine("Credit: " + screen.Attribution)
+                        .AppendLine("User's use basis: " + screen.License)
+                        .AppendLine();
+                await File.WriteAllTextAsync(
+                    Path.Combine(folder, "Approved-screencap-credits.txt"),
+                    credits.ToString(), _cts.Token);
+            }
             var photos = clips.Where(c => c.IsStillImage).ToArray();
             var commonsVideoClips = clips.Where(c =>
                 !c.IsStillImage && c.MediaSource == "Wikimedia Commons").ToArray();
@@ -913,7 +936,9 @@ public sealed partial class MainViewModel
             {
                 title = YouTubeFlowTitle,
                 aspect_ratio = YouTubeFlowRatio,
-                provider = "Pixabay + Wikimedia Commons + ChatGPT",
+                provider = "Priority-ordered optional sources",
+                media_source_priority = mediaSourceOrder,
+                reviewed_screencap_count = reviewedScreencaps.Length,
                 captions = false,
                 footage_complete = true,
                 target_clip_count = targetClips,
@@ -925,7 +950,7 @@ public sealed partial class MainViewModel
                 licensed_still_image_count = commonsPhotos.Length,
                 ai_generated_image_count = aiIllustrations.Length,
                 narration_card_count = editorialCards.Length,
-                shortfall_compensated_by_scene_duration = pixabay.SceneFootageShortfall,
+                shortfall_compensated_by_scene_duration = shotShortfall,
                 narration_seconds = narrationSeconds,
                 searches = queries,
                 scenes = scenes.Select(scene => new
@@ -956,9 +981,9 @@ public sealed partial class MainViewModel
 
             Progress = 100;
             YouTubeFlowOutput = output;
-            Status = YouTubeFlowStatus = pixabay.SceneFootageShortfall > 0
-                ? $"Complete: {clips.Count}/{targetClips} scene-matched clips; " +
-                    $"{pixabay.SceneFootageShortfall} shot slots covered by extending relevant footage: " + output
+            Status = YouTubeFlowStatus = shotShortfall > 0
+                ? $"Complete: {clips.Count}/{targetClips} prioritized scene-matched assets; " +
+                    $"{shotShortfall} shot slots covered by extending relevant footage: " + output
                 : $"Complete: {pixabayVideoClips.Length} Pixabay videos, " +
                     $"{commonsVideoClips.Length} Commons videos, " +
                     $"{commonsPhotos.Length} Commons photos, " +
