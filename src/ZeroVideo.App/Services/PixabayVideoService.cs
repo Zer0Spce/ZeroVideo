@@ -382,7 +382,9 @@ public sealed class PixabayVideoService
                           "creepy" or "eerie" or "happy" or "sunny" or
                           "peaceful" or "ominous" or "behind" or "outside"))
             .Take(3).ToArray();
-        return string.Join(" ", words.Take(2));
+        // A one-word broad query matches unrelated catalog noise; do not
+        // pretend that is a scene-aligned fallback.
+        return words.Length >= 2 ? string.Join(" ", words.Take(2)) : "";
     }
 
     public static bool IsChromaKeyStockMetadata(string text)
