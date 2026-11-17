@@ -232,12 +232,30 @@ public sealed class PixabayVideoService
             {
                 ct.ThrowIfCancellationRequested();
                 var missing = sceneTargets[i] - sceneCounts[i];
-                if (missing <= 0) continue;
-                var photos = await imageFallback(scenePlan[i], Math.Min(3, missing), ct);
+                // Mix an optional still into approximately one in four
+                // already-covered scenes as documentary context. If no relevant
+                // Commons image is available, keep the original video instead.
+                var mixStill = missing == 0 && i % 4 == 1 && sceneCounts[i] >= 2;
+                if (missing <= 0 && !mixStill) continue;
+                var photos = await imageFallback(scenePlan[i],
+                    mixStill ? 1 : Math.Min(3, missing), ct);
                 foreach (var photo in photos)
                 {
-                    if (sceneCounts[i] >= sceneTargets[i]) break;
                     if (!photo.IsStillImage || !usedIds.Add(photo.Id)) continue;
+                    if (mixStill)
+                    {
+                        var oldVideoIndex = clips.FindLastIndex(c =>
+                            !c.IsStillImage && c.SearchQuery.Equals(
+                                scenePlan[i].SearchQuery, StringComparison.OrdinalIgnoreCase));
+                        if (oldVideoIndex >= 0)
+                        {
+                            usedIds.Remove(clips[oldVideoIndex].Id);
+                            clips[oldVideoIndex] = photo;
+                            log?.Invoke($"Wikimedia: replaced one scene {scenePlan[i].SceneNumber} stock shot with a relevant credited photograph.");
+                        }
+                        break;
+                    }
+                    if (sceneCounts[i] >= sceneTargets[i]) break;
                     clips.Add(photo);
                     sceneCounts[i]++;
                     onClipReady?.Invoke(clips.Count, target);
