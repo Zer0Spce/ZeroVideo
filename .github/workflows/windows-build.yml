@@ -16,6 +16,10 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+      - name: Restore
+        run: dotnet restore ZeroVideo.sln
+      - name: Pixabay HTTP 429 and local-cache regression tests (offline)
+        run: dotnet run --project tests/PixabayFlowSmoke/PixabayFlowSmoke.csproj --configuration Release
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -64,12 +68,8 @@ jobs:
           python -m pip install --disable-pip-version-check --only-binary=:all: --upgrade-strategy only-if-needed "onnx>=1.17,<2" scipy scikit-image scikit-learn requests tqdm onnxruntime
           python -m pip install --disable-pip-version-check --only-binary=:all: --no-deps "insightface==2.1"
           python -c "import onnx, onnxruntime, scipy, skimage, sklearn, insightface; from insightface.utils import face_align; from insightface.utils.download import download_file; from insightface.utils.storage import BASE_REPO_URL; print('InsightFace ONNX dependency imports OK:', insightface.__version__)"
-      - name: Restore
-        run: dotnet restore ZeroVideo.sln
       - name: Character Bible scene-variety regression tests
         run: dotnet run --project tests/CharacterBibleSmoke/CharacterBibleSmoke.csproj --configuration Release
-      - name: Pixabay HTTP 429 and local-cache regression tests (offline)
-        run: dotnet run --project tests/PixabayFlowSmoke/PixabayFlowSmoke.csproj --configuration Release
       - name: Publish portable x64
         shell: pwsh
         run: .\tools\build-portable.ps1
