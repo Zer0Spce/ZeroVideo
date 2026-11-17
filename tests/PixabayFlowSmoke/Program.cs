@@ -17,6 +17,8 @@ try
     await InsufficientFootageDoesNotClaimCompletion();
     await OlderCacheCanRecoverWhenThrottled();
     await DurationScaledFootageSelection();
+    await SceneMoodAndNarrationOrdering();
+    await RejectWrongMoodAndUnrelatedTags();
     Console.WriteLine("PASS: Pixabay 24h cache, HTTP 429, resume-safe footage and bounded retry");
 }
 finally
@@ -181,6 +183,75 @@ async Task DurationScaledFootageSelection()
     }
 }
 
+async Task SceneMoodAndNarrationOrdering()
+{
+    var fake = new PixabayStub { HitsPerQuery = 4 };
+    fake.TagForHit = (query, hit) => query switch
+    {
+        "dark forest" when hit == 0 => "sunny forest vacation daylight",
+        "dark forest" => "dark forest shadow night horror",
+        "sunny garden" when hit == 0 => "garden horror shadow midnight",
+        "sunny garden" => "happy sunny garden cheerful daylight",
+        _ => query
+    };
+    using var http = new HttpClient(fake);
+    var service = new PixabayVideoService(http,
+        Path.Combine(baseDir, "scene-moods"), TimeSpan.Zero);
+    var scenes = new[] {
+        new PixabayFootageScene(1, "Someone walks into a frightening forest.",
+            "dark forest", "ominous"),
+        new PixabayFootageScene(2, "The ending is peaceful in a flowering garden.",
+            "sunny garden", "upbeat")
+    };
+    var clips = await service.AcquireAsync(
+        scenes.Select(x => x.SearchQuery), "TEST-KEY", "16:9", null,
+        CancellationToken.None, 4, null, scenes);
+    Check(clips.Count == 4, "Scene planner did not select four matching visuals.");
+    Check(clips.Take(2).All(c => c.SearchQuery == "dark forest") &&
+        clips.Skip(2).All(c => c.SearchQuery == "sunny garden"),
+        "Scene clips are not in the same order as the narration.");
+    Check(!clips.Any(c => c.Id == 2100 || c.Id == 2200),
+        "Visual mood mismatch was accepted (sunny horror or dark celebration).");
+    Check(clips.Select(x => x.Id).Distinct().Count() == 4,
+        "Scene footage must not repeat identical Pixabay clip IDs.");
+    Console.WriteLine("PASS: narration-ordered scenes select matching dark / upbeat footage");
+}
+
+async Task RejectWrongMoodAndUnrelatedTags()
+{
+    Check(PixabayVideoService.IsScriptVisualMatch(
+        "dark forest", "forest shadows nighttime", "ominous"),
+        "Dark relevant footage should be accepted.");
+    Check(!PixabayVideoService.IsScriptVisualMatch(
+        "dark forest", "sunny green forest vacation", "ominous"),
+        "A scary documentary must reject bright vacation footage.");
+    Check(!PixabayVideoService.IsScriptVisualMatch(
+        "haunted hallway", "happy swimming beach", "ominous"),
+        "A query must not accept unrelated search results.");
+    var fake = new PixabayStub { HitsPerQuery = 4,
+        TagForHit = (_, _) => "sunny ocean vacation daytime" };
+    using var http = new HttpClient(fake);
+    var service = new PixabayVideoService(http,
+        Path.Combine(baseDir, "reject-mismatches"), TimeSpan.Zero);
+    var scenes = new[] {
+        new PixabayFootageScene(1, "A dark forest terrifies the villagers.",
+            "dark forest", "ominous")
+    };
+    try
+    {
+        await service.AcquireAsync(["dark forest"], "TEST-KEY", "16:9",
+            null, CancellationToken.None, 2, null, scenes);
+        throw new Exception("Wrong-mood footage was accepted.");
+    }
+    catch (InvalidOperationException ex) when (
+        ex.Message.Contains("does not match", StringComparison.Ordinal))
+    {
+        Check(fake.VideoRequests == 0,
+            "Unrelated footage must not even be downloaded.");
+    }
+    Console.WriteLine("PASS: mismatched stock clips are rejected rather than rendered");
+}
+
 static void Check(bool result, string message)
 {
     if (!result) throw new Exception("FAIL: " + message);
@@ -196,6 +267,7 @@ sealed class PixabayStub : HttpMessageHandler
     public string? RateLimitTerm { get; set; }
     public string ResetHeader { get; set; } = "60";
     public int HitsPerQuery { get; set; } = 1;
+    public Func<string, int, string>? TagForHit { get; set; }
 
     protected override Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request, CancellationToken cancellationToken)
@@ -228,12 +300,14 @@ sealed class PixabayStub : HttpMessageHandler
             if (query.StartsWith("topic-", StringComparison.Ordinal) &&
                 int.TryParse(query["topic-".Length..], out var topicIndex))
                 id = 50000 + topicIndex * 100;
+            if (query == "dark forest") id = 2100;
+            if (query == "sunny garden") id = 2200;
             var json = JsonSerializer.Serialize(new
             {
                 hits = Enumerable.Range(0, HitsPerQuery).Select(i => new {
                         id = id + i,
                         pageURL = "https://pixabay.com/videos/example-" + (id + i),
-                        tags = query,
+                        tags = TagForHit?.Invoke(query, i) ?? query,
                         videos = new {
                             medium = new {
                                 url = "https://cdn.pixabay.com/video/" + (id + i) + ".mp4",
