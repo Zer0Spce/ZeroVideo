@@ -337,7 +337,7 @@ public sealed partial class MainViewModel
 
             Progress = 35;
             Status = YouTubeFlowStatus = $"Storyboarding {desiredQueries} script scenes and their visual tone...";
-            var scenePlanFile = Path.Combine(folder, "pixabay-scenes-v2.json");
+            var scenePlanFile = Path.Combine(folder, "pixabay-scenes-v3.json");
             List<PixabayFootageScene>? scenes = null;
             if (File.Exists(scenePlanFile))
             {
@@ -496,7 +496,12 @@ public sealed partial class MainViewModel
             "You are a documentary stock-footage storyboard editor. Produce EXACTLY " +
             desiredQueries + " chronological Pixabay VIDEO searches, ONE for each numbered script scene. " +
             "Each search MUST depict a visible person/object/action/place actually appropriate to its " +
-            "corresponding narration segment. Keep the video's genre and EMOTIONAL MOOD consistent. " +
+            "corresponding narration segment. INCLUDE the actual objects, subjects, actions or locations " +
+            "named in that segment; avoid vague symbolic imagery if the script names something concrete. " +
+            "Avoid irrelevant cats, food, squirrels, people on phones, generic party scenes or random " +
+            "landscapes unless the exact narration segment calls for them. Do not request green-screen, " +
+            "blue-screen, chroma-key, isolated character, VFX template or blank TV-screen footage. " +
+            "Keep the video's genre and EMOTIONAL MOOD consistent. " +
             "For scary, haunted, creepy or suspenseful material use genuinely dark/eerie/ominous " +
             "visuals (night, shadows, fog, abandoned places, etc.). Never choose bright, happy, " +
             "sunny vacation or party footage for a scary narration. For positive stories, use " +
@@ -548,17 +553,52 @@ public sealed partial class MainViewModel
 
     private static List<string> SplitNarrationIntoScenes(string narration, int sceneCount)
     {
+        // Avoid dividing the narration in the middle of a sentence. A sentence
+        // boundary provides a cleaner subject/action handoff for the stock search.
+        var sentences = Regex.Split(narration.Trim(), @"(?<=[.!?])\s+|\r?\n+")
+            .Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
         var words = Regex.Split(narration.Trim(), @"\s+")
             .Where(x => !string.IsNullOrWhiteSpace(x)).ToArray();
         if (words.Length < sceneCount * 2)
             throw new InvalidDataException("Not enough narration to assign distinct stock-footage scenes.");
+        if (sentences.Count < sceneCount)
+        {
+            // Unusually long sentences: a word split is safer than missing scenes.
+            return Enumerable.Range(0, sceneCount).Select(i =>
+                string.Join(" ", words[(i * words.Length / sceneCount)..
+                    ((i + 1) * words.Length / sceneCount)])).ToList();
+        }
+
         var segments = new List<string>(sceneCount);
+        var index = 0;
+        var remainingWords = words.Length;
         for (var i = 0; i < sceneCount; i++)
         {
-            var start = i * words.Length / sceneCount;
-            var end = (i + 1) * words.Length / sceneCount;
-            segments.Add(string.Join(" ", words[start..end]));
+            var left = sceneCount - i;
+            var targetWords = (int)Math.Ceiling(remainingWords / (double)left);
+            var segment = new List<string>();
+            var count = 0;
+            while (index < sentences.Count)
+            {
+                var nextWords = Regex.Matches(sentences[index], @"\b[\p{L}\p{N}]+\b").Count;
+                var availableAfter = sentences.Count - index - 1;
+                if (segment.Count > 0 &&
+                    (count >= targetWords || availableAfter < left - 1))
+                    break;
+                segment.Add(sentences[index++]);
+                count += nextWords;
+                if (sentences.Count - index <= left - 1) break;
+            }
+            if (segment.Count == 0 && index < sentences.Count)
+            {
+                segment.Add(sentences[index++]);
+                count = Regex.Matches(segment[0], @"\b[\p{L}\p{N}]+\b").Count;
+            }
+            remainingWords -= count;
+            segments.Add(string.Join(" ", segment));
         }
+        if (segments.Any(x => string.IsNullOrWhiteSpace(x)) || index != sentences.Count)
+            throw new InvalidDataException("The footage storyboard could not cover all narration sentences.");
         return segments;
     }
 
