@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Security.Cryptography;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -156,14 +157,47 @@ public sealed partial class MainViewModel
                 .Where(ch => !Path.GetInvalidFileNameChars().Contains(ch)).Take(52).ToArray()).Trim();
             if (safeName.Length == 0) safeName = "YouTube Flow";
             var root = Path.Combine(Settings.ProjectsRoot, "YouTube Flow");
-            var folder = Path.Combine(root, DateTime.Now.ToString("yyyyMMdd-HHmmss") +
-                "-" + safeName);
+            Directory.CreateDirectory(root);
+            // A retry after Pixabay HTTP 429 must resume the existing voiceover
+            // instead of generating (and billing for) the narration again.
+            // Never put the API key in project IDs or checkpoint filenames.
+            var identity = string.Join("\n", YouTubeFlowTitle, YouTubeFlowScript,
+                YouTubeFlowRatio, Settings.TextToSpeechEngine,
+                Settings.OmniVoiceProfileId, Settings.ClipchampVoice);
+            var resumeKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..24];
+            var resumeFile = Path.Combine(root, ".resume-" + resumeKey + ".txt");
+            var folder = "";
+            try
+            {
+                if (File.Exists(resumeFile))
+                {
+                    var candidate = Path.GetFullPath(await File.ReadAllTextAsync(resumeFile, _cts.Token));
+                    var permittedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) +
+                        Path.DirectorySeparatorChar;
+                    if (candidate.StartsWith(permittedRoot, StringComparison.OrdinalIgnoreCase) &&
+                        File.Exists(Path.Combine(candidate, "script.txt")) &&
+                        await File.ReadAllTextAsync(Path.Combine(candidate, "script.txt"), _cts.Token) ==
+                            YouTubeFlowScript)
+                    {
+                        folder = candidate;
+                        Log("YouTube Flow: resuming previous unfinished project without repeating completed stages.");
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Log("YouTube Flow: previous resume marker was not usable; starting a new folder.");
+            }
+            if (string.IsNullOrWhiteSpace(folder))
+                folder = Path.Combine(root, DateTime.Now.ToString("yyyyMMdd-HHmmssfff") +
+                    "-" + safeName);
             Directory.CreateDirectory(folder);
             Directory.CreateDirectory(Path.Combine(folder, "audio"));
             var output = Path.Combine(folder, "youtube-flow.mp4");
-            YouTubeFlowOutput = "";
+            YouTubeFlowOutput = output; // Open Output Folder also works after a failed job.
             await File.WriteAllTextAsync(
                 Path.Combine(folder, "script.txt"), YouTubeFlowScript, _cts.Token);
+            await File.WriteAllTextAsync(resumeFile, folder, _cts.Token);
 
             // Split longer scripts at sentence boundaries so Clipchamp/OmniVoice
             // receive manageable narration chunks rather than a single giant TTS request.
@@ -180,8 +214,29 @@ public sealed partial class MainViewModel
                 Chapters = chapters,
                 Options = new ProjectOptions { GenerateCaptions = false, BurnInBoldCaptions = false }
             };
-            Status = YouTubeFlowStatus = "Generating narration voiceover...";
+            Status = YouTubeFlowStatus = "Preparing narration voiceover...";
             Progress = 10;
+            var renderer = new YouTubeFlowRenderService(_runner, _ffmpeg);
+            var voiceover = Path.Combine(folder, "audio", "voiceover.wav");
+            var reuseVoiceover = false;
+            if (File.Exists(voiceover))
+            {
+                try
+                {
+                    await _ffmpeg.ValidateNarrationAudioAsync(
+                        voiceover, Settings, "YouTube Flow saved voiceover",
+                        YouTubeFlowScript, Log, _cts.Token);
+                    reuseVoiceover = true;
+                    Log("YouTube Flow: reusing the already-complete voiceover from this project.");
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    Log("YouTube Flow: saved voiceover is not valid (" + ex.Message +
+                        "); regenerating audio.");
+                }
+            }
+            if (!reuseVoiceover)
+            {
             var localVoice = Settings.TextToSpeechEngine == "OmniVoice (Local)";
             if (localVoice)
             {
@@ -226,16 +281,34 @@ public sealed partial class MainViewModel
                         chapter.Narration, Log, _cts.Token);
                 narrationFiles.Add(generated);
             }
-            var renderer = new YouTubeFlowRenderService(_runner, _ffmpeg);
-            var voiceover = await renderer.CombineNarrationAsync(
-                narrationFiles, Path.Combine(folder, "audio", "voiceover.wav"),
+            _ = await renderer.CombineNarrationAsync(
+                narrationFiles, voiceover,
                 Settings, Log, _cts.Token);
             await _ffmpeg.ValidateNarrationAudioAsync(
                 voiceover, Settings, "YouTube Flow complete voiceover",
                 YouTubeFlowScript, Log, _cts.Token);
+            }
             Progress = 35;
-            Status = YouTubeFlowStatus = "Planning stock video queries...";
-            var queries = await GenerateYouTubeFlowQueriesAsync();
+            Status = YouTubeFlowStatus = "Preparing stock video queries...";
+            var planFile = Path.Combine(folder, "pixabay-queries.json");
+            List<string>? queries = null;
+            if (File.Exists(planFile))
+            {
+                try
+                {
+                    queries = JsonSerializer.Deserialize<List<string>>(
+                        await File.ReadAllTextAsync(planFile, _cts.Token));
+                    if (queries is null || queries.Count == 0) queries = null;
+                    else Log("YouTube Flow: reusing previous footage search plan.");
+                }
+                catch (JsonException) { queries = null; }
+            }
+            if (queries is null)
+            {
+                queries = await GenerateYouTubeFlowQueriesAsync();
+                await File.WriteAllTextAsync(
+                    planFile, JsonSerializer.Serialize(queries), _cts.Token);
+            }
 
             Progress = 45;
             Status = YouTubeFlowStatus = "Searching Pixabay and preparing clips...";
@@ -265,8 +338,11 @@ public sealed partial class MainViewModel
 
             Progress = 100;
             YouTubeFlowOutput = output;
-            Status = YouTubeFlowStatus = "Complete: " + output;
+            Status = YouTubeFlowStatus = pixabay.RateLimitedDuringLastAcquire
+                ? "Complete with limited Pixabay footage (quota reached): " + output
+                : "Complete: " + output;
             Log("YouTube Flow finished without captions. Output: " + output);
+            try { File.Delete(resumeFile); } catch { /* Finished output remains safe. */ }
             await _settingsService.SaveAsync(Settings);
         }
         catch (OperationCanceledException) { YouTubeFlowStatus = "Stopped. Completed files remain saved."; throw; }
