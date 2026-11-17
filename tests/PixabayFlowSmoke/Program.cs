@@ -29,6 +29,9 @@ try
     await VerifyMediumSizedCommonsVideoAllowed();
     VerifyHistoricalVideoContextFiltering();
     await VerifyCommonsVideosInNarrationSequence();
+    await VerifyUserSourcePriorityAndDisabledSources();
+    await VerifyPixabayNarrationTopicFiltering();
+    VerifyRightsReviewedScreencapImport();
     await VerifyChatGptArtworkMixedIntoChronologicalScenes();
     await RescueEmptySceneWithAiImage();
     VerifyTopicSpecificArtPrompts();
@@ -514,6 +517,148 @@ async Task RescueEmptySceneWithAiImage()
         images[0].Id == rescue.Id && service.SceneFootageShortfall == 4,
         "One truthful scene-specific image should rescue five shot slots.");
     Console.WriteLine("PASS: zero-coverage scene rescued with original image instead of hard stop");
+}
+
+async Task VerifyUserSourcePriorityAndDisabledSources()
+{
+    var scene = new PixabayFootageScene(1,
+        "A dark spider crawls beside a television broadcast.",
+        "dark spider television", "ominous");
+    var pix = new[]
+    {
+        new PixabayFlowClip(5001, "test-pix-1.mp4", "https://pixabay.com/",
+            scene.SearchQuery, "dark spider television"),
+        new PixabayFlowClip(5002, "test-pix-2.mp4", "https://pixabay.com/",
+            scene.SearchQuery, "dark spider television"),
+        new PixabayFlowClip(5003, "test-pix-3.mp4", "https://pixabay.com/",
+            scene.SearchQuery, "dark spider television")
+    };
+    var commons = new PixabayFlowClip(-6001, "test-commons.webm",
+        "https://commons.wikimedia.org/wiki/File:Spider.webm", scene.SearchQuery,
+        "dark spider television", false, "Creator", "CC BY 4.0",
+        "https://creativecommons.org/licenses/by/4.0/", "Wikimedia Commons");
+    var pixCalls = 0;
+    async Task<IReadOnlyList<PixabayFlowClip>> PixabayBatch(
+        IReadOnlyList<int> budgets, CancellationToken ct)
+    {
+        pixCalls++;
+        return await Task.FromResult(pix.Take(budgets[0]).ToArray());
+    }
+    Task<IReadOnlyList<PixabayFlowClip>> Other(
+        string source, PixabayFootageScene _, int count, CancellationToken ct)
+        => Task.FromResult<IReadOnlyList<PixabayFlowClip>>(
+            source == YouTubeFlowSourceRouter.CommonsVideo ? [commons] : []);
+    Task<PixabayFlowClip> Card(PixabayFootageScene _, CancellationToken ct)
+        => Task.FromResult(new PixabayFlowClip(-100000,
+            "scene-card.png", "Original narration", scene.SearchQuery,
+            scene.NarrationExcerpt, true));
+
+    var pixFirst = await YouTubeFlowSourceRouter.AssembleAsync(
+        [scene], 3, [YouTubeFlowSourceRouter.Pixabay,
+            YouTubeFlowSourceRouter.CommonsVideo],
+        PixabayBatch, Other, Card, null, CancellationToken.None);
+    Check(pixFirst.Count == 3 && pixFirst[0].MediaSource == "Pixabay" &&
+        pixFirst[1].MediaSource == "Pixabay" &&
+        pixFirst[2].MediaSource == "Wikimedia Commons",
+        "Pixabay first must take its priority slots before Wikimedia video.");
+    var commonsFirst = await YouTubeFlowSourceRouter.AssembleAsync(
+        [scene], 3, [YouTubeFlowSourceRouter.CommonsVideo,
+            YouTubeFlowSourceRouter.Pixabay],
+        PixabayBatch, Other, Card, null, CancellationToken.None);
+    Check(commonsFirst.Count == 3 &&
+        commonsFirst[0].MediaSource == "Wikimedia Commons" &&
+        commonsFirst[1].MediaSource == "Pixabay",
+        "Moving Wikimedia Up must change the actual per-scene media order.");
+    var oldPixCalls = pixCalls;
+    var wikimediaOnly = await YouTubeFlowSourceRouter.AssembleAsync(
+        [scene], 3, [YouTubeFlowSourceRouter.CommonsVideo],
+        PixabayBatch, Other, Card, null, CancellationToken.None);
+    Check(pixCalls == oldPixCalls &&
+        wikimediaOnly.Count == 1 &&
+        wikimediaOnly[0].MediaSource == "Wikimedia Commons",
+        "Unchecking Pixabay must avoid all Pixabay API/download calls.");
+    var noSource = await YouTubeFlowSourceRouter.AssembleAsync(
+        [scene], 3, [YouTubeFlowSourceRouter.ChatGpt],
+        PixabayBatch, Other, Card, null, CancellationToken.None);
+    Check(noSource.Count == 1 && noSource[0].IsStillImage,
+        "Empty enabled source must fall back to a truthful local narration card.");
+    Console.WriteLine("PASS: checkboxes and Up/Down source priority change actual video source order");
+}
+
+async Task VerifyPixabayNarrationTopicFiltering()
+{
+    var onTopic = new PixabayFootageScene(1,
+        "The episode showed a spider crawling across a dark television screen.",
+        "dark spider television", "ominous");
+    Check(PixabayTopicRelevanceService.IsRelevant(
+        onTopic, "The Dark Side of Cartoons",
+        "dark spider television eerie shadows", out _),
+        "Stock tags must actually depict concrete items in the narration.");
+    var offTopic = new PixabayFootageScene(1,
+        "The broadcast network discussed a children's animated episode.",
+        "dark squirrel forest", "ominous");
+    Check(!PixabayTopicRelevanceService.IsRelevant(
+        offTopic, "The Dark Side of Cartoons",
+        "dark squirrel forest night", out var reason) && reason.Contains("narration"),
+        "A generic query can match Pixabay tags but must fail narration relevance.");
+    var filler = new PixabayFootageScene(1,
+        "Parents were worried about the television broadcast.",
+        "parents television discussion", "tense");
+    Check(!PixabayTopicRelevanceService.IsRelevant(
+        filler, "Peppa Pig episode controversy",
+        "parents television discussion nutella eating", out _),
+        "Cartoon documentary cannot insert unrelated food/animals as filler.");
+    var stub = new PixabayStub { HitsPerQuery = 3 };
+    stub.TagForHit = (_, _) => "dark squirrel forest night";
+    using var http = new HttpClient(stub);
+    var service = new PixabayVideoService(http,
+        Path.Combine(baseDir, "topic-gate"), TimeSpan.Zero);
+    var chosen = await service.AcquireAsync([offTopic.SearchQuery],
+        "TEST-KEY", "16:9", null, CancellationToken.None, 3, null, [offTopic],
+        null, null, null, [3], true, "The Dark Side of Cartoons");
+    Check(chosen.Count == 0 && stub.VideoRequests == 0,
+        "No unrelated Pixar/Pixabay downloads when the query is unrelated to narration.");
+    Console.WriteLine("PASS: Pixabay actual narration/topic relevance gate rejects generic and random clips");
+}
+
+void VerifyRightsReviewedScreencapImport()
+{
+    var folder = Path.Combine(baseDir, "approved-gallery-test");
+    var media = Path.Combine(folder, "approved-screencaps");
+    Directory.CreateDirectory(media);
+    var scene = new PixabayFootageScene(9,
+        "An episode of the animated show is discussed.",
+        "cartoon episode television", "neutral");
+    var source = YouTubeFlowSourceRouter.SpongeBob;
+    var stem = "scene-09-spongebob-captures";
+    File.WriteAllBytes(Path.Combine(media, stem + ".png"), new byte[8192]);
+    Check(YouTubeFlowScreencapReviewService.FindApprovedImages(
+        folder, scene, source).Count == 0,
+        "Cartoon screenshot must NOT load merely because the user toggled a gallery.");
+    File.WriteAllText(Path.Combine(media, stem + ".json"),
+        JsonSerializer.Serialize(new {
+            approvedForUse = false,
+            sourceUrl = "https://thesbcommunity.com/captures/episode",
+            usageBasis = "User has reviewed permission or fair-use needs",
+            credit = "Original rights holder"
+        }));
+    Check(YouTubeFlowScreencapReviewService.FindApprovedImages(
+        folder, scene, source).Count == 0,
+        "User must explicitly approve screenshot use before import.");
+    File.WriteAllText(Path.Combine(media, stem + ".json"),
+        JsonSerializer.Serialize(new {
+            approvedForUse = true,
+            sourceUrl = "https://thesbcommunity.com/captures/episode",
+            usageBasis = "User has reviewed permission or fair-use needs",
+            credit = "Original rights holder"
+        }));
+    var approved = YouTubeFlowScreencapReviewService.FindApprovedImages(
+        folder, scene, source);
+    Check(approved.Count == 1 && approved[0].MediaSource == source &&
+        approved[0].IsStillImage &&
+        approved[0].SourcePage.Contains("thesbcommunity.com"),
+        "Reviewed copyright screenshot may enter only its selected scene with credits.");
+    Console.WriteLine("PASS: copyright-screened cartoon screencaps require explicit reviewed imports");
 }
 
 void VerifyTopicSpecificArtPrompts()
