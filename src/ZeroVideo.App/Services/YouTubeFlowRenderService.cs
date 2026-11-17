@@ -94,7 +94,8 @@ public sealed class YouTubeFlowRenderService(ProcessRunner runner, FfmpegService
 
         // Short shots provide movement while the exact narration duration is
         // the master clock. Reusing downloaded clips avoids bulk downloads.
-        var segments = (int)Math.Ceiling((duration + shotLength) / shotLength);
+        // Exactly one six-second segment per shot. No extra trailing repeat.
+        var segments = (int)Math.Ceiling(duration / shotLength);
         var concatList = Path.Combine(work, "shots.txt");
         var sb = new StringBuilder("ffconcat version 1.0\n");
         for (var i = 0; i < segments; i++)
