@@ -142,16 +142,18 @@ public sealed class PixabayVideoService
                 log?.Invoke("Pixabay: no downloadable match for '" + query + "'.");
             }
         }
+        // Never render an apparently finished documentary after missing searches:
+        // three repeating clips are not a substitute for the requested footage.
+        // Preserve successful API response caches and downloaded files for retry.
         if (rateLimit is not null)
         {
-            var minimumClips = Math.Min(3, queries.Count);
-            if (clips.Count < minimumClips)
-                throw new PixabayRateLimitException(rateLimit.RetryAfter);
-            log?.Invoke($"Pixabay quota reached: continuing with {clips.Count} locally available clips; some searches were skipped.");
+            log?.Invoke($"Pixabay quota is still exhausted after the safe retry budget. {clips.Count}/{queries.Count} footage searches succeeded; not rendering an incomplete video.");
+            throw new PixabayRateLimitException(rateLimit.RetryAfter);
         }
-        if (clips.Count == 0)
+        var requiredClips = Math.Min(6, queries.Count);
+        if (clips.Count < requiredClips)
             throw new InvalidOperationException(
-                "Pixabay returned no usable videos for the script. Change the script/topic or footage queries.");
+                $"Only {clips.Count}/{queries.Count} Pixabay footage searches produced usable clips (minimum {requiredClips}). Video was not rendered. Saved voiceover and cached clips remain available for retry; broaden your footage queries if this persists.");
         return clips.OrderBy(c => queries.FindIndex(q =>
             q.Equals(c.SearchQuery, StringComparison.OrdinalIgnoreCase))).ToList();
     }
@@ -239,17 +241,24 @@ public sealed class PixabayVideoService
         var url = "https://pixabay.com/api/videos/?key=" +
             Uri.EscapeDataString(key) + "&q=" + Uri.EscapeDataString(query) +
             "&per_page=20&video_type=all";
-        // At most one retry, only after the server-supplied reset timer.
-        for (var attempt = 0; attempt <= 1; attempt++)
+        // Repeated HTTP 429 is possible even after a window resets. Respect
+        // each provider reset time; cap the retries/wait so the UI never hangs
+        // indefinitely and never flood the service with rapid requests.
+        const int maxResetRetries = 3;
+        var waited = TimeSpan.Zero;
+        for (var attempt = 0; attempt <= maxResetRetries; attempt++)
         {
             using var result = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
             if (result.StatusCode == HttpStatusCode.TooManyRequests)
             {
                 var reset = RateReset(result);
-                if (attempt == 0 && reset is { } wait && wait <= _maxAutoWait)
+                if (attempt < maxResetRetries && reset is { } wait &&
+                    wait <= _maxAutoWait &&
+                    waited + wait + TimeSpan.FromSeconds(1) <= TimeSpan.FromMinutes(3))
                 {
                     var delay = wait + TimeSpan.FromSeconds(1);
-                    log?.Invoke($"Pixabay API key temporarily rate-limited. Respecting its reset timer ({Math.Ceiling(delay.TotalSeconds)} seconds) before one retry.");
+                    waited += delay;
+                    log?.Invoke($"Pixabay HTTP 429: waiting {Math.Ceiling(delay.TotalSeconds)} seconds for the next permitted quota window (retry {attempt + 1}/{maxResetRetries}).");
                     await Task.Delay(delay, ct);
                     continue;
                 }
