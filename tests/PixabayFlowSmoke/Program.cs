@@ -163,6 +163,7 @@ sealed class PixabayStub : HttpMessageHandler
     public int RateLimitResponsesRemaining { get; set; }
     public string? RateLimitTerm { get; set; }
     public string ResetHeader { get; set; } = "60";
+    public int HitsPerQuery { get; set; } = 1;
 
     protected override Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request, CancellationToken cancellationToken)
@@ -192,23 +193,25 @@ sealed class PixabayStub : HttpMessageHandler
                 "gamma" => 1103L,
                 _ => 1104L
             };
+            if (query.StartsWith("topic-", StringComparison.Ordinal) &&
+                int.TryParse(query["topic-".Length..], out var topicIndex))
+                id = 50000 + topicIndex * 100;
             var json = JsonSerializer.Serialize(new
             {
-                hits = new[] {
-                    new {
-                        id,
-                        pageURL = "https://pixabay.com/videos/example-" + id,
+                hits = Enumerable.Range(0, HitsPerQuery).Select(i => new {
+                        id = id + i,
+                        pageURL = "https://pixabay.com/videos/example-" + (id + i),
                         tags = query,
                         videos = new {
                             medium = new {
-                                url = "https://cdn.pixabay.com/video/" + id + ".mp4",
+                                url = "https://cdn.pixabay.com/video/" + (id + i) + ".mp4",
                                 width = 1280,
                                 height = 720,
                                 size = 8192L
                             }
                         }
                     }
-                }
+                }).ToArray()
             });
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
