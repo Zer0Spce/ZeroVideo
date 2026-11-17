@@ -72,7 +72,10 @@ public sealed class PixabayVideoService
         Func<PixabayFootageScene, int, CancellationToken,
             Task<IReadOnlyList<PixabayFlowClip>>>? imageFallback = null,
         Func<PixabayFootageScene, int, CancellationToken,
-            Task<IReadOnlyList<PixabayFlowClip>>>? videoFallback = null)
+            Task<IReadOnlyList<PixabayFlowClip>>>? videoFallback = null,
+        IReadOnlyList<int>? sceneSlotBudgets = null,
+        bool allowIncompleteScenes = false,
+        string videoTopicTitle = "")
     {
         if (string.IsNullOrWhiteSpace(apiKey))
             throw new InvalidOperationException("Enter your own Pixabay API key in YouTube Flow.");
@@ -90,9 +93,16 @@ public sealed class PixabayVideoService
                  !scene.SearchQuery.Equals(queries[i], StringComparison.OrdinalIgnoreCase)).Any()))
             throw new InvalidDataException("Scene plan must have exactly one distinct search per narration segment, in matching order.");
 
-        var target = targetClipCount <= 0
-            ? queries.Count // Preserve compatibility for older callers/tests.
-            : Math.Clamp(targetClipCount, 1, MaxClipsPerVideo);
+        if (sceneSlotBudgets is not null &&
+            (scenePlan is null || sceneSlotBudgets.Count != scenePlan.Count ||
+             sceneSlotBudgets.Any(n => n < 0)))
+            throw new ArgumentException("Scene shot budgets must align with the complete storyboard.");
+        var target = sceneSlotBudgets is not null
+            ? Math.Min(MaxClipsPerVideo, sceneSlotBudgets.Sum())
+            : targetClipCount <= 0
+                ? queries.Count // Preserve compatibility for older callers/tests.
+                : Math.Clamp(targetClipCount, 1, MaxClipsPerVideo);
+        if (target == 0) return [];
         RateLimitedDuringLastAcquire = false;
         SceneFootageShortfall = 0;
         var usedIds = new HashSet<long>();
@@ -113,6 +123,8 @@ public sealed class PixabayVideoService
             ct.ThrowIfCancellationRequested();
             var query = queries[index];
             candidates[index] = [];
+            if (sceneSlotBudgets is not null && sceneSlotBudgets[index] == 0)
+                continue;
             JsonDocument response;
             try
             {
@@ -152,8 +164,16 @@ public sealed class PixabayVideoService
                     var mood = scenePlan is null ? "neutral" : scenePlan[index].Mood;
                     if (scenePlan is not null && !IsScriptVisualMatch(query, tags, mood))
                         continue; // Never substitute bright/unrelated media for a dark scene.
+                    if (scenePlan is not null &&
+                        !string.IsNullOrWhiteSpace(videoTopicTitle) &&
+                        !PixabayTopicRelevanceService.IsRelevant(
+                            scenePlan[index], videoTopicTitle, tags, out _))
+                        continue; // Must match the spoken scene, not just AI query tags.
+                    var narratedScore = scenePlan is null ? 0 :
+                        PixabayTopicRelevanceService.MatchScore(scenePlan[index], tags);
                     matches.Add((id, url, sourcePage, tags,
-                        matchingTerms * 10d + MoodBonus(tags, mood) - aspectPenalty * 3d));
+                        matchingTerms * 10d + narratedScore * 25d +
+                        MoodBonus(tags, mood) - aspectPenalty * 3d));
                 }
                 candidates[index] = matches.OrderByDescending(x => x.Score)
                     .ThenBy(x => x.Id).ToList();
@@ -164,9 +184,10 @@ public sealed class PixabayVideoService
         // A single popular search cannot monopolize all 150 slots.
         var positions = new int[queries.Count];
         var sceneCounts = new int[queries.Count];
-        var sceneTargets = Enumerable.Range(0, queries.Count)
-            .Select(i => (int)Math.Ceiling((i + 1d) * target / queries.Count) -
-                         (int)Math.Ceiling(i * target / (double)queries.Count)).ToArray();
+        var sceneTargets = sceneSlotBudgets?.ToArray() ??
+            Enumerable.Range(0, queries.Count)
+                .Select(i => (int)Math.Ceiling((i + 1d) * target / queries.Count) -
+                             (int)Math.Ceiling(i * target / (double)queries.Count)).ToArray();
         var failedDownloads = new HashSet<long>();
         bool selectedAny;
         bool mediaRateLimited = false;
@@ -254,6 +275,9 @@ public sealed class PixabayVideoService
                         var tags = ReadString(hit, "tags");
                         if (IsChromaKeyStockMetadata(tags) ||
                             !IsScriptVisualMatch(broader, tags, scene.Mood)) continue;
+                        if (!string.IsNullOrWhiteSpace(videoTopicTitle) &&
+                            !PixabayTopicRelevanceService.IsRelevant(
+                                scene, videoTopicTitle, tags, out _)) continue;
                         var local = Path.Combine(videoDir, id + "-medium.mp4");
                         try
                         {
@@ -383,7 +407,7 @@ public sealed class PixabayVideoService
             }
         }
 
-        if (rateLimit is not null && (scenePlan is null ||
+        if (!allowIncompleteScenes && rateLimit is not null && (scenePlan is null ||
             sceneCounts.Any(c => c == 0)))
         {
             log?.Invoke($"Pixabay rate limit: {clips.Count}/{target} cached/available clips. Saving the project for a quota-respecting retry; no incomplete MP4 will be labeled finished.");
@@ -393,7 +417,7 @@ public sealed class PixabayVideoService
         {
             var emptyScenes = Enumerable.Range(0, queries.Count)
                 .Where(i => sceneCounts[i] == 0).ToList();
-            if (emptyScenes.Count > 0)
+            if (emptyScenes.Count > 0 && !allowIncompleteScenes)
                 throw new InvalidOperationException(
                     $"Pixabay found no relevant, mood-compatible stock for {emptyScenes.Count} narration scene(s): " +
                     string.Join(", ", emptyScenes.Select(i => scenePlan[i].SceneNumber)) +
@@ -409,7 +433,7 @@ public sealed class PixabayVideoService
                     $"Accepting {SceneFootageShortfall} missing shots: the renderer will extend the existing " +
                     "relevant clips within their own scenes, without using mismatched stock.");
         }
-        else if (clips.Count < target)
+        else if (!allowIncompleteScenes && clips.Count < target)
         {
             throw new InvalidOperationException(
                 $"Pixabay provided {clips.Count}/{target} distinct clips across {queries.Count} searches. The job remains resumable; expand/change the footage searches or use more licensed media rather than repeating unrelated clips.");
