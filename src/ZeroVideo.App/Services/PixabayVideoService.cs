@@ -307,8 +307,11 @@ public sealed class PixabayVideoService
                     ((i % 4 == 1 && sceneCounts[i] >= 2) ||
                      (i % 5 == 2 && sceneCounts[i] >= 1));
                 if (missing <= 0 && !mixStill) continue;
+                // Negative requested count is an internal rescue hint:
+                // a narration scene has ZERO relevant visuals and requires a
+                // guaranteed primary illustration, not cosmetic photo mixing.
                 var photos = await imageFallback(scenePlan[i],
-                    mixStill ? 1 : Math.Min(3, missing), ct);
+                    mixStill ? 1 : sceneCounts[i] == 0 ? -1 : Math.Min(3, missing), ct);
                 foreach (var photo in photos)
                 {
                     if (!photo.IsStillImage || !usedIds.Add(photo.Id)) continue;
