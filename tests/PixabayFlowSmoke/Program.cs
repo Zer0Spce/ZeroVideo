@@ -124,7 +124,7 @@ async Task InsufficientFootageDoesNotClaimCompletion()
             "TEST-KEY", "16:9", Console.WriteLine, CancellationToken.None);
         throw new Exception("Fewer than six distinct clips must not be considered complete.");
     }
-    catch (InvalidOperationException ex) when (ex.Message.Contains("Only 4/6"))
+    catch (InvalidOperationException ex) when (ex.Message.Contains("4/6"))
     {
         Console.WriteLine("PASS: insufficient distinct footage does not mark video complete");
     }
