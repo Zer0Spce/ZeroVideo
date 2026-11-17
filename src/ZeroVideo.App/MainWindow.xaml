@@ -446,7 +446,7 @@
                 <Border Style="{StaticResource CardBorder}" Margin="0,14,0,0">
                   <StackPanel>
                     <TextBlock Text="Documentary Media Sources" FontSize="17" FontWeight="SemiBold"/>
-                    <TextBlock Text="Pixabay videos + licensed Wikimedia Commons photos + original ChatGPT scene illustrations. Enter your Pixabay API key."
+                    <TextBlock Text="Pixabay stock video + Wikimedia Commons licensed videos and photos + original ChatGPT images. Wikimedia requires no API key; Pixabay uses your personal key."
                                Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
                     <Label Content="PIXABAY API KEY"/>
                     <PasswordBox x:Name="PixabayKeyInput" PasswordChanged="OnPixabayKeyChanged"/>
@@ -454,7 +454,7 @@
                             Style="{StaticResource SecondaryButton}" Margin="0,10,0,0"
                             HorizontalAlignment="Left"/>
                     <TextBlock Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,9,0,0"
-                               Text="Video target: one relevant shot about every six seconds (up to 150 for 15 minutes). Scene-specific stock video, CC-licensed Commons photos, and a few ChatGPT illustrations. Original photo credits and AI-image provenance are saved with the project. Uses 24-hour Pixabay search caching."/>
+                               Text="Scene-aligned source mix: Pixabay videos, Wikimedia Commons WebM documentary videos and licensed photos, plus ChatGPT illustrations. Commons items are checked individually (PD, CC0, CC BY). Credits for both Commons video and photos are saved with the project. Media search responses are cached."/>
                     <TextBlock Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0">
                       Pixabay Content License applies. Avoid using generic B-roll as purported real-event footage.
                     </TextBlock>
@@ -495,7 +495,7 @@
                   <StackPanel>
                     <TextBlock Text="3. Voiceover + Video + Photos + FFmpeg" FontSize="20"
                                FontWeight="SemiBold" Margin="0,0,0,7"/>
-                    <TextBlock Text="Matches narration scenes to relevant stock clips, Commons photographs and ChatGPT-created illustrations; rejects green screens. Adds subtle cinematic photo motion and fade transitions, then renders with the selected voice engine."
+                    <TextBlock Text="Combines Pixabay stock footage, licensed Wikimedia Commons videos and photos, and original ChatGPT illustrations. Rejects chroma-key clips, matches narration subjects and mood, animates stills with subtle transitions, then renders the video with your selected voice."
                                Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
                     <Label Content="VOICE ENGINE" Margin="0,12,0,0"/>
                     <ComboBox Width="210" HorizontalAlignment="Left"
