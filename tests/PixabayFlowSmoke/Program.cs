@@ -380,6 +380,15 @@ async Task VerifyCommonsLicenseAndImageFallback()
     Check(WikimediaCommonsImageService.IsCommerciallyReusableLicense(
         "CC BY 4.0", "https://creativecommons.org/licenses/by/4.0/", "Photo Author"),
         "CC BY with author and license link is reusable.");
+    Check(!WikimediaCommonsImageService.IsMoodCompatible(
+        "Australian spider sunny happy picnic", "ominous"),
+        "Bright cheerful Commons imagery must not be used for a scary documentary.");
+    Check(!WikimediaCommonsImageService.IsMoodCompatible(
+        "haunted funeral scene", "upbeat"),
+        "Upbeat scenes must reject horrific Commons imagery.");
+    Check(WikimediaCommonsImageService.IsMoodCompatible(
+        "Australian spider macro photograph", "ominous"),
+        "Neutral relevant documentary photographs remain usable with dark grading.");
     Check(!WikimediaCommonsImageService.IsCommerciallyReusableLicense(
         "CC BY-SA 4.0", "https://creativecommons.org/licenses/by-sa/4.0/", "Photo Author"),
         "ShareAlike photos are not eligible for the conservative automatic pipeline.");
