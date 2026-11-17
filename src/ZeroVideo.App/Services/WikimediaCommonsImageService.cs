@@ -137,9 +137,12 @@ public sealed class WikimediaCommonsImageService
                 !IsCommerciallyReusableLicense(license, licenseUrl, artist))
                 continue;
             var searchable = title + " " + description;
-            if (!terms.Any(t => t.Length >= 3 &&
+            // Two subject matches are a safer minimum for documentary
+            // relevance than accepting any one generic term (e.g. "TV").
+            var overlap = terms.Count(t => t.Length >= 3 &&
                 Regex.IsMatch(searchable, @"\b" + Regex.Escape(t) + @"\b",
-                    RegexOptions.IgnoreCase)))
+                    RegexOptions.IgnoreCase));
+            if (overlap < Math.Min(2, terms.Length))
                 continue;
             var url = GetString(info, "thumburl");
             if (!IsWikimediaImageUrl(url)) url = GetString(info, "url");
