@@ -1044,6 +1044,14 @@ public sealed partial class MainViewModel
             "Each search MUST depict a visible person/object/action/place actually appropriate to its " +
             "corresponding narration segment. INCLUDE the actual objects, subjects, actions or locations " +
             "named in that segment; avoid vague symbolic imagery if the script names something concrete. " +
+            "STRICT TOPIC GROUNDING: every search MUST contain at least one important concrete noun " +
+            "or named place/object explicitly spoken in the corresponding numbered narration. " +
+            "Do not invent substitute nouns, random nature shots, food, pets, stock cityscape, " +
+            "or a generally similar mood when the video actually narrates a specific cartoon, " +
+            "episode, broadcaster, controversy, object or location. Prefer the exact subject " +
+            "over visual variety. If the narration discusses a television controversy, " +
+            "show a television/broadcasting subject actually mentioned there, not a random " +
+            "person talking, woodland animal or suburban house. " +
             "Avoid irrelevant cats, food, squirrels, people on phones, generic party scenes or random " +
             "landscapes unless the exact narration segment calls for them. Do not request green-screen, " +
             "blue-screen, chroma-key, isolated character, VFX template or blank TV-screen footage. " +
