@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using ZeroVideo.App.Models;
 
 namespace ZeroVideo.App.Services;
@@ -50,6 +51,20 @@ public sealed class YouTubeFlowRenderService(ProcessRunner runner, FfmpegService
         return output;
     }
 
+    public static double[] PlanSceneDurations(
+        IReadOnlyList<PixabayFootageScene> scenes, double narrationSeconds)
+    {
+        if (scenes.Count == 0 || narrationSeconds <= 0) return [];
+        // Without a word-aligned speech transcript, spoken word count is a
+        // better approximation than assigning identical durations to a short
+        // sentence and a much longer paragraph.
+        var weights = scenes.Select(scene =>
+            Math.Max(1, Regex.Matches(scene.NarrationExcerpt,
+                @"\b[\p{L}\p{N}]+\b").Count)).ToArray();
+        var sum = weights.Sum();
+        return weights.Select(w => narrationSeconds * w / sum).ToArray();
+    }
+
     public async Task<string> RenderAsync(
         IReadOnlyList<PixabayFlowClip> clips, string voiceover, string output,
         string ratio, ZeroVideoSettings settings,
@@ -73,21 +88,22 @@ public sealed class YouTubeFlowRenderService(ProcessRunner runner, FfmpegService
             // Distribute narration time across its chronological script segments.
             // A group's video shots fill only that segment, preventing the next
             // subject from starting 5-10 seconds before/after its spoken lines.
-            var sceneDuration = duration / scenes.Count;
+            var sceneDurations = PlanSceneDurations(scenes, duration);
             var orderedSceneClips = scenes.SelectMany(scene =>
                 clips.Where(c => c.SearchQuery.Equals(scene.SearchQuery,
                     StringComparison.OrdinalIgnoreCase))).ToList();
             if (orderedSceneClips.Count != clips.Count ||
                 !orderedSceneClips.Select(x => x.Id).SequenceEqual(clips.Select(x => x.Id)))
                 throw new InvalidDataException("Pixabay footage is not in the order of the narration storyboard.");
-            foreach (var scene in scenes)
+            for (var sceneIndex = 0; sceneIndex < scenes.Count; sceneIndex++)
             {
+                var scene = scenes[sceneIndex];
                 var count = clips.Count(c => c.SearchQuery.Equals(scene.SearchQuery,
                     StringComparison.OrdinalIgnoreCase));
                 if (count == 0) throw new InvalidDataException(
                     $"No relevant footage for narration scene {scene.SceneNumber}.");
                 for (var k = 0; k < count; k++)
-                    shotDurations.Add(sceneDuration / count);
+                    shotDurations.Add(sceneDurations[sceneIndex] / count);
             }
         }
         else
