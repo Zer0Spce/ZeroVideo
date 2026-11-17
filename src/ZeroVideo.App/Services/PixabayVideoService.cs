@@ -56,7 +56,8 @@ public sealed class PixabayVideoService
 
     public async Task<IReadOnlyList<PixabayFlowClip>> AcquireAsync(
         IEnumerable<string> requestedQueries, string apiKey, string ratio,
-        Action<string>? log, CancellationToken ct, int targetClipCount = 0)
+        Action<string>? log, CancellationToken ct, int targetClipCount = 0,
+        Action<int, int>? onClipReady = null)
     {
         if (string.IsNullOrWhiteSpace(apiKey))
             throw new InvalidOperationException("Enter your own Pixabay API key in YouTube Flow.");
@@ -140,10 +141,11 @@ public sealed class PixabayVideoService
         var positions = new int[queries.Count];
         var failedDownloads = new HashSet<long>();
         bool selectedAny;
+        bool mediaRateLimited = false;
         do
         {
             selectedAny = false;
-            for (var i = 0; i < queries.Count && clips.Count < target; i++)
+            for (var i = 0; i < queries.Count && clips.Count < target && !mediaRateLimited; i++)
             {
                 var matches = candidates[i];
                 if (matches is null) continue;
@@ -162,11 +164,20 @@ public sealed class PixabayVideoService
                         clips.Add(new PixabayFlowClip(candidate.Id, destination,
                             candidate.Page, queries[i], candidate.Tags));
                         selectedAny = true;
+                        onClipReady?.Invoke(clips.Count, target);
                         if (clips.Count <= 10 || clips.Count % 10 == 0 || clips.Count == target)
                             log?.Invoke($"Pixabay: {clips.Count}/{target} distinct licensed clips ready.");
                         break;
                     }
                     catch (OperationCanceledException) { throw; }
+                    catch (PixabayRateLimitException ex)
+                    {
+                        rateLimit = ex;
+                        RateLimitedDuringLastAcquire = true;
+                        mediaRateLimited = true;
+                        log?.Invoke("Pixabay clip CDN is rate-limited; stopping download requests: " + ex.Message);
+                        break;
+                    }
                     catch (Exception ex)
                     {
                         failedDownloads.Add(candidate.Id);
@@ -174,7 +185,7 @@ public sealed class PixabayVideoService
                     }
                 }
             }
-        } while (selectedAny && clips.Count < target);
+        } while (selectedAny && clips.Count < target && !mediaRateLimited);
 
         if (rateLimit is not null)
         {
@@ -325,6 +336,8 @@ public sealed class PixabayVideoService
         if (!IsPixabayVideoUrl(url))
             throw new InvalidDataException("Pixabay returned a non-Pixabay video URL.");
         using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            throw new PixabayRateLimitException(RateReset(response));
         response.EnsureSuccessStatusCode();
         if (response.Content.Headers.ContentLength is long length && length > MaxClipBytes)
             throw new InvalidDataException("Stock footage file is over the 100 MB per-clip limit.");
