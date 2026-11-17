@@ -188,6 +188,33 @@ public sealed partial class MainViewModel
             {
                 Log("YouTube Flow: previous resume marker was not usable; starting a new folder.");
             }
+            // Recover a project written by the older portable build, before the
+            // dedicated resume marker existed. Match the *exact* narration, limit
+            // discovery to recent unfinished folders and do not touch completed MP4s.
+            if (string.IsNullOrWhiteSpace(folder))
+            {
+                foreach (var previous in Directory.EnumerateDirectories(root)
+                    .OrderByDescending(Directory.GetLastWriteTimeUtc).Take(30))
+                {
+                    var savedScript = Path.Combine(previous, "script.txt");
+                    var savedAudio = Path.Combine(previous, "audio", "voiceover.wav");
+                    if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(previous) > TimeSpan.FromDays(7))
+                        continue;
+                    if (!File.Exists(savedScript) || !File.Exists(savedAudio) ||
+                        File.Exists(Path.Combine(previous, "youtube-flow.mp4")))
+                        continue;
+                    try
+                    {
+                        if (await File.ReadAllTextAsync(savedScript, _cts.Token) == YouTubeFlowScript)
+                        {
+                            folder = previous;
+                            Log("YouTube Flow: found matching unfinished project from an older build; checking existing voiceover.");
+                            break;
+                        }
+                    }
+                    catch (IOException) { /* Unreadable prior project is left unchanged. */ }
+                }
+            }
             if (string.IsNullOrWhiteSpace(folder))
                 folder = Path.Combine(root, DateTime.Now.ToString("yyyyMMdd-HHmmssfff") +
                     "-" + safeName);
