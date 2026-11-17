@@ -25,6 +25,8 @@ try
     await RejectChromaScreenStock();
     await VerifyCommonsLicenseAndImageFallback();
     await VerifyCommonsVideosAndLicenses();
+    await VerifyOversizedCommonsDerivativeFallback();
+    VerifyHistoricalVideoContextFiltering();
     await VerifyCommonsVideosInNarrationSequence();
     await VerifyChatGptArtworkMixedIntoChronologicalScenes();
     await RescueEmptySceneWithAiImage();
@@ -594,6 +596,59 @@ async Task VerifyCommonsVideosAndLicenses()
     Console.WriteLine("PASS: Commons videos, licenses, source provenance, caching and safe downloads");
 }
 
+async Task VerifyOversizedCommonsDerivativeFallback()
+{
+    // Real-world regression: an ~80+ MB Commons documentary original/transcode
+    // must not block the scene or produce an oversized local cache.
+    var fake = new CommonsVideoStub { OversizedFirstDerivative = true };
+    using var client = new HttpClient(fake);
+    var service = new WikimediaCommonsVideoService(client,
+        Path.Combine(baseDir, "commons-over-80mb"));
+    var scene = new PixabayFootageScene(1,
+        "A dark forest stands silent through the night.",
+        "dark forest night", "ominous");
+    var log = new List<string>();
+    var matched = await service.FindVideosAsync(
+        scene, 1, null, log.Add, CancellationToken.None);
+    Check(matched.Count == 1 && File.Exists(matched[0].FilePath) &&
+        new FileInfo(matched[0].FilePath).Length < 80L * 1024 * 1024,
+        "Oversized 480p derivative must not prevent selecting a smaller file.");
+    Check(fake.VideoCalls == 2 && matched[0].FilePath.EndsWith(".webm") &&
+        log.Any(x => x.Contains("Wikimedia video: scene 1", StringComparison.Ordinal)),
+        "Service must skip >80MB file from headers before download and try smaller WebM.");
+    Console.WriteLine("PASS: oversized Wikimedia video falls back to smaller WebM transcode");
+}
+
+void VerifyHistoricalVideoContextFiltering()
+{
+    var scene = new PixabayFootageScene(11,
+        "A town's house committee considered changes to resident regulations.",
+        "house committee", "neutral");
+    Check(!WikimediaCommonsVideoService.IsRelevantToNarration(
+        scene, "File:William Weld Discusses the House Committee on the Judiciary Impeachment Inquiry.webm",
+        "A long historical interview with former governor William Weld."),
+        "Do not pretend an unrelated named historical interview illustrates town rules.");
+    Check(!WikimediaCommonsVideoService.IsRelevantToNarration(
+        scene, "File:G. Gordon Liddy Recalls How the Watergate Burglars Were Caught.webm",
+        "Watergate political interview about burglars"),
+        "Unrelated politicians and historical speakers may not fill a neighborhood governance scene.");
+    Check(WikimediaCommonsVideoService.IsRelevantToNarration(
+        new PixabayFootageScene(11,
+            "William Weld discusses the House Committee during an impeachment inquiry.",
+            "house committee impeachment", "neutral"),
+        "File:William Weld Discusses the House Committee on the Judiciary Impeachment Inquiry.webm",
+        "Interview with William Weld about impeachment inquiry"),
+        "Explicitly narrated historical speakers must remain eligible.");
+    Check(!WikimediaCommonsVideoService.IsRelevantToNarration(
+        new PixabayFootageScene(9,
+            "Residents investigated a community's government and daily life.",
+            "town government records", "neutral"),
+        "File:Man Belongs to the Earth opening.webm",
+        "1960s experimental documentary about earth and humanity"),
+        "A keyword-only broad match should not pass when the narration contains no matching subject.");
+    Console.WriteLine("PASS: historical speeches and unrelated movies excluded unless actually narrated");
+}
+
 async Task VerifyCommonsVideosInNarrationSequence()
 {
     var fake = new CommonsVideoStub();
@@ -820,6 +875,7 @@ sealed class CommonsVideoStub : HttpMessageHandler
 {
     public int ApiCalls { get; private set; }
     public int VideoCalls { get; private set; }
+    public bool OversizedFirstDerivative { get; init; }
 
     protected override Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request, CancellationToken cancellationToken)
@@ -839,10 +895,21 @@ sealed class CommonsVideoStub : HttpMessageHandler
                             videoinfo = new[] { new {
                                 mime = "video/webm", size = 12000000,
                                 url = "https://upload.wikimedia.org/wikipedia/commons/a/source.webm",
-                                derivatives = new [] { new {
-                                    src = "https://upload.wikimedia.org/wikipedia/commons/transcoded/a/forest.webm",
-                                    type = "video/webm", width = 854, height = 480
-                                }},
+                                derivatives = OversizedFirstDerivative
+                                    ? new [] {
+                                        new {
+                                            src = "https://upload.wikimedia.org/wikipedia/commons/transcoded/a/forest.webm",
+                                            type = "video/webm", width = 854, height = 480
+                                        },
+                                        new {
+                                            src = "https://upload.wikimedia.org/wikipedia/commons/transcoded/a/forest-small.webm",
+                                            type = "video/webm", width = 640, height = 360
+                                        }
+                                      }
+                                    : new [] { new {
+                                        src = "https://upload.wikimedia.org/wikipedia/commons/transcoded/a/forest.webm",
+                                        type = "video/webm", width = 854, height = 480
+                                    } },
                                 extmetadata = new {
                                     LicenseShortName = new { value = "CC BY 4.0" },
                                     LicenseUrl = new { value = "https://creativecommons.org/licenses/by/4.0/" },
@@ -895,9 +962,12 @@ sealed class CommonsVideoStub : HttpMessageHandler
         if (url.EndsWith(".webm", StringComparison.OrdinalIgnoreCase))
         {
             VideoCalls++;
+            var body = new ByteArrayContent(new byte[8192]);
+            if (OversizedFirstDerivative && url.EndsWith("/forest.webm", StringComparison.OrdinalIgnoreCase))
+                body.Headers.ContentLength = 96L * 1024 * 1024;
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new ByteArrayContent(new byte[8192])
+                Content = body
             });
         }
         throw new Exception("Unexpected Commons video URL: " + request.RequestUri);
