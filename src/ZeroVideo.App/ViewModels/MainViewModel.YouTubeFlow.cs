@@ -378,7 +378,7 @@ public sealed partial class MainViewModel
                         Path.DirectorySeparatorChar;
                     if (candidate.StartsWith(permittedRoot, StringComparison.OrdinalIgnoreCase) &&
                         File.Exists(Path.Combine(candidate, "script.txt")) &&
-                        !File.Exists(Path.Combine(candidate, "youtube-flow-hybrid-v3.mp4")) &&
+                        !File.Exists(Path.Combine(candidate, "youtube-flow-hybrid-v4.mp4")) &&
                         (!File.Exists(Path.Combine(candidate, "youtube-flow.mp4")) ||
                          IsIncompletePixabayPreview(candidate, expectedTarget)) &&
                         await File.ReadAllTextAsync(Path.Combine(candidate, "script.txt"), _cts.Token) ==
@@ -406,7 +406,7 @@ public sealed partial class MainViewModel
                     if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(previous) > TimeSpan.FromDays(7))
                         continue;
                     if (!File.Exists(savedScript) || !File.Exists(savedAudio) ||
-                        File.Exists(Path.Combine(previous, "youtube-flow-hybrid-v3.mp4")) ||
+                        File.Exists(Path.Combine(previous, "youtube-flow-hybrid-v4.mp4")) ||
                         (File.Exists(Path.Combine(previous, "youtube-flow.mp4")) &&
                             !IsIncompletePixabayPreview(previous, expectedTarget)))
                         continue;
@@ -431,9 +431,11 @@ public sealed partial class MainViewModel
             // be complete yet visually unrelated. Preserve it and reuse its
             // existing voiceover to produce a distinctly named hybrid revision.
             var existingPreview = Path.Combine(folder, "youtube-flow.mp4");
-            var output = File.Exists(existingPreview) &&
-                    IsIncompletePixabayPreview(folder, expectedTarget)
-                ? Path.Combine(folder, "youtube-flow-hybrid-v3.mp4")
+            var previousHybrid = Path.Combine(folder, "youtube-flow-hybrid-v3.mp4");
+            var output = File.Exists(previousHybrid) ||
+                    (File.Exists(existingPreview) &&
+                     IsIncompletePixabayPreview(folder, expectedTarget))
+                ? Path.Combine(folder, "youtube-flow-hybrid-v4.mp4")
                 : existingPreview;
             YouTubeFlowOutput = output; // Open Output Folder works after a failed job.
             await File.WriteAllTextAsync(
@@ -602,7 +604,8 @@ public sealed partial class MainViewModel
                 // Bind the saved illustration to its exact script content.
                 // Replanned narration cannot accidentally reuse the wrong art.
                 var fingerprint = Convert.ToHexString(SHA256.HashData(
-                    Encoding.UTF8.GetBytes(scene.NarrationExcerpt + "\n" +
+                    Encoding.UTF8.GetBytes("subject-aware-editorial-v4\n" +
+                        YouTubeFlowTitle + "\n" + scene.NarrationExcerpt + "\n" +
                         scene.SearchQuery + "\n" + scene.Mood)))[..12];
                 var destination = Path.Combine(folder, "stock-images", "chatgpt",
                     $"scene-{scene.SceneNumber:00}-{fingerprint}.png");
