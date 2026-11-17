@@ -94,6 +94,11 @@ public sealed class WikimediaCommonsVideoService
                 json = await response.Content.ReadAsStringAsync(ct);
                 await File.WriteAllTextAsync(cache, json, ct);
             }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                log?.Invoke($"Wikimedia video search for scene {scene.SceneNumber} timed out. Continuing with other visual sources.");
+                return results;
+            }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
@@ -176,6 +181,10 @@ public sealed class WikimediaCommonsVideoService
                     log?.Invoke($"Wikimedia video: scene {scene.SceneNumber}, '{title}' ({license}).");
                     downloaded = true;
                     break;
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    log?.Invoke($"Wikimedia video {pageId}: download timed out; trying a smaller version.");
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (InvalidDataException ex) when (ex.Message.Contains($"{MaxVideoMegabytes} MB", StringComparison.Ordinal))
@@ -306,26 +315,31 @@ public sealed class WikimediaCommonsVideoService
 
     private async Task DownloadBoundedAsync(string url, string destination, CancellationToken ct)
     {
-        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        // The time limit covers the *entire stream*, not just HTTP response
+        // headers. A stalled 500 MB transfer won't block the whole storyboard.
+        using var transferTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        transferTimeout.CancelAfter(TimeSpan.FromMinutes(15));
+        var transfer = transferTimeout.Token;
+        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, transfer);
         response.EnsureSuccessStatusCode();
         if (response.Content.Headers.ContentLength is long size && size > MaxBytes)
             throw new InvalidDataException($"Wikimedia video exceeds the {MaxVideoMegabytes} MB per-file download limit.");
         var tmp = destination + "." + Guid.NewGuid().ToString("N") + ".part";
         try
         {
-            await using (var input = await response.Content.ReadAsStreamAsync(ct))
+            await using (var input = await response.Content.ReadAsStreamAsync(transfer))
             await using (var output = new FileStream(tmp, FileMode.CreateNew,
                              FileAccess.Write, FileShare.None))
             {
                 var buffer = new byte[64 * 1024];
                 long total = 0;
                 int received;
-                while ((received = await input.ReadAsync(buffer, ct)) > 0)
+                while ((received = await input.ReadAsync(buffer, transfer)) > 0)
                 {
                     total += received;
                     if (total > MaxBytes)
                         throw new InvalidDataException($"Wikimedia video download exceeded {MaxVideoMegabytes} MB.");
-                    await output.WriteAsync(buffer.AsMemory(0, received), ct);
+                    await output.WriteAsync(buffer.AsMemory(0, received), transfer);
                 }
             }
             if (new FileInfo(tmp).Length < 4096)
