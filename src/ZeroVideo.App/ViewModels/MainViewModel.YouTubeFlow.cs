@@ -382,6 +382,8 @@ public sealed partial class MainViewModel
                 captions = false,
                 footage_complete = true,
                 target_clip_count = targetClips,
+                matched_clip_count = clips.Count,
+                shortfall_compensated_by_scene_duration = pixabay.SceneFootageShortfall,
                 narration_seconds = narrationSeconds,
                 searches = queries,
                 scenes = scenes.Select(scene => new
@@ -407,8 +409,10 @@ public sealed partial class MainViewModel
 
             Progress = 100;
             YouTubeFlowOutput = output;
-            Status = YouTubeFlowStatus =
-                $"Complete with {clips.Count} distinct Pixabay footage clips: " + output;
+            Status = YouTubeFlowStatus = pixabay.SceneFootageShortfall > 0
+                ? $"Complete: {clips.Count}/{targetClips} scene-matched clips; " +
+                    $"{pixabay.SceneFootageShortfall} shot slots covered by extending relevant footage: " + output
+                : $"Complete with {clips.Count} distinct Pixabay footage clips: " + output;
             Log("YouTube Flow finished without captions. Output: " + output);
             try { File.Delete(resumeFile); } catch { /* Finished output remains safe. */ }
             await _settingsService.SaveAsync(Settings);
