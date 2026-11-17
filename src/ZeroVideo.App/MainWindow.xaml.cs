@@ -22,9 +22,47 @@ public partial class MainWindow : Window
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
-        AnimateShellIn();
-        await _vm.InitializeAsync();
-        PixabayKeyInput.Password = _vm.Settings.PixabayApiKey;
+        try
+        {
+            AnimateShellIn();
+            await _vm.InitializeAsync();
+            PixabayKeyInput.Password = _vm.Settings.PixabayApiKey ?? "";
+
+            // CI tests the exact published EXE, not only a successful build.
+            var marker = Environment.GetEnvironmentVariable("ZEROVIDEO_STARTUP_SMOKE_MARKER");
+            if (!string.IsNullOrWhiteSpace(marker))
+            {
+                System.IO.File.WriteAllText(marker, "ZeroVideo main window and settings loaded.");
+                Application.Current.Shutdown(0);
+                return;
+            }
+
+            // Also prove that the packaged .playwright/node driver actually runs.
+            // This catches missing hidden files before sending a test ZIP to users.
+            var playwrightMarker = Environment.GetEnvironmentVariable("ZEROVIDEO_PLAYWRIGHT_SMOKE_MARKER");
+            if (!string.IsNullOrWhiteSpace(playwrightMarker))
+            {
+                using var playwright = await Microsoft.Playwright.Playwright.CreateAsync();
+                System.IO.File.WriteAllText(playwrightMarker, "Playwright driver started from portable build.");
+                Application.Current.Shutdown(0);
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            StartupDiagnostics.Report(ex, "MainWindow loaded / user settings initialization");
+            if (string.IsNullOrWhiteSpace(
+                    Environment.GetEnvironmentVariable("ZEROVIDEO_STARTUP_SMOKE_MARKER")) &&
+                string.IsNullOrWhiteSpace(
+                    Environment.GetEnvironmentVariable("ZEROVIDEO_PLAYWRIGHT_SMOKE_MARKER")))
+            {
+                MessageBox.Show(
+                    "ZeroVideo could not finish starting.\n\n" +
+                    ex.Message + "\n\nDetails: " + StartupDiagnostics.LogPath,
+                    "ZeroVideo startup error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            Application.Current.Shutdown(1);
+        }
     }
 
     private void OnPixabayKeyChanged(object sender, RoutedEventArgs e)

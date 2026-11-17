@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using System.Net;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -6,21 +8,74 @@ using System.Text.RegularExpressions;
 namespace ZeroVideo.App.Services;
 
 public sealed record PixabayFlowClip(
-    long Id, string FilePath, string SourcePage, string SearchQuery, string Tags);
+    long Id, string FilePath, string SourcePage, string SearchQuery, string Tags,
+    bool IsStillImage = false, string Attribution = "", string License = "",
+    string LicenseUrl = "", string MediaSource = "Pixabay");
+
+public sealed record PixabayFootageScene(
+    int SceneNumber, string NarrationExcerpt, string SearchQuery, string Mood);
 
 /// <summary>
 /// Small, user-initiated Pixabay retrieval. No scraping or background bulk harvesting.
 /// API responses are cached for at least 24h as required by Pixabay.
 /// </summary>
+public sealed class PixabayRateLimitException : InvalidOperationException
+{
+    public TimeSpan? RetryAfter { get; }
+    public PixabayRateLimitException(TimeSpan? retryAfter)
+        : base(retryAfter is null
+            ? "Pixabay returned HTTP 429. This API key is rate-limited. Retry after its quota resets; your existing project checkpoints remain saved."
+            : $"Pixabay returned HTTP 429. The API indicates a reset in about {Math.Ceiling(retryAfter.Value.TotalSeconds)} seconds. Retry after that; existing project checkpoints remain saved.")
+    {
+        RetryAfter = retryAfter;
+    }
+}
+
 public sealed class PixabayVideoService
 {
-    public const int MaxDownloadsPerVideo = 10;
+    // A six-second shot per unique clip, up to the largest 15-minute YouTube Flow preset.
+    public const int MaxClipsPerVideo = 150;
+    public const int MaxQueriesPerVideo = 30;
+    public const int ClipsPerMinute = 10;
+
+    public static int TargetClipCount(TimeSpan narrationDuration)
+        => Math.Clamp((int)Math.Ceiling(narrationDuration.TotalSeconds / 6d), 1, MaxClipsPerVideo);
+
+    public static int SuggestedQueryCount(int targetClips)
+        => Math.Clamp((int)Math.Ceiling(targetClips / 5d), 6, MaxQueriesPerVideo);
     private const long MaxClipBytes = 100L * 1024 * 1024;
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(3) };
+    private static readonly HttpClient SharedHttp = new() { Timeout = TimeSpan.FromMinutes(3) };
+    private readonly HttpClient _http;
+    private readonly string _dataDirectory;
+    private readonly TimeSpan _maxAutoWait;
+    public bool RateLimitedDuringLastAcquire { get; private set; }
+    // Small per-scene shortages are expected with sparse stock catalogs.
+    // Require visual coverage of every scene, not an arbitrary exact shot count.
+    public const double MinSceneFootageCoverage = 0.85;
+    public int SceneFootageShortfall { get; private set; }
+
+    // Optional client and storage for deterministic tests without a live API key.
+    public PixabayVideoService(HttpClient? http = null, string? dataDirectory = null,
+        TimeSpan? maxAutoWait = null)
+    {
+        _http = http ?? SharedHttp;
+        _dataDirectory = dataDirectory ?? AppPaths.DataDirectory;
+        _maxAutoWait = maxAutoWait ?? TimeSpan.FromSeconds(65);
+    }
 
     public async Task<IReadOnlyList<PixabayFlowClip>> AcquireAsync(
         IEnumerable<string> requestedQueries, string apiKey, string ratio,
-        Action<string>? log, CancellationToken ct)
+        Action<string>? log, CancellationToken ct, int targetClipCount = 0,
+        Action<int, int>? onClipReady = null,
+        IReadOnlyList<PixabayFootageScene>? scenePlan = null,
+        Func<string, CancellationToken, Task<bool>>? chromaScreenCheck = null,
+        Func<PixabayFootageScene, int, CancellationToken,
+            Task<IReadOnlyList<PixabayFlowClip>>>? imageFallback = null,
+        Func<PixabayFootageScene, int, CancellationToken,
+            Task<IReadOnlyList<PixabayFlowClip>>>? videoFallback = null,
+        IReadOnlyList<int>? sceneSlotBudgets = null,
+        bool allowIncompleteScenes = false,
+        string videoTopicTitle = "")
     {
         if (string.IsNullOrWhiteSpace(apiKey))
             throw new InvalidOperationException("Enter your own Pixabay API key in YouTube Flow.");
@@ -29,72 +84,443 @@ public sealed class PixabayVideoService
             .Where(x => x.Length > 1)
             .Select(x => x.Length > 100 ? x[..100] : x)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(MaxDownloadsPerVideo).ToList();
+            .Take(MaxQueriesPerVideo).ToList();
         if (queries.Count == 0)
             throw new InvalidOperationException("No footage searches were supplied.");
+        if (scenePlan is not null &&
+            (scenePlan.Count != queries.Count ||
+             scenePlan.Where((scene, i) =>
+                 !scene.SearchQuery.Equals(queries[i], StringComparison.OrdinalIgnoreCase)).Any()))
+            throw new InvalidDataException("Scene plan must have exactly one distinct search per narration segment, in matching order.");
 
+        if (sceneSlotBudgets is not null &&
+            (scenePlan is null || sceneSlotBudgets.Count != scenePlan.Count ||
+             sceneSlotBudgets.Any(n => n < 0)))
+            throw new ArgumentException("Scene shot budgets must align with the complete storyboard.");
+        var target = sceneSlotBudgets is not null
+            ? Math.Min(MaxClipsPerVideo, sceneSlotBudgets.Sum())
+            : targetClipCount <= 0
+                ? queries.Count // Preserve compatibility for older callers/tests.
+                : Math.Clamp(targetClipCount, 1, MaxClipsPerVideo);
+        if (target == 0) return [];
+        RateLimitedDuringLastAcquire = false;
+        SceneFootageShortfall = 0;
         var usedIds = new HashSet<long>();
-        var clips = new List<PixabayFlowClip>();
-        var cacheDir = Path.Combine(AppPaths.DataDirectory, "Pixabay", "ApiCache");
-        var videoDir = Path.Combine(AppPaths.DataDirectory, "Pixabay", "LicensedVideos");
+        var clips = new List<PixabayFlowClip>(target);
+        var cacheDir = Path.Combine(_dataDirectory, "Pixabay", "ApiCache");
+        var videoDir = Path.Combine(_dataDirectory, "Pixabay", "LicensedVideos");
         Directory.CreateDirectory(cacheDir);
         Directory.CreateDirectory(videoDir);
-        foreach (var query in queries)
+        PixabayRateLimitException? rateLimit = null;
+
+        // One request fetches dozens of relevant results. Download only selected
+        // clips for this user-created project, not every returned search hit.
+        var candidates = new List<(long Id, string Url, string Page, string Tags, double Score)>[queries.Count];
+        var lookupOrder = Enumerable.Range(0, queries.Count)
+            .OrderByDescending(i => IsFreshCache(queries[i], apiKey.Trim(), cacheDir)).ToList();
+        foreach (var index in lookupOrder)
         {
             ct.ThrowIfCancellationRequested();
-            using var response = await QueryAsync(query, apiKey.Trim(), cacheDir, ct);
-            if (!response.RootElement.TryGetProperty("hits", out var hits) ||
-                hits.ValueKind != JsonValueKind.Array)
+            var query = queries[index];
+            candidates[index] = [];
+            if (sceneSlotBudgets is not null && sceneSlotBudgets[index] == 0)
                 continue;
-
-            var matches = new List<(long Id, string Url, string Page, string Tags, double Score)>();
-            foreach (var hit in hits.EnumerateArray())
+            JsonDocument response;
+            try
             {
-                if (!hit.TryGetProperty("id", out var node) || !node.TryGetInt64(out var id) ||
-                    usedIds.Contains(id) ||
-                    !hit.TryGetProperty("videos", out var versions))
-                    continue;
-                if (!TrySelectVideo(versions, out var url, out var width, out var height))
-                    continue;
-                var sourcePage = ReadString(hit, "pageURL");
-                var tags = ReadString(hit, "tags");
-                var target = ratio == "9:16" ? 9d / 16 : 16d / 9;
-                var aspectPenalty = Math.Abs(Math.Log((double)width / height / target));
-                var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                var matchingTerms = terms.Count(term => tags.Contains(term, StringComparison.OrdinalIgnoreCase));
-                matches.Add((id, url, sourcePage, tags,
-                    matchingTerms * 10d - aspectPenalty * 3d));
+                if (rateLimit is not null && !IsFreshCache(query, apiKey.Trim(), cacheDir))
+                    continue; // Do not keep making API requests after 429.
+                response = await QueryAsync(query, apiKey.Trim(), cacheDir, log, ct);
             }
-
-            bool downloaded = false;
-            foreach (var match in matches.OrderByDescending(x => x.Score).Take(5))
+            catch (PixabayRateLimitException ex)
             {
-                var path = Path.Combine(videoDir, match.Id + "-medium.mp4");
+                rateLimit = ex;
+                RateLimitedDuringLastAcquire = true;
+                log?.Invoke("Pixabay API quota reached; skipping uncached searches. " + ex.Message);
+                continue;
+            }
+            using (response)
+            {
+                if (!response.RootElement.TryGetProperty("hits", out var hits) ||
+                    hits.ValueKind != JsonValueKind.Array) continue;
+
+                var matches = candidates[index];
+                foreach (var hit in hits.EnumerateArray())
+                {
+                    if (!hit.TryGetProperty("id", out var node) ||
+                        !node.TryGetInt64(out var id) ||
+                        !hit.TryGetProperty("videos", out var versions) ||
+                        !TrySelectVideo(versions, out var url, out var width, out var height))
+                        continue;
+                    var sourcePage = ReadString(hit, "pageURL");
+                    var tags = ReadString(hit, "tags");
+                    if (IsChromaKeyStockMetadata(tags + " " + ReadString(hit, "pageURL")))
+                        continue;
+                    var targetRatio = ratio == "9:16" ? 9d / 16 : 16d / 9;
+                    var aspectPenalty = Math.Abs(Math.Log((double)width / height / targetRatio));
+                    var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    var matchingTerms = terms.Count(term =>
+                        tags.Contains(term, StringComparison.OrdinalIgnoreCase));
+                    var mood = scenePlan is null ? "neutral" : scenePlan[index].Mood;
+                    if (scenePlan is not null && !IsScriptVisualMatch(query, tags, mood))
+                        continue; // Never substitute bright/unrelated media for a dark scene.
+                    if (scenePlan is not null &&
+                        !string.IsNullOrWhiteSpace(videoTopicTitle) &&
+                        !PixabayTopicRelevanceService.IsRelevant(
+                            scenePlan[index], videoTopicTitle, tags, out _))
+                        continue; // Must match the spoken scene, not just AI query tags.
+                    var narratedScore = scenePlan is null ? 0 :
+                        PixabayTopicRelevanceService.MatchScore(scenePlan[index], tags);
+                    matches.Add((id, url, sourcePage, tags,
+                        matchingTerms * 10d + narratedScore * 25d +
+                        MoodBonus(tags, mood) - aspectPenalty * 3d));
+                }
+                candidates[index] = matches.OrderByDescending(x => x.Score)
+                    .ThenBy(x => x.Id).ToList();
+            }
+        }
+
+        // Fair round-robin allocation across narration-ordered queries.
+        // A single popular search cannot monopolize all 150 slots.
+        var positions = new int[queries.Count];
+        var sceneCounts = new int[queries.Count];
+        var sceneTargets = sceneSlotBudgets?.ToArray() ??
+            Enumerable.Range(0, queries.Count)
+                .Select(i => (int)Math.Ceiling((i + 1d) * target / queries.Count) -
+                             (int)Math.Ceiling(i * target / (double)queries.Count)).ToArray();
+        var failedDownloads = new HashSet<long>();
+        bool selectedAny;
+        bool mediaRateLimited = false;
+        do
+        {
+            selectedAny = false;
+            for (var i = 0; i < queries.Count && clips.Count < target && !mediaRateLimited; i++)
+            {
+                if (scenePlan is not null && sceneCounts[i] >= sceneTargets[i]) continue;
+                var matches = candidates[i];
+                if (matches is null) continue;
+                while (positions[i] < matches.Count)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var candidate = matches[positions[i]++];
+                    if (usedIds.Contains(candidate.Id) || failedDownloads.Contains(candidate.Id))
+                        continue;
+                    var destination = Path.Combine(videoDir, candidate.Id + "-medium.mp4");
+                    try
+                    {
+                        if (!File.Exists(destination) || new FileInfo(destination).Length < 4096)
+                            await DownloadAsync(candidate.Url, destination, ct);
+                        if (chromaScreenCheck is not null &&
+                            await chromaScreenCheck(destination, ct))
+                        {
+                            failedDownloads.Add(candidate.Id);
+                            log?.Invoke($"Pixabay clip {candidate.Id} rejected: green/blue-screen footage.");
+                            continue;
+                        }
+                        usedIds.Add(candidate.Id);
+                        clips.Add(new PixabayFlowClip(candidate.Id, destination,
+                            candidate.Page, queries[i], candidate.Tags));
+                        selectedAny = true;
+                        sceneCounts[i]++;
+                        onClipReady?.Invoke(clips.Count, target);
+                        if (clips.Count <= 10 || clips.Count % 10 == 0 || clips.Count == target)
+                            log?.Invoke($"Pixabay: {clips.Count}/{target} distinct licensed clips ready.");
+                        break;
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (PixabayRateLimitException ex)
+                    {
+                        rateLimit = ex;
+                        RateLimitedDuringLastAcquire = true;
+                        mediaRateLimited = true;
+                        log?.Invoke("Pixabay clip CDN is rate-limited; stopping download requests: " + ex.Message);
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        failedDownloads.Add(candidate.Id);
+                        log?.Invoke($"Pixabay: could not download clip {candidate.Id}: {ex.Message}");
+                    }
+                }
+            }
+        } while (selectedAny && clips.Count < target && !mediaRateLimited);
+
+        // Rescue truly uncovered scenes before spending more budget on already
+        // illustrated ones. Try one broader, still subject-specific Pixabay query
+        // without hiding or bypassing rate limits.
+        if (scenePlan is not null)
+        {
+            for (var i = 0; i < scenePlan.Count; i++)
+            {
+                if (sceneCounts[i] != 0 || mediaRateLimited || rateLimit is not null) continue;
+                ct.ThrowIfCancellationRequested();
+                var scene = scenePlan[i];
+                var broader = BroadenSceneSearch(scene.SearchQuery);
+                if (string.IsNullOrWhiteSpace(broader) ||
+                    broader.Equals(scene.SearchQuery, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                log?.Invoke($"Scene {scene.SceneNumber}: broadening stock search to '{broader}'.");
                 try
                 {
-                    if (!File.Exists(path) || new FileInfo(path).Length < 4096)
-                        await DownloadAsync(match.Url, path, ct);
-                    usedIds.Add(match.Id);
-                    clips.Add(new PixabayFlowClip(
-                        match.Id, path, match.Page, query, match.Tags));
-                    log?.Invoke("Pixabay: selected licensed stock clip " + match.Id +
-                        " for '" + query + "'.");
-                    downloaded = true;
-                    break;
+                    using var response = await QueryAsync(broader, apiKey.Trim(), cacheDir, log, ct);
+                    if (!response.RootElement.TryGetProperty("hits", out var hits) ||
+                        hits.ValueKind != JsonValueKind.Array) continue;
+                    foreach (var hit in hits.EnumerateArray())
+                    {
+                        if (sceneCounts[i] != 0) break;
+                        if (!hit.TryGetProperty("id", out var idNode) ||
+                            !idNode.TryGetInt64(out var id) || usedIds.Contains(id) ||
+                            !hit.TryGetProperty("videos", out var versions) ||
+                            !TrySelectVideo(versions, out var url, out _, out _)) continue;
+                        var tags = ReadString(hit, "tags");
+                        if (IsChromaKeyStockMetadata(tags) ||
+                            !IsScriptVisualMatch(broader, tags, scene.Mood)) continue;
+                        if (!string.IsNullOrWhiteSpace(videoTopicTitle) &&
+                            !PixabayTopicRelevanceService.IsRelevant(
+                                scene, videoTopicTitle, tags, out _)) continue;
+                        var local = Path.Combine(videoDir, id + "-medium.mp4");
+                        try
+                        {
+                            if (!File.Exists(local) || new FileInfo(local).Length < 4096)
+                                await DownloadAsync(url, local, ct);
+                            if (chromaScreenCheck is not null &&
+                                await chromaScreenCheck(local, ct)) continue;
+                            usedIds.Add(id);
+                            clips.Add(new PixabayFlowClip(id, local,
+                                ReadString(hit, "pageURL"), scene.SearchQuery, tags));
+                            sceneCounts[i]++;
+                            onClipReady?.Invoke(clips.Count, target);
+                            log?.Invoke($"Scene {scene.SceneNumber}: found a relevant clip using broader search.");
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (PixabayRateLimitException ex)
+                        {
+                            rateLimit = ex;
+                            RateLimitedDuringLastAcquire = true;
+                            mediaRateLimited = true;
+                            break;
+                        }
+                        catch (Exception ex)
+                        {
+                            log?.Invoke($"Scene {scene.SceneNumber}: broader clip download unavailable: {ex.Message}");
+                        }
+                    }
                 }
                 catch (OperationCanceledException) { throw; }
-                catch (Exception ex)
+                catch (PixabayRateLimitException ex)
                 {
-                    log?.Invoke("Pixabay: clip " + match.Id + " could not be used: " + ex.Message);
+                    rateLimit = ex;
+                    RateLimitedDuringLastAcquire = true;
                 }
             }
-            if (!downloaded)
-                log?.Invoke("Pixabay: no downloadable match for '" + query + "'.");
         }
-        if (clips.Count == 0)
+
+        // Wikimedia Commons is an additional real-footage source (not AI art).
+        // Prioritize any empty scenes. Then, occasionally replace one ordinary
+        // stock shot with a relevant Commons film in the SAME narration scene.
+        // Never use it to smuggle footage from an unrelated scene, and never
+        // count a photo as a video. Provider service checks licensing and mood.
+        if (scenePlan is not null && videoFallback is not null)
+        {
+            var priority = Enumerable.Range(0, scenePlan.Count)
+                .OrderBy(i => sceneCounts[i] == 0 ? 0 : 1).ThenBy(i => i);
+            foreach (var i in priority)
+            {
+                ct.ThrowIfCancellationRequested();
+                var missing = sceneTargets[i] - sceneCounts[i];
+                var mixVideo = missing == 0 && i % 4 == 0 && sceneCounts[i] >= 2;
+                if (missing <= 0 && !mixVideo) continue;
+                if (sceneCounts[i] > 0 && i % 4 != 0) continue;
+                var videos = await videoFallback(scenePlan[i],
+                    mixVideo ? 1 : Math.Min(2, Math.Max(1, missing)), ct);
+                foreach (var clip in videos)
+                {
+                    if (clip.IsStillImage || !usedIds.Add(clip.Id) ||
+                        !clip.SearchQuery.Equals(scenePlan[i].SearchQuery,
+                            StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (mixVideo)
+                    {
+                        var old = clips.FindLastIndex(c => !c.IsStillImage &&
+                            c.SearchQuery.Equals(scenePlan[i].SearchQuery,
+                                StringComparison.OrdinalIgnoreCase));
+                        if (old >= 0)
+                        {
+                            usedIds.Remove(clips[old].Id);
+                            clips[old] = clip;
+                            log?.Invoke($"Wikimedia: scene {scenePlan[i].SceneNumber} now includes licensed historical/documentary video.");
+                        }
+                        break;
+                    }
+                    if (sceneCounts[i] >= sceneTargets[i]) break;
+                    clips.Add(clip);
+                    sceneCounts[i]++;
+                    onClipReady?.Invoke(clips.Count, target);
+                }
+            }
+        }
+
+        // First fill the EMPTY narration scenes, then add optional photos to
+        // the others. Otherwise a small AI budget can be exhausted on decorative
+        // early shots while later narration scenes have no illustration.
+        if (scenePlan is not null && imageFallback is not null)
+        {
+            var priority = Enumerable.Range(0, scenePlan.Count)
+                .OrderBy(i => sceneCounts[i] == 0 ? 0 : 1).ThenBy(i => i);
+            foreach (var i in priority)
+            {
+                ct.ThrowIfCancellationRequested();
+                var missing = sceneTargets[i] - sceneCounts[i];
+                // Mix an optional still into approximately one in four
+                // already-covered scenes as documentary context. If no relevant
+                // Commons image is available, keep the original video instead.
+                var mixStill = missing == 0 &&
+                    ((i % 4 == 1 && sceneCounts[i] >= 2) ||
+                     (i % 5 == 2 && sceneCounts[i] >= 1));
+                if (missing <= 0 && !mixStill) continue;
+                // Negative requested count is an internal rescue hint:
+                // a narration scene has ZERO relevant visuals and requires a
+                // guaranteed primary illustration, not cosmetic photo mixing.
+                var photos = await imageFallback(scenePlan[i],
+                    mixStill ? 1 : sceneCounts[i] == 0 ? -1 : Math.Min(3, missing), ct);
+                foreach (var photo in photos)
+                {
+                    if (!photo.IsStillImage || !usedIds.Add(photo.Id)) continue;
+                    if (mixStill)
+                    {
+                        var oldVideoIndex = clips.FindLastIndex(c =>
+                            !c.IsStillImage && c.SearchQuery.Equals(
+                                scenePlan[i].SearchQuery, StringComparison.OrdinalIgnoreCase));
+                        if (oldVideoIndex >= 0)
+                        {
+                            usedIds.Remove(clips[oldVideoIndex].Id);
+                            clips[oldVideoIndex] = photo;
+                            log?.Invoke($"Wikimedia: replaced one scene {scenePlan[i].SceneNumber} stock shot with a relevant credited photograph.");
+                        }
+                        break;
+                    }
+                    if (sceneCounts[i] >= sceneTargets[i]) break;
+                    clips.Add(photo);
+                    sceneCounts[i]++;
+                    onClipReady?.Invoke(clips.Count, target);
+                }
+            }
+        }
+
+        if (!allowIncompleteScenes && rateLimit is not null && (scenePlan is null ||
+            sceneCounts.Any(c => c == 0)))
+        {
+            log?.Invoke($"Pixabay rate limit: {clips.Count}/{target} cached/available clips. Saving the project for a quota-respecting retry; no incomplete MP4 will be labeled finished.");
+            throw new PixabayRateLimitException(rateLimit.RetryAfter);
+        }
+        if (scenePlan is not null)
+        {
+            var emptyScenes = Enumerable.Range(0, queries.Count)
+                .Where(i => sceneCounts[i] == 0).ToList();
+            if (emptyScenes.Count > 0 && !allowIncompleteScenes)
+                throw new InvalidOperationException(
+                    $"Pixabay found no relevant, mood-compatible stock for {emptyScenes.Count} narration scene(s): " +
+                    string.Join(", ", emptyScenes.Select(i => scenePlan[i].SceneNumber)) +
+                    $". {clips.Count}/{target} clips were saved. " +
+                    "No unrelated footage was inserted; adjust those scenes' searches and retry.");
+
+            // Documentary quality is driven by complete scene coverage, not
+            // an artificial 150-download threshold. Each verified visual can
+            // remain on screen longer without repeating unrelated material.
+            SceneFootageShortfall = target - clips.Count;
+            if (SceneFootageShortfall > 0)
+                log?.Invoke($"Pixabay: {clips.Count}/{target} distinct matching clips across all {queries.Count} narration scenes. " +
+                    $"Accepting {SceneFootageShortfall} missing shots: the renderer will extend the existing " +
+                    "relevant clips within their own scenes, without using mismatched stock.");
+        }
+        else if (!allowIncompleteScenes && clips.Count < target)
+        {
             throw new InvalidOperationException(
-                "Pixabay returned no usable videos for the script. Change the script/topic or footage queries.");
-        return clips;
+                $"Pixabay provided {clips.Count}/{target} distinct clips across {queries.Count} searches. The job remains resumable; expand/change the footage searches or use more licensed media rather than repeating unrelated clips.");
+        }
+        // Render in narration order, keeping each search's varied shot sequence.
+        return clips.OrderBy(c => queries.FindIndex(q =>
+            q.Equals(c.SearchQuery, StringComparison.OrdinalIgnoreCase))).ToList();
+    }
+
+    public static string BroadenSceneSearch(string query)
+    {
+        var words = Regex.Matches(query.ToLowerInvariant(), @"[a-z0-9]+")
+            .Select(m => m.Value)
+            .Where(w => w.Length > 2 &&
+                w is not ("luxury" or "perfect" or "beautiful" or "dramatic" or
+                          "cinematic" or "dark" or "bright" or "scary" or
+                          "creepy" or "eerie" or "happy" or "sunny" or
+                          "peaceful" or "ominous" or "behind" or "outside"))
+            .Take(3).ToArray();
+        // A one-word broad query matches unrelated catalog noise; do not
+        // pretend that is a scene-aligned fallback.
+        return words.Length >= 2 ? string.Join(" ", words.Take(2)) : "";
+    }
+
+    public static bool IsChromaKeyStockMetadata(string text)
+    {
+        var normalized = Regex.Replace(text.ToLowerInvariant(), @"[^a-z0-9]+", " ");
+        return Regex.IsMatch(normalized,
+            @"\b(green\s*screen|blue\s*screen|chroma\s*key|chromakey|" +
+            @"keyable|green\s*background|green\s*backdrop|isolated\s*on\s*green|" +
+            @"transparent\s*background|alpha\s*overlay)\b");
+    }
+
+    private static readonly HashSet<string> NonVisualSearchWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "and", "the", "for", "with", "from", "into", "that", "this", "over",
+        "scene", "stock", "video", "footage", "cinematic", "shot", "film",
+        "scary", "creepy", "eerie", "ominous", "dark", "spooky", "horror",
+        "somber", "tense", "upbeat", "happy", "bright", "calm", "moody"
+    };
+    private static readonly HashSet<string> OminousSignals = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "dark", "night", "nighttime", "shadow", "shadows", "haunted",
+        "horror", "scary", "spooky", "eerie", "creepy", "fog", "mist",
+        "storm", "cemetery", "graveyard", "ghost", "abandoned", "ominous",
+        "gloom", "gloomy", "silhouette", "candlelight", "moonlight",
+        "midnight", "mysterious", "suspense", "terror", "demon"
+    };
+    private static readonly HashSet<string> BrightSignals = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "sunny", "sunshine", "daylight", "cheerful", "smiling", "smile",
+        "party", "wedding", "holiday", "celebration", "vacation",
+        "beach", "rainbow", "happy", "joyful", "summer", "colorful"
+    };
+
+    private static HashSet<string> Words(string value)
+        => Regex.Matches(value.ToLowerInvariant(), @"[a-z0-9]+")
+            .Select(m => m.Value).Where(w => w.Length >= 3)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    public static bool IsScriptVisualMatch(string query, string tags, string mood)
+    {
+        var tagWords = Words(tags);
+        var subjectWords = Words(query).Where(w => !NonVisualSearchWords.Contains(w)).ToArray();
+        // No reliable metadata evidence of the requested object/action: skip it.
+        var subjectOverlap = subjectWords.Count(w => tagWords.Contains(w));
+        if (subjectWords.Length == 0 ||
+            subjectOverlap < Math.Min(2, subjectWords.Length))
+            return false;
+
+        if (mood.Equals("ominous", StringComparison.OrdinalIgnoreCase))
+            return !BrightSignals.Overlaps(tagWords) && OminousSignals.Overlaps(tagWords);
+        if (mood.Equals("upbeat", StringComparison.OrdinalIgnoreCase))
+            return !OminousSignals.Overlaps(tagWords) && BrightSignals.Overlaps(tagWords);
+        if (mood.Equals("tense", StringComparison.OrdinalIgnoreCase) ||
+            mood.Equals("somber", StringComparison.OrdinalIgnoreCase))
+            return !BrightSignals.Overlaps(tagWords);
+        return true;
+    }
+
+    private static int MoodBonus(string tags, string mood)
+    {
+        var words = Words(tags);
+        return mood.Equals("ominous", StringComparison.OrdinalIgnoreCase)
+            ? words.Count(OminousSignals.Contains) * 6
+            : mood.Equals("upbeat", StringComparison.OrdinalIgnoreCase)
+                ? words.Count(BrightSignals.Contains) * 6 : 0;
     }
 
     private static bool TrySelectVideo(JsonElement versions,
@@ -127,62 +553,135 @@ public sealed class PixabayVideoService
             uri.Host.EndsWith(".pixabay.com", StringComparison.OrdinalIgnoreCase)) &&
            uri.AbsolutePath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase);
 
-    private static async Task<JsonDocument> QueryAsync(
-        string query, string key, string cacheDirectory, CancellationToken ct)
+    private static string CacheFile(string query, string key, string cacheDirectory)
     {
-        // Hash key+query so multiple Pixabay keys cannot share cached account responses.
-        // The real key must never appear in file names, logs or GitHub.
+        // Isolate cached responses by API key; never put the plaintext key in paths.
         var fingerprint = Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(key + "|" + query)));
-        var file = Path.Combine(cacheDirectory, fingerprint + ".json");
-        if (File.Exists(file) && DateTime.UtcNow - File.GetLastWriteTimeUtc(file) < TimeSpan.FromHours(24))
-            return JsonDocument.Parse(await File.ReadAllTextAsync(file, ct));
+        return Path.Combine(cacheDirectory, fingerprint + ".json");
+    }
+
+    private static bool IsFreshCache(string query, string key, string cacheDirectory)
+    {
+        var file = CacheFile(query, key, cacheDirectory);
+        return File.Exists(file) &&
+            DateTime.UtcNow - File.GetLastWriteTimeUtc(file) < TimeSpan.FromHours(24);
+    }
+
+    private static async Task<JsonDocument?> ReadCacheAsync(string path, CancellationToken ct)
+    {
+        if (!File.Exists(path)) return null;
+        try { return JsonDocument.Parse(await File.ReadAllTextAsync(path, ct)); }
+        catch (JsonException) { return null; }
+        catch (IOException) { return null; }
+    }
+
+    private static TimeSpan? RateReset(HttpResponseMessage response)
+    {
+        // Pixabay documents X-RateLimit-Reset as seconds remaining, not a Unix epoch.
+        if (response.Headers.TryGetValues("X-RateLimit-Reset", out var values) &&
+            double.TryParse(values.FirstOrDefault(), NumberStyles.Float,
+                CultureInfo.InvariantCulture, out var seconds) &&
+            seconds >= 0 && seconds <= 86400)
+            return TimeSpan.FromSeconds(Math.Max(1, seconds));
+        if (response.Headers.RetryAfter?.Delta is { } delta && delta >= TimeSpan.Zero)
+            return delta;
+        if (response.Headers.RetryAfter?.Date is { } date)
+            return date > DateTimeOffset.UtcNow
+                ? date - DateTimeOffset.UtcNow : TimeSpan.FromSeconds(1);
+        return null;
+    }
+
+    private async Task<JsonDocument> QueryAsync(
+        string query, string key, string cacheDirectory,
+        Action<string>? log, CancellationToken ct)
+    {
+        var file = CacheFile(query, key, cacheDirectory);
+        if (IsFreshCache(query, key, cacheDirectory))
+        {
+            var cached = await ReadCacheAsync(file, ct);
+            if (cached is not null) return cached;
+        }
 
         var url = "https://pixabay.com/api/videos/?key=" +
             Uri.EscapeDataString(key) + "&q=" + Uri.EscapeDataString(query) +
-            "&per_page=20&safesearch=true&video_type=film";
-        using var result = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-        if (result.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
-            throw new InvalidOperationException("Pixabay rate limit reached. Retry after the API limit resets.");
-        result.EnsureSuccessStatusCode();
-        var json = await result.Content.ReadAsStringAsync(ct);
-        var document = JsonDocument.Parse(json);
-        try
+            "&per_page=50&video_type=all&safesearch=true";
+        // Repeated HTTP 429 is possible even after a window resets. Respect
+        // each provider reset time; cap the retries/wait so the UI never hangs
+        // indefinitely and never flood the service with rapid requests.
+        const int maxResetRetries = 3;
+        var waited = TimeSpan.Zero;
+        for (var attempt = 0; attempt <= maxResetRetries; attempt++)
         {
-            await File.WriteAllTextAsync(file, json, ct);
-            return document;
+            using var result = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (result.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                var reset = RateReset(result);
+                if (attempt < maxResetRetries && reset is { } wait &&
+                    wait <= _maxAutoWait &&
+                    waited + wait + TimeSpan.FromSeconds(1) <= TimeSpan.FromMinutes(3))
+                {
+                    var delay = wait + TimeSpan.FromSeconds(1);
+                    waited += delay;
+                    log?.Invoke($"Pixabay HTTP 429: waiting {Math.Ceiling(delay.TotalSeconds)} seconds for the next permitted quota window (retry {attempt + 1}/{maxResetRetries}).");
+                    await Task.Delay(delay, ct);
+                    continue;
+                }
+                // Using prior local results is not another API request.
+                var stale = await ReadCacheAsync(file, ct);
+                if (stale is not null)
+                {
+                    log?.Invoke("Pixabay rate-limited; using existing local search cache for '" + query + "'.");
+                    return stale;
+                }
+                throw new PixabayRateLimitException(reset);
+            }
+            result.EnsureSuccessStatusCode();
+            var json = await result.Content.ReadAsStringAsync(ct);
+            var document = JsonDocument.Parse(json);
+            try
+            {
+                // Cache only successful searches, never HTTP 429 responses.
+                await File.WriteAllTextAsync(file, json, ct);
+                return document;
+            }
+            catch
+            {
+                document.Dispose();
+                throw;
+            }
         }
-        catch
-        {
-            document.Dispose();
-            throw;
-        }
+        throw new InvalidOperationException("Pixabay request retry ended unexpectedly.");
     }
 
-    private static async Task DownloadAsync(string url, string destination, CancellationToken ct)
+    private async Task DownloadAsync(string url, string destination, CancellationToken ct)
     {
         if (!IsPixabayVideoUrl(url))
             throw new InvalidDataException("Pixabay returned a non-Pixabay video URL.");
-        using var response = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            throw new PixabayRateLimitException(RateReset(response));
         response.EnsureSuccessStatusCode();
         if (response.Content.Headers.ContentLength is long length && length > MaxClipBytes)
             throw new InvalidDataException("Stock footage file is over the 100 MB per-clip limit.");
         var temporary = destination + "." + Guid.NewGuid().ToString("N") + ".part";
         try
         {
-            await using var source = await response.Content.ReadAsStreamAsync(ct);
-            await using var target = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-            var buffer = new byte[64 * 1024];
             long total = 0;
-            int read;
-            while ((read = await source.ReadAsync(buffer, ct)) > 0)
+            await using (var source = await response.Content.ReadAsStreamAsync(ct))
+            await using (var target = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
-                total += read;
-                if (total > MaxClipBytes)
-                    throw new InvalidDataException("Stock footage download exceeded 100 MB.");
-                await target.WriteAsync(buffer.AsMemory(0, read), ct);
-            }
-            await target.FlushAsync(ct);
+                var buffer = new byte[64 * 1024];
+                int read;
+                while ((read = await source.ReadAsync(buffer, ct)) > 0)
+                {
+                    total += read;
+                    if (total > MaxClipBytes)
+                        throw new InvalidDataException("Stock footage download exceeded 100 MB.");
+                    await target.WriteAsync(buffer.AsMemory(0, read), ct);
+                }
+                await target.FlushAsync(ct);
+            } // Both streams must be closed before File.Move on Windows.
             if (total < 4096)
                 throw new InvalidDataException("Pixabay clip was incomplete.");
             File.Move(temporary, destination, true);

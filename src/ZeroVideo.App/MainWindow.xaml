@@ -445,16 +445,53 @@
                 </Border>
                 <Border Style="{StaticResource CardBorder}" Margin="0,14,0,0">
                   <StackPanel>
-                    <TextBlock Text="Pixabay Footage Source" FontSize="17" FontWeight="SemiBold"/>
-                    <TextBlock Text="Pixabay only for this version. Enter your personal API key."
+                    <TextBlock Text="Documentary Media Sources" FontSize="17" FontWeight="SemiBold"/>
+                    <TextBlock Text="Choose which sources ZeroVideo can use. Move a source UP to make it a higher priority for each script scene. Choices and order are saved automatically."
                                Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
-                    <Label Content="PIXABAY API KEY"/>
+                    <ItemsControl ItemsSource="{Binding YouTubeFlowMediaSources}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <Border BorderBrush="{StaticResource Muted}" BorderThickness="0,0,0,0"
+                                  Margin="0,4,0,4" Padding="2">
+                            <DockPanel LastChildFill="True">
+                              <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+                                <Button Content="↑" ToolTip="Move this media source higher"
+                                        Style="{StaticResource SecondaryButton}" Width="32"
+                                        Margin="3,0,2,0"
+                                        Command="{Binding DataContext.MoveYouTubeFlowSourceUpCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                        CommandParameter="{Binding}"/>
+                                <Button Content="↓" ToolTip="Move this media source lower"
+                                        Style="{StaticResource SecondaryButton}" Width="32"
+                                        Command="{Binding DataContext.MoveYouTubeFlowSourceDownCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                        CommandParameter="{Binding}"/>
+                              </StackPanel>
+                              <StackPanel Margin="0,0,4,0">
+                                <CheckBox IsChecked="{Binding IsEnabled, Mode=TwoWay}"
+                                          Content="{Binding Name}" FontWeight="SemiBold"/>
+                                <TextBlock Text="{Binding Description}"
+                                           Foreground="{StaticResource Muted}" FontSize="11"
+                                           TextWrapping="Wrap" Margin="23,2,0,0"/>
+                              </StackPanel>
+                            </DockPanel>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Text="{Binding YouTubeFlowSourceStatus}"
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,7"/>
+                    <TextBlock Text="Cartoon episode screencap sites are not royalty-free sources. Enabling them creates a review list, not automatic scraping; only explicitly rights-reviewed screenshots you import are used."
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,3,0,7"/>
+                    <Button Content="Open Approved Screencaps Folder"
+                            Command="{Binding OpenYouTubeFlowScreencapFolderCommand}"
+                            Style="{StaticResource SecondaryButton}" HorizontalAlignment="Left"
+                            Margin="0,0,0,12"/>
+                    <Label Content="PIXABAY API KEY (only needed when Pixabay is checked)"/>
                     <PasswordBox x:Name="PixabayKeyInput" PasswordChanged="OnPixabayKeyChanged"/>
                     <Button Content="Save Pixabay Key" Command="{Binding SaveYouTubeFlowSettingsCommand}"
                             Style="{StaticResource SecondaryButton}" Margin="0,10,0,0"
                             HorizontalAlignment="Left"/>
                     <TextBlock Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,9,0,0"
-                               Text="API responses are cached for 24 hours. Maximum 10 videos per project. Keys are stored in your local ZeroVideo settings file."/>
+                               Text="Enabled sources are tried in the displayed priority order for each narration scene. Pixabay matches both the video topic and spoken scene; it rejects unrelated generic footage and chroma screens. Wikimedia rights and attribution are checked per file; original ChatGPT images and local narration cards rescue uncovered scenes."/>
                     <TextBlock Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0">
                       Pixabay Content License applies. Avoid using generic B-roll as purported real-event footage.
                     </TextBlock>
@@ -493,9 +530,9 @@
                 </Border>
                 <Border Style="{StaticResource CardBorder}" Margin="0,14,0,0">
                   <StackPanel>
-                    <TextBlock Text="3. Voiceover + Stock Video + FFmpeg" FontSize="20"
+                    <TextBlock Text="3. Voiceover + Video + Photos + FFmpeg" FontSize="20"
                                FontWeight="SemiBold" Margin="0,0,0,7"/>
-                    <TextBlock Text="Uses your selected voice from Voice Studio (Clipchamp or licensed OmniVoice evaluation). Generates a complete voice track, searches Pixabay, downloads selected stock clips and renders an MP4."
+                    <TextBlock Text="Combines Pixabay stock footage, licensed Wikimedia Commons videos and photos, and original ChatGPT illustrations. Rejects chroma-key clips, matches narration subjects and mood, animates stills with subtle transitions, then renders the video with your selected voice."
                                Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
                     <Label Content="VOICE ENGINE" Margin="0,12,0,0"/>
                     <ComboBox Width="210" HorizontalAlignment="Left"
@@ -529,8 +566,67 @@
                     </WrapPanel>
                     <TextBlock Text="{Binding YouTubeFlowStatus}" Foreground="{StaticResource Muted}"
                                TextWrapping="Wrap" Margin="0,12,0,5"/>
-                    <TextBox Text="{Binding YouTubeFlowOutput}" IsReadOnly="True"
+                    <TextBox Text="{Binding YouTubeFlowOutput, Mode=OneWay}" IsReadOnly="True"
                              Margin="0,3,0,0"/>
+                  </StackPanel>
+                </Border>
+                <Border Style="{StaticResource CardBorder}" Margin="0,14,0,0">
+                  <StackPanel>
+                    <TextBlock Text="4. YouTube SEO Pack" FontSize="20"
+                               FontWeight="SemiBold" Margin="0,0,0,7"/>
+                    <TextBlock Text="Generate accurate, editable YouTube publishing metadata from the actual video title and narration. Saves JSON and copy-ready text beside your project."
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                    <Button Content="Generate Full SEO Pack" Command="{Binding GenerateYouTubeFlowSeoCommand}"
+                            Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left"
+                            Margin="0,12,0,6"/>
+                    <TextBlock Text="{Binding YouTubeFlowSeoStatus}" TextWrapping="Wrap"
+                               Foreground="{StaticResource Muted}" Margin="0,5,0,8"/>
+                    <Label Content="YOUTUBE SEO TITLE (maximum 100 characters)"/>
+                    <TextBox Text="{Binding YouTubeFlowSeoTitle, UpdateSourceTrigger=PropertyChanged}"/>
+                    <Label Content="YOUTUBE DESCRIPTION" Margin="0,9,0,0"/>
+                    <TextBox Text="{Binding YouTubeFlowSeoDescription, UpdateSourceTrigger=PropertyChanged}"
+                             AcceptsReturn="True" TextWrapping="Wrap" MinHeight="150"
+                             VerticalScrollBarVisibility="Auto"/>
+                    <Label Content="SEARCH TAGS (comma-separated)" Margin="0,9,0,0"/>
+                    <TextBox Text="{Binding YouTubeFlowSeoTags, UpdateSourceTrigger=PropertyChanged}"
+                             TextWrapping="Wrap" MinHeight="60"/>
+                    <Label Content="HASHTAGS" Margin="0,9,0,0"/>
+                    <TextBox Text="{Binding YouTubeFlowSeoHashtags, UpdateSourceTrigger=PropertyChanged}"
+                             TextWrapping="Wrap"/>
+                    <Label Content="OPTIONAL PINNED COMMENT" Margin="0,9,0,0"/>
+                    <TextBox Text="{Binding YouTubeFlowPinnedComment, UpdateSourceTrigger=PropertyChanged}"
+                             TextWrapping="Wrap"/>
+                  </StackPanel>
+                </Border>
+                <Border Style="{StaticResource CardBorder}" Margin="0,14,0,0">
+                  <StackPanel>
+                    <TextBlock Text="5. YouTube Thumbnail" FontSize="20"
+                               FontWeight="SemiBold" Margin="0,0,0,7"/>
+                    <TextBlock Text="Create three script-specific concepts or generate an original 16:9 editorial thumbnail. Cartoon controversies get subject-focused illustrated art instead of generic scenery. Generated art is not official episode imagery."
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                    <Label Content="THUMBNAIL VISUAL STYLE" Margin="0,10,0,0"/>
+                    <ComboBox Width="235" HorizontalAlignment="Left"
+                              ItemsSource="{Binding YouTubeFlowThumbnailStyles}"
+                              SelectedItem="{Binding YouTubeFlowThumbnailStyle}"/>
+                    <Button Content="Generate 3 Thumbnail Concepts"
+                            Command="{Binding GenerateYouTubeFlowThumbnailConceptsCommand}"
+                            Style="{StaticResource SecondaryButton}" HorizontalAlignment="Left"
+                            Margin="0,12,0,8"/>
+                    <TextBox Text="{Binding YouTubeFlowThumbnailConcepts, Mode=OneWay}"
+                             IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
+                             VerticalScrollBarVisibility="Auto" MinHeight="90" MaxHeight="240"/>
+                    <Label Content="THUMBNAIL HEADLINE (editable)" Margin="0,10,0,0"/>
+                    <TextBox Text="{Binding YouTubeFlowThumbnailHeadline, UpdateSourceTrigger=PropertyChanged}"/>
+                    <Button Content="Generate Thumbnail Image"
+                            Command="{Binding GenerateYouTubeFlowThumbnailCommand}"
+                            Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left"
+                            Margin="0,12,0,8"/>
+                    <TextBlock Text="{Binding YouTubeFlowThumbnailStatus}"
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                    <Image Source="{Binding YouTubeFlowThumbnailOutput}" MaxHeight="300"
+                           Stretch="Uniform" Margin="0,10,0,6"/>
+                    <TextBox Text="{Binding YouTubeFlowThumbnailOutput, Mode=OneWay}"
+                             IsReadOnly="True"/>
                   </StackPanel>
                 </Border>
               </StackPanel>

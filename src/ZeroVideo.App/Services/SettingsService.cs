@@ -13,8 +13,24 @@ public sealed class SettingsService
         ZeroVideoSettings settings;
         if (File.Exists(AppPaths.SettingsFile))
         {
-            await using var stream = File.OpenRead(AppPaths.SettingsFile);
-            settings = await JsonSerializer.DeserializeAsync<ZeroVideoSettings>(stream, JsonOptions) ?? new();
+            try
+            {
+                await using var stream = File.OpenRead(AppPaths.SettingsFile);
+                settings = await JsonSerializer.DeserializeAsync<ZeroVideoSettings>(
+                    stream, JsonOptions) ?? new();
+            }
+            catch (JsonException ex)
+            {
+                // An invalid/older settings JSON should not make the entire Windows app
+                // unusable. Preserve the original bytes before using safe defaults.
+                var backup = AppPaths.SettingsFile + ".invalid-" +
+                    DateTime.UtcNow.ToString("yyyyMMdd-HHmmssfff") + ".bak";
+                File.Copy(AppPaths.SettingsFile, backup);
+                ZeroVideo.App.StartupDiagnostics.Report(
+                    new InvalidDataException("Invalid settings JSON was backed up to " + backup, ex),
+                    "Settings recovery");
+                settings = new();
+            }
         }
         else settings = new();
 
