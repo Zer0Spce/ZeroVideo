@@ -10,7 +10,7 @@ namespace ZeroVideo.App.Services;
 public sealed record PixabayFlowClip(
     long Id, string FilePath, string SourcePage, string SearchQuery, string Tags,
     bool IsStillImage = false, string Attribution = "", string License = "",
-    string LicenseUrl = "");
+    string LicenseUrl = "", string MediaSource = "Pixabay");
 
 public sealed record PixabayFootageScene(
     int SceneNumber, string NarrationExcerpt, string SearchQuery, string Mood);
@@ -70,7 +70,9 @@ public sealed class PixabayVideoService
         IReadOnlyList<PixabayFootageScene>? scenePlan = null,
         Func<string, CancellationToken, Task<bool>>? chromaScreenCheck = null,
         Func<PixabayFootageScene, int, CancellationToken,
-            Task<IReadOnlyList<PixabayFlowClip>>>? imageFallback = null)
+            Task<IReadOnlyList<PixabayFlowClip>>>? imageFallback = null,
+        Func<PixabayFootageScene, int, CancellationToken,
+            Task<IReadOnlyList<PixabayFlowClip>>>? videoFallback = null)
     {
         if (string.IsNullOrWhiteSpace(apiKey))
             throw new InvalidOperationException("Enter your own Pixabay API key in YouTube Flow.");
@@ -285,6 +287,51 @@ public sealed class PixabayVideoService
                 {
                     rateLimit = ex;
                     RateLimitedDuringLastAcquire = true;
+                }
+            }
+        }
+
+        // Wikimedia Commons is an additional real-footage source (not AI art).
+        // Prioritize any empty scenes. Then, occasionally replace one ordinary
+        // stock shot with a relevant Commons film in the SAME narration scene.
+        // Never use it to smuggle footage from an unrelated scene, and never
+        // count a photo as a video. Provider service checks licensing and mood.
+        if (scenePlan is not null && videoFallback is not null)
+        {
+            var priority = Enumerable.Range(0, scenePlan.Count)
+                .OrderBy(i => sceneCounts[i] == 0 ? 0 : 1).ThenBy(i => i);
+            foreach (var i in priority)
+            {
+                ct.ThrowIfCancellationRequested();
+                var missing = sceneTargets[i] - sceneCounts[i];
+                var mixVideo = missing == 0 && i % 4 == 0 && sceneCounts[i] >= 2;
+                if (missing <= 0 && !mixVideo) continue;
+                if (sceneCounts[i] > 0 && i % 4 != 0) continue;
+                var videos = await videoFallback(scenePlan[i],
+                    mixVideo ? 1 : Math.Min(2, Math.Max(1, missing)), ct);
+                foreach (var clip in videos)
+                {
+                    if (clip.IsStillImage || !usedIds.Add(clip.Id) ||
+                        !clip.SearchQuery.Equals(scenePlan[i].SearchQuery,
+                            StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (mixVideo)
+                    {
+                        var old = clips.FindLastIndex(c => !c.IsStillImage &&
+                            c.SearchQuery.Equals(scenePlan[i].SearchQuery,
+                                StringComparison.OrdinalIgnoreCase));
+                        if (old >= 0)
+                        {
+                            usedIds.Remove(clips[old].Id);
+                            clips[old] = clip;
+                            log?.Invoke($"Wikimedia: scene {scenePlan[i].SceneNumber} now includes licensed historical/documentary video.");
+                        }
+                        break;
+                    }
+                    if (sceneCounts[i] >= sceneTargets[i]) break;
+                    clips.Add(clip);
+                    sceneCounts[i]++;
+                    onClipReady?.Invoke(clips.Count, target);
                 }
             }
         }
