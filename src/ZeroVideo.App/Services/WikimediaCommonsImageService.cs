@@ -87,8 +87,8 @@ public sealed class WikimediaCommonsImageService
             _requests++;
             var args = new Dictionary<string, string> {
                 ["action"] = "query", ["generator"] = "search",
-                ["gsrsearch"] = subject + " filetype:bitmap",
-                ["gsrnamespace"] = "6", ["gsrlimit"] = "12",
+                ["gsrsearch"] = subject,
+                ["gsrnamespace"] = "6", ["gsrlimit"] = "8",
                 ["prop"] = "imageinfo", ["iiprop"] = "url|extmetadata|mime",
                 ["iiurlwidth"] = "1920", ["format"] = "json", ["formatversion"] = "2",
                 ["maxlag"] = "5"
@@ -172,7 +172,7 @@ public sealed class WikimediaCommonsImageService
     private async Task DownloadImageAsync(string url, string file, CancellationToken ct)
     {
         using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-        if (!response.IsSuccessStatusCode) return;
+        response.EnsureSuccessStatusCode();
         if (response.Content.Headers.ContentLength is long length && length > MaxBytes)
             throw new InvalidDataException("Wikimedia image is too large.");
         var tmp = file + "." + Guid.NewGuid().ToString("N") + ".tmp";
