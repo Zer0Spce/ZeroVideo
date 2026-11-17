@@ -161,7 +161,8 @@ public sealed class WikimediaCommonsImageService
                 var credit = string.IsNullOrWhiteSpace(artist) ? "Wikimedia Commons"
                     : artist;
                 matches.Add(new PixabayFlowClip(-pageId, file, source,
-                    scene.SearchQuery, searchable, true, credit, license, licenseUrl));
+                    scene.SearchQuery, searchable, true, credit, license, licenseUrl,
+                    "Wikimedia Commons"));
                 log?.Invoke($"Wikimedia Commons: free-licensed image for scene {scene.SceneNumber}: {title} ({license}).");
             }
             catch (OperationCanceledException) { throw; }
