@@ -103,12 +103,42 @@ public sealed class YouTubeFlowRenderService(ProcessRunner runner, FfmpegService
             // not just the position (shot-01), or we would reuse unrelated footage.
             var seconds = shotDurations[i];
             var frames = Math.Max(1, (int)Math.Round(seconds * 30d));
-            var file = Path.Combine(work, $"shot-{i + 1:00}-{clips[i].Id}-{width}x{height}-{frames}f.mp4");
+            var file = Path.Combine(work, $"shot-{i + 1:00}-{clips[i].Id}-{width}x{height}-{frames}f-{(clips[i].IsStillImage ? "photo-v2" : "video")}.mp4");
             if (!File.Exists(file) || new FileInfo(file).Length < 4096)
             {
-                var filter = $"scale={width}:{height}:force_original_aspect_ratio=increase," +
-                    $"crop={width}:{height},setsar=1,fps=30,format=yuv420p";
-                var args = "-hide_banner -loglevel error -y -stream_loop -1 " +
+                var isPhoto = clips[i].IsStillImage;
+                var baseFilter = $"scale={width}:{height}:force_original_aspect_ratio=increase," +
+                    $"crop={width}:{height},setsar=1";
+                string filter;
+                if (isPhoto)
+                {
+                    // Ken Burns: alternate gentle zoom-in, zoom-out and lateral drift.
+                    // Fade on photo boundaries; real stock video stays unmodified.
+                    var variant = i % 3;
+                    var zoom = variant == 1
+                        ? "1.11-on*0.00015" : "1.035+on*0.00017";
+                    var x = variant == 2
+                        ? $"(iw-iw/zoom)*on/{Math.Max(1, frames)}"
+                        : "(iw-iw/zoom)/2";
+                    var y = "(ih-ih/zoom)/2";
+                    var mood = scenes?.FirstOrDefault(x =>
+                        x.SearchQuery.Equals(clips[i].SearchQuery,
+                            StringComparison.OrdinalIgnoreCase))?.Mood ?? "neutral";
+                    var color = mood is "ominous" or "tense" or "somber"
+                        ? ",eq=brightness=-0.055:saturation=0.72:contrast=1.12"
+                        : mood == "upbeat" ? ",eq=saturation=1.06" : "";
+                    var fadeOutAt = Math.Max(0, seconds - 0.23)
+                        .ToString("0.000", CultureInfo.InvariantCulture);
+                    filter = baseFilter +
+                        $",zoompan=z={zoom}:x={x}:y={y}:d=1:s={width}x{height}:fps=30" +
+                        color + ",fade=t=in:st=0:d=0.23" +
+                        $",fade=t=out:st={fadeOutAt}:d=0.23,format=yuv420p";
+                }
+                else filter = baseFilter + ",fps=30,format=yuv420p";
+                var inputMode = isPhoto
+                    ? "-loop 1 -framerate 30 "
+                    : "-stream_loop -1 ";
+                var args = "-hide_banner -loglevel error -y " + inputMode +
                     "-i " + Quote(clips[i].FilePath) + " -t " +
                     seconds.ToString("0.000", CultureInfo.InvariantCulture) + " -an " +
                     "-vf " + Quote(filter) +
