@@ -176,6 +176,9 @@ public sealed partial class MainViewModel
                         Path.DirectorySeparatorChar;
                     if (candidate.StartsWith(permittedRoot, StringComparison.OrdinalIgnoreCase) &&
                         File.Exists(Path.Combine(candidate, "script.txt")) &&
+                        !File.Exists(Path.Combine(candidate, "youtube-flow-complete.mp4")) &&
+                        (!File.Exists(Path.Combine(candidate, "youtube-flow.mp4")) ||
+                         IsIncompletePixabayPreview(candidate)) &&
                         await File.ReadAllTextAsync(Path.Combine(candidate, "script.txt"), _cts.Token) ==
                             YouTubeFlowScript)
                     {
@@ -201,7 +204,9 @@ public sealed partial class MainViewModel
                     if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(previous) > TimeSpan.FromDays(7))
                         continue;
                     if (!File.Exists(savedScript) || !File.Exists(savedAudio) ||
-                        File.Exists(Path.Combine(previous, "youtube-flow.mp4")))
+                        File.Exists(Path.Combine(previous, "youtube-flow-complete.mp4")) ||
+                        (File.Exists(Path.Combine(previous, "youtube-flow.mp4")) &&
+                            !IsIncompletePixabayPreview(previous)))
                         continue;
                     try
                     {
@@ -220,8 +225,13 @@ public sealed partial class MainViewModel
                     "-" + safeName);
             Directory.CreateDirectory(folder);
             Directory.CreateDirectory(Path.Combine(folder, "audio"));
-            var output = Path.Combine(folder, "youtube-flow.mp4");
-            YouTubeFlowOutput = output; // Open Output Folder also works after a failed job.
+            // Keep existing #338 three-clip previews intact. A recovered, fully
+            // populated video is rendered to a *new* filename in that folder.
+            var existingPreview = Path.Combine(folder, "youtube-flow.mp4");
+            var output = File.Exists(existingPreview) && IsIncompletePixabayPreview(folder)
+                ? Path.Combine(folder, "youtube-flow-complete.mp4")
+                : existingPreview;
+            YouTubeFlowOutput = output; // Open Output Folder works after a failed job.
             await File.WriteAllTextAsync(
                 Path.Combine(folder, "script.txt"), YouTubeFlowScript, _cts.Token);
             await File.WriteAllTextAsync(resumeFile, folder, _cts.Token);
@@ -348,6 +358,7 @@ public sealed partial class MainViewModel
                 aspect_ratio = YouTubeFlowRatio,
                 provider = "Pixabay",
                 captions = false,
+                footage_complete = true,
                 searches = queries,
                 clips = clips.Select(c => new
                 {
@@ -365,9 +376,8 @@ public sealed partial class MainViewModel
 
             Progress = 100;
             YouTubeFlowOutput = output;
-            Status = YouTubeFlowStatus = pixabay.RateLimitedDuringLastAcquire
-                ? "Complete with limited Pixabay footage (quota reached): " + output
-                : "Complete: " + output;
+            Status = YouTubeFlowStatus =
+                $"Complete with {clips.Count} distinct Pixabay footage clips: " + output;
             Log("YouTube Flow finished without captions. Output: " + output);
             try { File.Delete(resumeFile); } catch { /* Finished output remains safe. */ }
             await _settingsService.SaveAsync(Settings);
@@ -378,6 +388,33 @@ public sealed partial class MainViewModel
         {
             WaitingForTtsContinue = false;
             _ttsContinueGate = null;
+        }
+    }
+
+    private static bool IsIncompletePixabayPreview(string folder)
+    {
+        // Older builds considered three clips "complete" after HTTP 429.
+        // Detect that old partial output by its existing source manifest,
+        // without touching or overwriting the original MP4.
+        var manifest = Path.Combine(folder, "stock-sources.json");
+        if (!File.Exists(manifest)) return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(manifest));
+            var root = doc.RootElement;
+            if (root.TryGetProperty("footage_complete", out var complete) &&
+                complete.ValueKind == JsonValueKind.True)
+                return false;
+            if (!root.TryGetProperty("searches", out var searches) ||
+                searches.ValueKind != JsonValueKind.Array ||
+                !root.TryGetProperty("clips", out var clips) ||
+                clips.ValueKind != JsonValueKind.Array)
+                return false;
+            return clips.GetArrayLength() < Math.Min(6, searches.GetArrayLength());
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 
