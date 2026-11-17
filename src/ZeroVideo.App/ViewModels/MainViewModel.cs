@@ -148,12 +148,14 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public async Task InitializeAsync()
     {
         Settings = await _settingsService.LoadAsync();
-        LoadTikTokIntelligence();
-        LoadShortsRecovery();
-        LoadLongFormRecovery();
-        LoadOmniVoiceProfiles();
-        RefreshPublishingCalendar();
-        RefreshVideoLibrary();
+        // Optional saved views must never prevent the entire application from opening.
+        // Preserve their files and report the affected component for troubleshooting.
+        TryRestoreStartupView("TikTok intelligence", LoadTikTokIntelligence);
+        TryRestoreStartupView("Shorts recovery", LoadShortsRecovery);
+        TryRestoreStartupView("Long-form recovery", LoadLongFormRecovery);
+        TryRestoreStartupView("OmniVoice profiles", LoadOmniVoiceProfiles);
+        TryRestoreStartupView("Publishing calendar", RefreshPublishingCalendar);
+        TryRestoreStartupView("Video library", RefreshVideoLibrary);
         if (string.IsNullOrWhiteSpace(Project.Voice)) Project.Voice = Settings.ClipchampVoice;
         Raise(nameof(Project));
         Log("ZeroVideo initialized.");
@@ -161,6 +163,16 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         Raise(nameof(Settings));
         RefreshNarrationVoiceDisplay();
         Raise(nameof(LocalImageAvailability));
+    }
+
+    private void TryRestoreStartupView(string name, Action restore)
+    {
+        try { restore(); }
+        catch (Exception ex)
+        {
+            ZeroVideo.App.StartupDiagnostics.Report(ex, "Restore " + name);
+            Log("Could not restore " + name + " at startup: " + ex.Message);
+        }
     }
 
     private async Task GeneratePlanAsync()
