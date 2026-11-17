@@ -37,6 +37,39 @@ public sealed partial class MainViewModel
     private string _youTubeFlowThumbnailConcepts = "";
     private string _youTubeFlowThumbnailOutput = "";
     private string _youTubeFlowThumbnailStatus = "";
+    private string _youTubeFlowSourceStatus = "Select sources and set priority (top = first choice).";
+
+    public ObservableCollection<YouTubeFlowMediaSourceOption> YouTubeFlowMediaSources { get; } =
+    [
+        new(YouTubeFlowSourceRouter.Pixabay, "Pixabay — Stock Videos",
+            "Scene/topic-matched footage; requires Pixabay API key"),
+        new(YouTubeFlowSourceRouter.CommonsVideo, "Wikimedia Commons — Videos",
+            "Public-domain, CC0 or verified CC BY videos"),
+        new(YouTubeFlowSourceRouter.CommonsPhoto, "Wikimedia Commons — Photos",
+            "Commercially reusable still photos with source credits"),
+        new(YouTubeFlowSourceRouter.ChatGpt, "ChatGPT — Original Images",
+            "Contextual illustrations; no franchise character lookalikes"),
+        new(YouTubeFlowSourceRouter.SpongeBob, "SpongeBob Captures",
+            "Copyright review required; approved user-imported stills only",
+            false, true),
+        new(YouTubeFlowSourceRouter.AnimationScreencaps, "Animation Screencaps",
+            "Copyright review required; approved user-imported stills only",
+            false, true),
+        new(YouTubeFlowSourceRouter.Intanibase, "Internet Animation Database",
+            "Copyright review required; approved user-imported stills only",
+            false, true),
+        new(YouTubeFlowSourceRouter.Bulbagarden, "Bulbagarden Archives",
+            "Copyright review required; approved user-imported stills only",
+            false, true)
+    ];
+    public string YouTubeFlowSourceStatus
+    {
+        get => _youTubeFlowSourceStatus;
+        private set => Set(ref _youTubeFlowSourceStatus, value);
+    }
+    public ICommand MoveYouTubeFlowSourceUpCommand { get; private set; } = null!;
+    public ICommand MoveYouTubeFlowSourceDownCommand { get; private set; } = null!;
+    public ICommand OpenYouTubeFlowScreencapFolderCommand { get; private set; } = null!;
 
     public ObservableCollection<int> YouTubeFlowIdeaCounts { get; } = [3, 6, 10];
     public ObservableCollection<int> YouTubeFlowDurations { get; } = [1, 3, 5, 10, 15];
@@ -76,6 +109,20 @@ public sealed partial class MainViewModel
 
     private void InitializeYouTubeFlowCommands()
     {
+        LoadYouTubeFlowMediaSources();
+        MoveYouTubeFlowSourceUpCommand = new AsyncItemCommand<YouTubeFlowMediaSourceOption>(
+            item => { MoveYouTubeFlowSource(item, -1); return Task.CompletedTask; });
+        MoveYouTubeFlowSourceDownCommand = new AsyncItemCommand<YouTubeFlowMediaSourceOption>(
+            item => { MoveYouTubeFlowSource(item, 1); return Task.CompletedTask; });
+        OpenYouTubeFlowScreencapFolderCommand = new RelayCommand(() =>
+        {
+            var target = Path.Combine(YouTubeFlowPublishingFolder(), "approved-screencaps");
+            Directory.CreateDirectory(target);
+            Process.Start(new ProcessStartInfo("explorer.exe", "\"" + target + "\"")
+                { UseShellExecute = true });
+            YouTubeFlowSourceStatus = "Use the screencap-review.json and README instructions. " +
+                "Only manually approved, rights-reviewed frames can enter the render.";
+        });
         GenerateYouTubeFlowIdeasCommand = new AsyncCommand(() =>
             RunManagedJobAsync("YouTube Flow — Ideas", GenerateYouTubeFlowIdeasAsync));
         UseYouTubeFlowIdeaCommand = new RelayCommand(() =>
@@ -109,6 +156,79 @@ public sealed partial class MainViewModel
                     { UseShellExecute = true });
         });
     }
+
+    private static string YouTubeFlowSourcePreferencesFile =>
+        Path.Combine(AppPaths.DataDirectory, "youtube-flow-media-sources-v1.json");
+
+    private sealed record SourcePreference(string Id, bool Enabled);
+
+    private void LoadYouTubeFlowMediaSources()
+    {
+        try
+        {
+            if (File.Exists(YouTubeFlowSourcePreferencesFile))
+            {
+                var preferences = JsonSerializer.Deserialize<List<SourcePreference>>(
+                    File.ReadAllText(YouTubeFlowSourcePreferencesFile));
+                if (preferences is not null)
+                {
+                    foreach (var saved in preferences)
+                    {
+                        var option = YouTubeFlowMediaSources.FirstOrDefault(x => x.Id == saved.Id);
+                        if (option is null) continue;
+                        option.IsEnabled = saved.Enabled;
+                        var current = YouTubeFlowMediaSources.IndexOf(option);
+                        YouTubeFlowMediaSources.Move(current,
+                            Math.Min(YouTubeFlowMediaSources.Count - 1,
+                                Math.Max(0, preferences.IndexOf(saved))));
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            YouTubeFlowSourceStatus = "Default media source priorities loaded: " + ex.Message;
+        }
+        foreach (var source in YouTubeFlowMediaSources)
+            source.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName == nameof(YouTubeFlowMediaSourceOption.IsEnabled))
+                    SaveYouTubeFlowMediaSources();
+            };
+    }
+
+    private void MoveYouTubeFlowSource(YouTubeFlowMediaSourceOption item, int movement)
+    {
+        var index = YouTubeFlowMediaSources.IndexOf(item);
+        if (index < 0 || index + movement < 0 ||
+            index + movement >= YouTubeFlowMediaSources.Count) return;
+        YouTubeFlowMediaSources.Move(index, index + movement);
+        SaveYouTubeFlowMediaSources();
+    }
+
+    private void SaveYouTubeFlowMediaSources()
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.DataDirectory);
+            var preferences = YouTubeFlowMediaSources.Select(x =>
+                new SourcePreference(x.Id, x.IsEnabled)).ToArray();
+            File.WriteAllText(YouTubeFlowSourcePreferencesFile,
+                JsonSerializer.Serialize(preferences, new JsonSerializerOptions
+                    { WriteIndented = true }));
+            YouTubeFlowSourceStatus =
+                "Saved priorities: " + string.Join(" > ",
+                    YouTubeFlowMediaSources.Where(x => x.IsEnabled).Select(x => x.Name));
+        }
+        catch (Exception ex)
+        {
+            YouTubeFlowSourceStatus = "Could not save media priority settings: " + ex.Message;
+        }
+    }
+
+    private string[] EnabledYouTubeFlowMediaSources()
+        => YouTubeFlowSourceRouter.NormalizeOrder(
+            YouTubeFlowMediaSources.Where(x => x.IsEnabled).Select(x => x.Id)).ToArray();
 
     private async Task GenerateYouTubeFlowIdeasAsync()
     {
