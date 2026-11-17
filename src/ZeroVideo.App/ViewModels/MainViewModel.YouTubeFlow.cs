@@ -178,7 +178,7 @@ public sealed partial class MainViewModel
                         Path.DirectorySeparatorChar;
                     if (candidate.StartsWith(permittedRoot, StringComparison.OrdinalIgnoreCase) &&
                         File.Exists(Path.Combine(candidate, "script.txt")) &&
-                        !File.Exists(Path.Combine(candidate, "youtube-flow-complete.mp4")) &&
+                        !File.Exists(Path.Combine(candidate, "youtube-flow-hybrid-v3.mp4")) &&
                         (!File.Exists(Path.Combine(candidate, "youtube-flow.mp4")) ||
                          IsIncompletePixabayPreview(candidate, expectedTarget)) &&
                         await File.ReadAllTextAsync(Path.Combine(candidate, "script.txt"), _cts.Token) ==
@@ -206,7 +206,7 @@ public sealed partial class MainViewModel
                     if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(previous) > TimeSpan.FromDays(7))
                         continue;
                     if (!File.Exists(savedScript) || !File.Exists(savedAudio) ||
-                        File.Exists(Path.Combine(previous, "youtube-flow-complete.mp4")) ||
+                        File.Exists(Path.Combine(previous, "youtube-flow-hybrid-v3.mp4")) ||
                         (File.Exists(Path.Combine(previous, "youtube-flow.mp4")) &&
                             !IsIncompletePixabayPreview(previous, expectedTarget)))
                         continue;
@@ -227,11 +227,13 @@ public sealed partial class MainViewModel
                     "-" + safeName);
             Directory.CreateDirectory(folder);
             Directory.CreateDirectory(Path.Combine(folder, "audio"));
-            // Keep existing #338 three-clip previews intact. A recovered, fully
-            // populated video is rendered to a *new* filename in that folder.
+            // A previous video rendered using the old stock-only engine may
+            // be complete yet visually unrelated. Preserve it and reuse its
+            // existing voiceover to produce a distinctly named hybrid revision.
             var existingPreview = Path.Combine(folder, "youtube-flow.mp4");
-            var output = File.Exists(existingPreview) && IsIncompletePixabayPreview(folder, expectedTarget)
-                ? Path.Combine(folder, "youtube-flow-complete.mp4")
+            var output = File.Exists(existingPreview) &&
+                    IsIncompletePixabayPreview(folder, expectedTarget)
+                ? Path.Combine(folder, "youtube-flow-hybrid-v3.mp4")
                 : existingPreview;
             YouTubeFlowOutput = output; // Open Output Folder works after a failed job.
             await File.WriteAllTextAsync(
@@ -560,6 +562,9 @@ public sealed partial class MainViewModel
         // Detect that old partial output by its existing source manifest,
         // without touching or overwriting the original MP4.
         var manifest = Path.Combine(folder, "stock-sources.json");
+        // Previous successful renders predate the mixed-image storyboard.
+        // Rebuild them to a new filename without overwriting their MP4.
+        if (!File.Exists(Path.Combine(folder, "pixabay-scenes-v3.json"))) return true;
         if (!File.Exists(manifest)) return false;
         try
         {
