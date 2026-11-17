@@ -68,6 +68,8 @@ jobs:
         run: dotnet restore ZeroVideo.sln
       - name: Character Bible scene-variety regression tests
         run: dotnet run --project tests/CharacterBibleSmoke/CharacterBibleSmoke.csproj --configuration Release
+      - name: Pixabay HTTP 429 and local-cache regression tests (offline)
+        run: dotnet run --project tests/PixabayFlowSmoke/PixabayFlowSmoke.csproj --configuration Release
       - name: Publish portable x64
         shell: pwsh
         run: .\tools\build-portable.ps1
