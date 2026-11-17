@@ -400,6 +400,8 @@ public sealed partial class MainViewModel
                 Log($"Wikimedia Commons: {photos.Length} licensed still images mixed with " +
                     $"{clips.Count - photos.Length} video clips; image credits saved in the project.");
             }
+            var sceneDurations = YouTubeFlowRenderService.PlanSceneDurations(
+                scenes, narrationSeconds);
             var manifest = new
             {
                 title = YouTubeFlowTitle,
@@ -417,8 +419,8 @@ public sealed partial class MainViewModel
                 scenes = scenes.Select(scene => new
                 {
                     scene.SceneNumber, scene.NarrationExcerpt, scene.SearchQuery, scene.Mood,
-                    start_seconds = Math.Round((scene.SceneNumber - 1d) * narrationSeconds / scenes.Count, 2),
-                    end_seconds = Math.Round(scene.SceneNumber * narrationSeconds / scenes.Count, 2),
+                    start_seconds = Math.Round(sceneDurations.Take(scene.SceneNumber - 1).Sum(), 2),
+                    end_seconds = Math.Round(sceneDurations.Take(scene.SceneNumber).Sum(), 2),
                     matching_clips = clips.Count(c => c.SearchQuery == scene.SearchQuery)
                 }).ToArray(),
                 clips = clips.Select(c => new
