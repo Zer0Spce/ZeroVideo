@@ -445,8 +445,8 @@
                 </Border>
                 <Border Style="{StaticResource CardBorder}" Margin="0,14,0,0">
                   <StackPanel>
-                    <TextBlock Text="Pixabay Footage Source" FontSize="17" FontWeight="SemiBold"/>
-                    <TextBlock Text="Pixabay only for this version. Enter your personal API key."
+                    <TextBlock Text="Documentary Media Sources" FontSize="17" FontWeight="SemiBold"/>
+                    <TextBlock Text="Pixabay videos + licensed Wikimedia Commons photos + original ChatGPT scene illustrations. Enter your Pixabay API key."
                                Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
                     <Label Content="PIXABAY API KEY"/>
                     <PasswordBox x:Name="PixabayKeyInput" PasswordChanged="OnPixabayKeyChanged"/>
@@ -454,7 +454,7 @@
                             Style="{StaticResource SecondaryButton}" Margin="0,10,0,0"
                             HorizontalAlignment="Left"/>
                     <TextBlock Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,9,0,0"
-                               Text="24-hour Pixabay API search caching. Video target: 10 unique stock clips per minute (up to 150 for a 15-minute narration). Saved clips are reused. Your API key stays in local settings; Pixabay rate limits and license rules apply."/>
+                               Text="Video target: one relevant shot about every six seconds (up to 150 for 15 minutes). Scene-specific stock video, CC-licensed Commons photos, and a few ChatGPT illustrations. Original photo credits and AI-image provenance are saved with the project. Uses 24-hour Pixabay search caching."/>
                     <TextBlock Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0">
                       Pixabay Content License applies. Avoid using generic B-roll as purported real-event footage.
                     </TextBlock>
@@ -493,9 +493,9 @@
                 </Border>
                 <Border Style="{StaticResource CardBorder}" Margin="0,14,0,0">
                   <StackPanel>
-                    <TextBlock Text="3. Voiceover + Stock Video + FFmpeg" FontSize="20"
+                    <TextBlock Text="3. Voiceover + Video + Photos + FFmpeg" FontSize="20"
                                FontWeight="SemiBold" Margin="0,0,0,7"/>
-                    <TextBlock Text="Uses your selected voice from Voice Studio (Clipchamp or licensed OmniVoice evaluation). Generates a complete voice track, searches Pixabay, downloads selected stock clips and renders an MP4."
+                    <TextBlock Text="Matches narration scenes to relevant stock clips, Commons photographs and ChatGPT-created illustrations; rejects green screens. Adds subtle cinematic photo motion and fade transitions, then renders with the selected voice engine."
                                Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
                     <Label Content="VOICE ENGINE" Margin="0,12,0,0"/>
                     <ComboBox Width="210" HorizontalAlignment="Left"
