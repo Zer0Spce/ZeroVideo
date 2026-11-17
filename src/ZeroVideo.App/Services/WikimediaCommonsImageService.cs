@@ -142,7 +142,8 @@ public sealed class WikimediaCommonsImageService
             var overlap = terms.Count(t => t.Length >= 3 &&
                 Regex.IsMatch(searchable, @"\b" + Regex.Escape(t) + @"\b",
                     RegexOptions.IgnoreCase));
-            if (overlap < Math.Min(2, terms.Length))
+            if (overlap < Math.Min(2, terms.Length) ||
+                !IsMoodCompatible(searchable, scene.Mood))
                 continue;
             var url = GetString(info, "thumburl");
             if (!IsWikimediaImageUrl(url)) url = GetString(info, "url");
@@ -170,6 +171,21 @@ public sealed class WikimediaCommonsImageService
             }
         }
         return matches;
+    }
+
+    public static bool IsMoodCompatible(string searchable, string mood)
+    {
+        if (mood.Equals("ominous", StringComparison.OrdinalIgnoreCase) ||
+            mood.Equals("tense", StringComparison.OrdinalIgnoreCase) ||
+            mood.Equals("somber", StringComparison.OrdinalIgnoreCase))
+            return !Regex.IsMatch(searchable,
+                @"\b(sunny|cheerful|party|vacation|holiday|celebration|smiling|happy|joyful|colorful|bright)\b",
+                RegexOptions.IgnoreCase);
+        if (mood.Equals("upbeat", StringComparison.OrdinalIgnoreCase))
+            return !Regex.IsMatch(searchable,
+                @"\b(horror|corpse|funeral|death|nightmare|haunted|ghoulish|terrifying)\b",
+                RegexOptions.IgnoreCase);
+        return true;
     }
 
     private async Task DownloadImageAsync(string url, string file, CancellationToken ct)
