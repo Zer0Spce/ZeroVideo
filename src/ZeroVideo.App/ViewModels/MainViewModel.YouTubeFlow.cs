@@ -386,8 +386,13 @@ public sealed partial class MainViewModel
             {
                 if (aiImagesAttempted >= maxAiImages) return null;
                 aiImagesAttempted++;
+                // Bind the saved illustration to its exact script content.
+                // Replanned narration cannot accidentally reuse the wrong art.
+                var fingerprint = Convert.ToHexString(SHA256.HashData(
+                    Encoding.UTF8.GetBytes(scene.NarrationExcerpt + "\n" +
+                        scene.SearchQuery + "\n" + scene.Mood)))[..12];
                 var destination = Path.Combine(folder, "stock-images", "chatgpt",
-                    $"scene-{scene.SceneNumber:00}.png");
+                    $"scene-{scene.SceneNumber:00}-{fingerprint}.png");
                 try
                 {
                     var saved = await _chat.GenerateYouTubeFlowIllustrationAsync(
