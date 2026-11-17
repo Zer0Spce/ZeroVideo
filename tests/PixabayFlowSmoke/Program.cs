@@ -13,6 +13,8 @@ try
     await RateLimitReportsResetWithoutFlooding();
     await PartialCachedFootageSurvives429();
     await ServerDirectedSingleRetry();
+    await RepeatedRateLimitsEventuallyRecover();
+    await InsufficientFootageDoesNotClaimCompletion();
     await OlderCacheCanRecoverWhenThrottled();
     Console.WriteLine("PASS: Pixabay 24h cache, HTTP 429, resume-safe footage and bounded retry");
 }
@@ -63,14 +65,27 @@ async Task PartialCachedFootageSurvives429()
         ["alpha", "beta", "gamma"], "TEST-KEY", "16:9", Console.WriteLine, CancellationToken.None);
     Check(warmed.Count == 3, "Warmup should save three licensed clips.");
     handler.RateLimitTerm = "rate";
+    try
+    {
+        await service.AcquireAsync(
+            ["rate", "gamma", "alpha", "beta"], "TEST-KEY", "16:9", Console.WriteLine, CancellationToken.None);
+        throw new Exception("Rate-limited partial footage was incorrectly accepted as a complete video.");
+    }
+    catch (PixabayRateLimitException) { /* Expected; never render a three-clip video. */ }
+    Check(service.RateLimitedDuringLastAcquire, "Caller must know footage was rate-limited.");
+    Check(handler.ApiRequests == 4, "Only one new API request should be issued.");
+    var cached = await service.AcquireAsync(
+        ["gamma", "alpha", "beta"], "TEST-KEY", "16:9", Console.WriteLine, CancellationToken.None);
+    Check(cached.Count == 3 && handler.ApiRequests == 4,
+        "Downloaded clips and cached searches must remain usable after 429.");
+    handler.RateLimitTerm = null;
     var recovered = await service.AcquireAsync(
         ["rate", "gamma", "alpha", "beta"], "TEST-KEY", "16:9", Console.WriteLine, CancellationToken.None);
-    Check(recovered.Count == 3, "Cached footage must survive a separate 429.");
-    Check(recovered[0].SearchQuery == "gamma" && recovered[1].SearchQuery == "alpha",
-        "Recovered clips must return in narration query order.");
-    Check(service.RateLimitedDuringLastAcquire, "UI must know footage was rate-limited.");
-    Check(handler.ApiRequests == 4, "Only one new API request should be issued.");
-    Console.WriteLine("PASS: HTTP 429 preserves cached clips and narration order");
+    Check(recovered.Count == 4, "Retry after quota recovery should finish missing footage.");
+    Check(recovered[0].SearchQuery == "rate" && recovered[1].SearchQuery == "gamma",
+        "Fully recovered clips must follow narration search order.");
+    Check(handler.ApiRequests == 5, "Resume should query only the previously blocked search.");
+    Console.WriteLine("PASS: HTTP 429 pauses incomplete rendering while saved clips resume later");
 }
 
 async Task ServerDirectedSingleRetry()
@@ -83,6 +98,36 @@ async Task ServerDirectedSingleRetry()
     Check(result.Count == 1 && handler.ApiRequests == 2,
         "One bounded retry after the provider's reset should recover.");
     Console.WriteLine("PASS: single retry after documented reset delay");
+}
+
+async Task RepeatedRateLimitsEventuallyRecover()
+{
+    var handler = new PixabayStub { RateLimitResponsesRemaining = 2, ResetHeader = "0" };
+    using var client = new HttpClient(handler);
+    var service = new PixabayVideoService(client, Path.Combine(baseDir, "repeated"),
+        TimeSpan.FromSeconds(3));
+    var results = await service.AcquireAsync(["alpha"], "TEST-KEY", "16:9", Console.WriteLine, CancellationToken.None);
+    Check(results.Count == 1 && handler.ApiRequests == 3,
+        "Should recover when two consecutive reset windows return 429, without rapid retry.");
+    Console.WriteLine("PASS: repeated HTTP 429 windows recover with bounded waits");
+}
+
+async Task InsufficientFootageDoesNotClaimCompletion()
+{
+    var handler = new PixabayStub();
+    using var client = new HttpClient(handler);
+    var service = new PixabayVideoService(client, Path.Combine(baseDir, "insufficient"), TimeSpan.Zero);
+    try
+    {
+        await service.AcquireAsync(
+            ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"],
+            "TEST-KEY", "16:9", Console.WriteLine, CancellationToken.None);
+        throw new Exception("Fewer than six distinct clips must not be considered complete.");
+    }
+    catch (InvalidOperationException ex) when (ex.Message.Contains("Only 4/6"))
+    {
+        Console.WriteLine("PASS: insufficient distinct footage does not mark video complete");
+    }
 }
 
 async Task OlderCacheCanRecoverWhenThrottled()
@@ -115,6 +160,7 @@ sealed class PixabayStub : HttpMessageHandler
     public int VideoRequests { get; private set; }
     public bool AlwaysRateLimit { get; set; }
     public bool RateLimitFirstRequest { get; set; }
+    public int RateLimitResponsesRemaining { get; set; }
     public string? RateLimitTerm { get; set; }
     public string ResetHeader { get; set; } = "60";
 
@@ -127,7 +173,9 @@ sealed class PixabayStub : HttpMessageHandler
             ApiRequests++;
             var query = WebUtility.UrlDecode(
                 Regex.Match(uri.Query, @"[?&]q=([^&]+)").Groups[1].Value);
-            var throttle = AlwaysRateLimit ||
+            var limitedCount = RateLimitResponsesRemaining > 0;
+            if (limitedCount) RateLimitResponsesRemaining--;
+            var throttle = AlwaysRateLimit || limitedCount ||
                 (RateLimitFirstRequest && ApiRequests == 1) ||
                 query.Equals(RateLimitTerm, StringComparison.Ordinal);
             if (throttle)
