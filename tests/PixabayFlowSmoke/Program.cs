@@ -25,6 +25,8 @@ try
     await RejectChromaScreenStock();
     await VerifyCommonsLicenseAndImageFallback();
     await VerifyChatGptArtworkMixedIntoChronologicalScenes();
+    await RescueEmptySceneWithAiImage();
+    VerifyTopicSpecificArtPrompts();
     ValidateNarrationTiming();
     Console.WriteLine("PASS: Pixabay 24h cache, HTTP 429, resume-safe footage and bounded retry");
 }
@@ -312,6 +314,8 @@ async Task EmptySceneStillBlockedEvenAboveCoverageThreshold()
 
 async Task LargeSceneShortfallStillBlocked()
 {
+    // New documentary behavior: when EVERY scene is covered, extend the
+    // appropriate scene shots instead of forcing 45 separate downloads.
     var stub = new PixabayStub { HitsPerQuery = 5,
         HitsForQuery = q =>
             int.TryParse(q["topic-".Length..], out var i) && i is 0 or 2 or 4 or 6 ? 4 : 3 };
@@ -320,18 +324,14 @@ async Task LargeSceneShortfallStillBlocked()
         Path.Combine(baseDir, "too-sparse"), TimeSpan.Zero);
     var scenes = Enumerable.Range(0, 10).Select(i =>
         new PixabayFootageScene(i + 1, "Scene " + i, "topic-" + i, "neutral")).ToArray();
-    try
-    {
-        await service.AcquireAsync(scenes.Select(x => x.SearchQuery),
-            "TEST-KEY", "16:9", null, CancellationToken.None, 45, null, scenes);
-        throw new Exception("Low-coverage video must not be marked complete.");
-    }
-    catch (InvalidOperationException e) when
-        (e.Message.Contains("below", StringComparison.OrdinalIgnoreCase))
-    {
-        Check(stub.VideoRequests == 34, "Downloaded footage should remain usable for retries.");
-        Console.WriteLine("PASS: insufficient coverage does not produce a misleading finished MP4");
-    }
+    var matched = await service.AcquireAsync(scenes.Select(x => x.SearchQuery),
+        "TEST-KEY", "16:9", null, CancellationToken.None, 45, null, scenes);
+    Check(matched.Count == 34 && service.SceneFootageShortfall == 11,
+        "All covered narration scenes should render even below previous 85% target.");
+    Check(stub.VideoRequests == 34 && scenes.All(scene =>
+        matched.Any(c => c.SearchQuery == scene.SearchQuery)),
+        "Every narration scene must retain the correct subject's asset.");
+    Console.WriteLine("PASS: 34/45 scene-covered video succeeds without unrelated shot repetition");
 }
 
 async Task RejectChromaScreenStock()
@@ -480,6 +480,60 @@ async Task VerifyChatGptArtworkMixedIntoChronologicalScenes()
         matched.Skip(2).All(c => c.SearchQuery == "sunny garden"),
         "AI illustration must stay within its own narration scene.");
     Console.WriteLine("PASS: bounded ChatGPT illustration mixed in scene order and labeled AI-generated");
+}
+
+async Task RescueEmptySceneWithAiImage()
+{
+    var stub = new PixabayStub { HitsPerQuery = 0 };
+    using var http = new HttpClient(stub);
+    var service = new PixabayVideoService(http,
+        Path.Combine(baseDir, "mandatory-ai"), TimeSpan.Zero);
+    var scene = new PixabayFootageScene(20,
+        "A night-time police confrontation outside a condominium in Florida.",
+        "police outside condominium", "ominous");
+    var rescue = new PixabayFlowClip(long.MinValue + 20, "scene-20.png",
+        "Original AI illustration, not archival footage", scene.SearchQuery,
+        scene.NarrationExcerpt, true, "ChatGPT by ZeroVideo",
+        "AI-generated illustration", "");
+    var callbackCalls = 0;
+    var images = await service.AcquireAsync([scene.SearchQuery],
+        "TEST-KEY", "16:9", null, CancellationToken.None, 5, null, [scene], null,
+        (_, count, _) => {
+            callbackCalls++;
+            Check(count == -1, "Empty scene must be marked mandatory for AI rescue.");
+            return Task.FromResult<IReadOnlyList<PixabayFlowClip>>([rescue]);
+        });
+    Check(callbackCalls == 1 && images.Count == 1 &&
+        images[0].Id == rescue.Id && service.SceneFootageShortfall == 4,
+        "One truthful scene-specific image should rescue five shot slots.");
+    Console.WriteLine("PASS: zero-coverage scene rescued with original image instead of hard stop");
+}
+
+void VerifyTopicSpecificArtPrompts()
+{
+    var scene = new PixabayFootageScene(1,
+        "Peppa Pig introduced a spider in a children's television episode.",
+        "cartoon spider episode", "ominous");
+    var prompt = YouTubeFlowVisualPromptService.BuildScenePrompt(
+        "The Dark Side of Peppa Pig", scene, "16:9");
+    Check(prompt.Contains("Peppa Pig", StringComparison.Ordinal) &&
+        prompt.Contains("pink piglet", StringComparison.OrdinalIgnoreCase) &&
+        prompt.Contains("not official", StringComparison.OrdinalIgnoreCase),
+        "Cartoon commentary prompts must be recognizable, illustrative and non-official.");
+    var historical = YouTubeFlowVisualPromptService.BuildScenePrompt(
+        "Disney's Town of Celebration", new PixabayFootageScene(
+            28, "Neighborhood homes and privately governed property arrangements.",
+            "suburban community agreements", "ominous"), "16:9");
+    Check(historical.Contains("Celebration, Florida") &&
+        historical.Contains("Do NOT invent a futuristic EPCOT city"),
+        "Celebration scenes must not hallucinate unrelated futuristic cities.");
+    var thumb = YouTubeFlowVisualPromptService.BuildThumbnailPrompt(
+        "The Dark Side of Peppa Pig", scene.NarrationExcerpt,
+        "Creepy Cartoon Commentary", "TOO SCARY?");
+    Check(thumb.Contains("piglet", StringComparison.OrdinalIgnoreCase) &&
+        thumb.Contains("TOO SCARY?"),
+        "Thumbnail prompts should anchor the actual show and user headline.");
+    Console.WriteLine("PASS: cartoon-aware imagery, historical context and thumbnail prompt rules");
 }
 
 static void Check(bool result, string message)
