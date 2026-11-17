@@ -10,6 +10,9 @@ namespace ZeroVideo.App.Services;
 public sealed record PixabayFlowClip(
     long Id, string FilePath, string SourcePage, string SearchQuery, string Tags);
 
+public sealed record PixabayFootageScene(
+    int SceneNumber, string NarrationExcerpt, string SearchQuery, string Mood);
+
 /// <summary>
 /// Small, user-initiated Pixabay retrieval. No scraping or background bulk harvesting.
 /// API responses are cached for at least 24h as required by Pixabay.
@@ -57,7 +60,8 @@ public sealed class PixabayVideoService
     public async Task<IReadOnlyList<PixabayFlowClip>> AcquireAsync(
         IEnumerable<string> requestedQueries, string apiKey, string ratio,
         Action<string>? log, CancellationToken ct, int targetClipCount = 0,
-        Action<int, int>? onClipReady = null)
+        Action<int, int>? onClipReady = null,
+        IReadOnlyList<PixabayFootageScene>? scenePlan = null)
     {
         if (string.IsNullOrWhiteSpace(apiKey))
             throw new InvalidOperationException("Enter your own Pixabay API key in YouTube Flow.");
@@ -69,6 +73,11 @@ public sealed class PixabayVideoService
             .Take(MaxQueriesPerVideo).ToList();
         if (queries.Count == 0)
             throw new InvalidOperationException("No footage searches were supplied.");
+        if (scenePlan is not null &&
+            (scenePlan.Count != queries.Count ||
+             scenePlan.Where((scene, i) =>
+                 !scene.SearchQuery.Equals(queries[i], StringComparison.OrdinalIgnoreCase)).Any()))
+            throw new InvalidDataException("Scene plan must have exactly one distinct search per narration segment, in matching order.");
 
         var target = targetClipCount <= 0
             ? queries.Count // Preserve compatibility for older callers/tests.
@@ -126,10 +135,11 @@ public sealed class PixabayVideoService
                     var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                     var matchingTerms = terms.Count(term =>
                         tags.Contains(term, StringComparison.OrdinalIgnoreCase));
-                    // Favor title/tag overlap and compatible aspect ratio, but keep
-                    // relevant search results whose tags use different wording.
+                    var mood = scenePlan is null ? "neutral" : scenePlan[index].Mood;
+                    if (scenePlan is not null && !IsScriptVisualMatch(query, tags, mood))
+                        continue; // Never substitute bright/unrelated media for a dark scene.
                     matches.Add((id, url, sourcePage, tags,
-                        matchingTerms * 10d - aspectPenalty * 3d));
+                        matchingTerms * 10d + MoodBonus(tags, mood) - aspectPenalty * 3d));
                 }
                 candidates[index] = matches.OrderByDescending(x => x.Score)
                     .ThenBy(x => x.Id).ToList();
@@ -139,6 +149,10 @@ public sealed class PixabayVideoService
         // Fair round-robin allocation across narration-ordered queries.
         // A single popular search cannot monopolize all 150 slots.
         var positions = new int[queries.Count];
+        var sceneCounts = new int[queries.Count];
+        var sceneTargets = Enumerable.Range(0, queries.Count)
+            .Select(i => (int)Math.Ceiling((i + 1d) * target / queries.Count) -
+                         (int)Math.Ceiling(i * target / (double)queries.Count)).ToArray();
         var failedDownloads = new HashSet<long>();
         bool selectedAny;
         bool mediaRateLimited = false;
@@ -147,6 +161,7 @@ public sealed class PixabayVideoService
             selectedAny = false;
             for (var i = 0; i < queries.Count && clips.Count < target && !mediaRateLimited; i++)
             {
+                if (scenePlan is not null && sceneCounts[i] >= sceneTargets[i]) continue;
                 var matches = candidates[i];
                 if (matches is null) continue;
                 while (positions[i] < matches.Count)
@@ -164,6 +179,7 @@ public sealed class PixabayVideoService
                         clips.Add(new PixabayFlowClip(candidate.Id, destination,
                             candidate.Page, queries[i], candidate.Tags));
                         selectedAny = true;
+                        sceneCounts[i]++;
                         onClipReady?.Invoke(clips.Count, target);
                         if (clips.Count <= 10 || clips.Count % 10 == 0 || clips.Count == target)
                             log?.Invoke($"Pixabay: {clips.Count}/{target} distinct licensed clips ready.");
@@ -192,12 +208,76 @@ public sealed class PixabayVideoService
             log?.Invoke($"Pixabay rate limit: {clips.Count}/{target} cached/available clips. Saving the project for a quota-respecting retry; no incomplete MP4 will be labeled finished.");
             throw new PixabayRateLimitException(rateLimit.RetryAfter);
         }
+        if (scenePlan is not null)
+        {
+            var missing = Enumerable.Range(0, queries.Count)
+                .Where(i => sceneCounts[i] < sceneTargets[i]).ToList();
+            if (missing.Count > 0)
+                throw new InvalidOperationException(
+                    $"Pixabay footage does not match {missing.Count} narration scene(s) ({clips.Count}/{target} matching clips ready). " +
+                    "The project is saved, not rendered with unrelated stock. Refine the scene searches or retry when suitable footage is available.");
+        }
         if (clips.Count < target)
             throw new InvalidOperationException(
                 $"Pixabay provided {clips.Count}/{target} distinct clips across {queries.Count} searches. The job remains resumable; expand/change the footage searches or use more licensed media rather than repeating unrelated clips.");
         // Render in narration order, keeping each search's varied shot sequence.
         return clips.OrderBy(c => queries.FindIndex(q =>
             q.Equals(c.SearchQuery, StringComparison.OrdinalIgnoreCase))).ToList();
+    }
+
+    private static readonly HashSet<string> NonVisualSearchWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "and", "the", "for", "with", "from", "into", "that", "this", "over",
+        "scene", "stock", "video", "footage", "cinematic", "shot", "film",
+        "scary", "creepy", "eerie", "ominous", "dark", "spooky", "horror",
+        "somber", "tense", "upbeat", "happy", "bright", "calm", "moody"
+    };
+    private static readonly HashSet<string> OminousSignals = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "dark", "night", "nighttime", "shadow", "shadows", "haunted",
+        "horror", "scary", "spooky", "eerie", "creepy", "fog", "mist",
+        "storm", "cemetery", "graveyard", "ghost", "abandoned", "ominous",
+        "gloom", "gloomy", "silhouette", "candlelight", "moonlight",
+        "midnight", "mysterious", "suspense", "terror", "demon"
+    };
+    private static readonly HashSet<string> BrightSignals = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "sunny", "sunshine", "daylight", "cheerful", "smiling", "smile",
+        "party", "wedding", "holiday", "celebration", "vacation",
+        "beach", "rainbow", "happy", "joyful", "summer", "colorful"
+    };
+
+    private static HashSet<string> Words(string value)
+        => Regex.Matches(value.ToLowerInvariant(), @"[a-z0-9]+")
+            .Select(m => m.Value).Where(w => w.Length >= 3)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    public static bool IsScriptVisualMatch(string query, string tags, string mood)
+    {
+        var tagWords = Words(tags);
+        var subjectWords = Words(query).Where(w => !NonVisualSearchWords.Contains(w)).ToArray();
+        // No reliable metadata evidence of the requested object/action: skip it.
+        if (subjectWords.Length == 0 ||
+            !subjectWords.Any(w => tagWords.Contains(w)))
+            return false;
+
+        if (mood.Equals("ominous", StringComparison.OrdinalIgnoreCase))
+            return !BrightSignals.Overlaps(tagWords) && OminousSignals.Overlaps(tagWords);
+        if (mood.Equals("upbeat", StringComparison.OrdinalIgnoreCase))
+            return !OminousSignals.Overlaps(tagWords) && BrightSignals.Overlaps(tagWords);
+        if (mood.Equals("tense", StringComparison.OrdinalIgnoreCase) ||
+            mood.Equals("somber", StringComparison.OrdinalIgnoreCase))
+            return !BrightSignals.Overlaps(tagWords);
+        return true;
+    }
+
+    private static int MoodBonus(string tags, string mood)
+    {
+        var words = Words(tags);
+        return mood.Equals("ominous", StringComparison.OrdinalIgnoreCase)
+            ? words.Count(OminousSignals.Contains) * 6
+            : mood.Equals("upbeat", StringComparison.OrdinalIgnoreCase)
+                ? words.Count(BrightSignals.Contains) * 6 : 0;
     }
 
     private static bool TrySelectVideo(JsonElement versions,
