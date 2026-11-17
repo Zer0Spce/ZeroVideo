@@ -155,6 +155,7 @@ QUALITY REQUIREMENTS:
             page, profile.ChatGpt.GeneratedImages);
         var prompt = YouTubeFlowVisualPromptService.BuildScenePrompt(
             project.Title, scene, project.AspectRatio == "9:16" ? "9:16" : "16:9");
+        var responseBaseline = await ChatGptImageResponseGuard.AssistantTurnCountAsync(page);
         await ChatGptComposer.EnterPromptAsync(
             page, profile.ChatGpt.PromptInputs, prompt, ct);
         await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
@@ -165,7 +166,8 @@ QUALITY REQUIREMENTS:
             await WaitForGeneratedImageAndSaveAsync(
                 page, profile.ChatGpt.GeneratedImages,
                 profile.ChatGpt.StopButtons, baseline, destination,
-                $"YouTube Flow illustration scene {scene.SceneNumber}", log, ct);
+                $"YouTube Flow illustration scene {scene.SceneNumber}", log, ct,
+                responseBaseline, TimeSpan.FromSeconds(150));
             if (!File.Exists(destination) || new FileInfo(destination).Length < 24 * 1024)
                 throw new InvalidDataException("ChatGPT scene illustration was not saved at usable resolution.");
             RememberConversation(project, page);
@@ -192,12 +194,14 @@ QUALITY REQUIREMENTS:
         var baseline = await CaptureImageBaselineAsync(page, profile.ChatGpt.GeneratedImages);
         var prompt = YouTubeFlowVisualPromptService.BuildThumbnailPrompt(
             project.Title, narration, style, headline);
+        var responseBaseline = await ChatGptImageResponseGuard.AssistantTurnCountAsync(page);
         await ChatGptComposer.EnterPromptAsync(page, profile.ChatGpt.PromptInputs, prompt, ct);
         await ChatGptComposer.SendAsync(page, profile.ChatGpt.SendButtons, ct);
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
         await WaitForGeneratedImageAndSaveAsync(
             page, profile.ChatGpt.GeneratedImages, profile.ChatGpt.StopButtons,
-            baseline, destination, "YouTube Flow thumbnail", log, ct);
+            baseline, destination, "YouTube Flow thumbnail", log, ct,
+            responseBaseline, TimeSpan.FromSeconds(150));
         if (!File.Exists(destination) || new FileInfo(destination).Length < 24 * 1024)
             throw new InvalidDataException("ChatGPT did not save a usable thumbnail image.");
         RememberConversation(project, page);
@@ -459,16 +463,28 @@ copyrighted photograph.
         string destination,
         string sceneLabel,
         Action<string>? log,
-        CancellationToken ct)
+        CancellationToken ct,
+        int assistantTurnBaseline = -1,
+        TimeSpan? maxWait = null)
     {
         var started = DateTime.UtcNow;
+        var limit = maxWait ?? TimeSpan.FromMinutes(10);
         var sawGeneration = false;
         string? lastFingerprint = null;
         var stableSamples = 0;
         ImageCandidate? lastFresh = null;
 
-        while (!ct.IsCancellationRequested && DateTime.UtcNow - started < TimeSpan.FromMinutes(10))
+        while (!ct.IsCancellationRequested && DateTime.UtcNow - started < limit)
         {
+            ct.ThrowIfCancellationRequested();
+            if (await ChatGptImageResponseGuard.NewTurnContainsRefusalAsync(
+                    page, assistantTurnBaseline))
+            {
+                log?.Invoke($"{sceneLabel}: ChatGPT refused the requested image. " +
+                    "Skipping this image and using the next permitted media source.");
+                throw new ChatGptImageRefusedException(
+                    "ChatGPT declined to create the image due to its image-content safeguards.");
+            }
             var isGenerating = await AnyVisibleAsync(page, stopSelectors);
             sawGeneration |= isGenerating;
             var candidates = await GetLargeImageCandidatesAsync(page, configuredImageSelectors);
@@ -523,13 +539,19 @@ copyrighted photograph.
             await Task.Delay(1200, ct);
         }
 
+        ct.ThrowIfCancellationRequested();
+        if (await ChatGptImageResponseGuard.NewTurnContainsRefusalAsync(page, assistantTurnBaseline))
+            throw new ChatGptImageRefusedException(
+                "ChatGPT declined to create the requested image.");
         if (lastFresh is not null && await TrySaveImageCandidateAsync(lastFresh, destination, sceneLabel, log))
         {
             log?.Invoke($"{sceneLabel}: generation controls were inconclusive, but the original full-resolution image asset was available and saved.");
             return;
         }
 
-        throw new TimeoutException("ChatGPT generated the scene prompt, but ZeroVideo could not obtain the original full-resolution image asset. No webpage screenshot was used. The scene can be retried safely.");
+        throw new TimeoutException(
+            $"ChatGPT did not deliver a usable image within {Math.Ceiling(limit.TotalSeconds)} seconds. " +
+            "Continuing to the next media source instead of waiting indefinitely.");
     }
 
     private static async Task<List<ImageCandidate>> GetLargeImageCandidatesAsync(IPage page, IEnumerable<string> configuredSelectors)
