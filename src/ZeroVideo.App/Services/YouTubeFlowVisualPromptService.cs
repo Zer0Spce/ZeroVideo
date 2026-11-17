@@ -46,7 +46,7 @@ public static class YouTubeFlowVisualPromptService
                    "Depict only a concrete non-proprietary visual directly justified by this scene: " +
                    "for example a real spider, family watching television, broadcasting room, parental concern, " +
                    "cartoon-production workspace, or an unbranded television interface. " +
-                   "No franchise characters, character likenesses, derivative piglet cartoons, mascot, brand identity, " +
+                   "No franchise characters, character likenesses, lookalike cartoon mascots, brand identity, " +
                    "official episode frames or artwork. Do not attempt to simulate the copyrighted show's visual style. " +
                    "Use grounded original visual journalism, not a generic neighborhood or invented crime scene.";
         if (Regex.IsMatch(title, @"\b(celebration|disney.*town)\b", RegexOptions.IgnoreCase))
@@ -98,7 +98,7 @@ Exactly ONE finished original illustration. No explanation.
         if (IsCartoonTopic(title)) hook = SafeDocumentaryContext(hook);
         var protectedTopic = IsCartoonTopic(title);
         var character = protectedTopic
-            ? "Use one concrete, non-proprietary visual tied to the broadcast controversy (for example a spider, dark television room or anxious audience). Do NOT depict the franchise character, a similar cartoon piglet, a mascot, an official TV still or a copied animation style."
+            ? "Use one concrete, non-proprietary visual tied to the broadcast controversy (for example a spider, dark television room or anxious audience). Do NOT depict the franchise character, a lookalike animated mascot, an official TV still or a copied animation style."
             : "Use one striking subject from the actual narration; no generic corporate meetings or filler.";
         return $"""
 Create exactly ONE finished 16:9 YouTube documentary thumbnail, widescreen 1280x720 composition.
