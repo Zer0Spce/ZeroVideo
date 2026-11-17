@@ -529,7 +529,7 @@
                     </WrapPanel>
                     <TextBlock Text="{Binding YouTubeFlowStatus}" Foreground="{StaticResource Muted}"
                                TextWrapping="Wrap" Margin="0,12,0,5"/>
-                    <TextBox Text="{Binding YouTubeFlowOutput}" IsReadOnly="True"
+                    <TextBox Text="{Binding YouTubeFlowOutput, Mode=OneWay}" IsReadOnly="True"
                              Margin="0,3,0,0"/>
                   </StackPanel>
                 </Border>
