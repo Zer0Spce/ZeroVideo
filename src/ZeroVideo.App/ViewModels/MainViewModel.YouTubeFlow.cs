@@ -403,7 +403,7 @@ public sealed partial class MainViewModel
             Progress = 65;
             Status = YouTubeFlowStatus = "FFmpeg is stitching the stock footage...";
             await renderer.RenderAsync(clips, voiceover, output,
-                YouTubeFlowRatio, Settings, Log, _cts.Token);
+                YouTubeFlowRatio, Settings, Log, _cts.Token, scenes);
 
             Progress = 100;
             YouTubeFlowOutput = output;
