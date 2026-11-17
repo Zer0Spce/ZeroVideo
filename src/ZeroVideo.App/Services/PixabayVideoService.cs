@@ -28,7 +28,16 @@ public sealed class PixabayRateLimitException : InvalidOperationException
 
 public sealed class PixabayVideoService
 {
-    public const int MaxDownloadsPerVideo = 10;
+    // A six-second shot per unique clip, up to the largest 15-minute YouTube Flow preset.
+    public const int MaxClipsPerVideo = 150;
+    public const int MaxQueriesPerVideo = 30;
+    public const int ClipsPerMinute = 10;
+
+    public static int TargetClipCount(TimeSpan narrationDuration)
+        => Math.Clamp((int)Math.Ceiling(narrationDuration.TotalSeconds / 6d), 1, MaxClipsPerVideo);
+
+    public static int SuggestedQueryCount(int targetClips)
+        => Math.Clamp((int)Math.Ceiling(targetClips / 5d), 6, MaxQueriesPerVideo);
     private const long MaxClipBytes = 100L * 1024 * 1024;
     private static readonly HttpClient SharedHttp = new() { Timeout = TimeSpan.FromMinutes(3) };
     private readonly HttpClient _http;
@@ -47,7 +56,7 @@ public sealed class PixabayVideoService
 
     public async Task<IReadOnlyList<PixabayFlowClip>> AcquireAsync(
         IEnumerable<string> requestedQueries, string apiKey, string ratio,
-        Action<string>? log, CancellationToken ct)
+        Action<string>? log, CancellationToken ct, int targetClipCount = 0)
     {
         if (string.IsNullOrWhiteSpace(apiKey))
             throw new InvalidOperationException("Enter your own Pixabay API key in YouTube Flow.");
@@ -56,104 +65,126 @@ public sealed class PixabayVideoService
             .Where(x => x.Length > 1)
             .Select(x => x.Length > 100 ? x[..100] : x)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(MaxDownloadsPerVideo).ToList();
+            .Take(MaxQueriesPerVideo).ToList();
         if (queries.Count == 0)
             throw new InvalidOperationException("No footage searches were supplied.");
 
+        var target = targetClipCount <= 0
+            ? queries.Count // Preserve compatibility for older callers/tests.
+            : Math.Clamp(targetClipCount, 1, MaxClipsPerVideo);
         RateLimitedDuringLastAcquire = false;
         var usedIds = new HashSet<long>();
-        var clips = new List<PixabayFlowClip>();
+        var clips = new List<PixabayFlowClip>(target);
         var cacheDir = Path.Combine(_dataDirectory, "Pixabay", "ApiCache");
         var videoDir = Path.Combine(_dataDirectory, "Pixabay", "LicensedVideos");
         Directory.CreateDirectory(cacheDir);
         Directory.CreateDirectory(videoDir);
         PixabayRateLimitException? rateLimit = null;
 
-        // Prefer 24h cached queries before fresh API requests; restore script
-        // sequence at the end so the video still follows the narration.
-        var lookupOrder = queries.OrderByDescending(q =>
-            IsFreshCache(q, apiKey.Trim(), cacheDir)).ToList();
-        foreach (var query in lookupOrder)
+        // One request fetches dozens of relevant results. Download only selected
+        // clips for this user-created project, not every returned search hit.
+        var candidates = new List<(long Id, string Url, string Page, string Tags, double Score)>[queries.Count];
+        var lookupOrder = Enumerable.Range(0, queries.Count)
+            .OrderByDescending(i => IsFreshCache(queries[i], apiKey.Trim(), cacheDir)).ToList();
+        foreach (var index in lookupOrder)
         {
             ct.ThrowIfCancellationRequested();
+            var query = queries[index];
+            candidates[index] = [];
             JsonDocument response;
             try
             {
                 if (rateLimit is not null && !IsFreshCache(query, apiKey.Trim(), cacheDir))
-                    continue;
+                    continue; // Do not keep making API requests after 429.
                 response = await QueryAsync(query, apiKey.Trim(), cacheDir, log, ct);
             }
             catch (PixabayRateLimitException ex)
             {
                 rateLimit = ex;
                 RateLimitedDuringLastAcquire = true;
-                log?.Invoke("Pixabay quota reached: " + ex.Message +
-                    " Continuing with cached footage, without more fresh API requests.");
+                log?.Invoke("Pixabay API quota reached; skipping uncached searches. " + ex.Message);
                 continue;
             }
             using (response)
             {
-            if (!response.RootElement.TryGetProperty("hits", out var hits) ||
-                hits.ValueKind != JsonValueKind.Array)
-                continue;
+                if (!response.RootElement.TryGetProperty("hits", out var hits) ||
+                    hits.ValueKind != JsonValueKind.Array) continue;
 
-            var matches = new List<(long Id, string Url, string Page, string Tags, double Score)>();
-            foreach (var hit in hits.EnumerateArray())
-            {
-                if (!hit.TryGetProperty("id", out var node) || !node.TryGetInt64(out var id) ||
-                    usedIds.Contains(id) ||
-                    !hit.TryGetProperty("videos", out var versions))
-                    continue;
-                if (!TrySelectVideo(versions, out var url, out var width, out var height))
-                    continue;
-                var sourcePage = ReadString(hit, "pageURL");
-                var tags = ReadString(hit, "tags");
-                var target = ratio == "9:16" ? 9d / 16 : 16d / 9;
-                var aspectPenalty = Math.Abs(Math.Log((double)width / height / target));
-                var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                var matchingTerms = terms.Count(term => tags.Contains(term, StringComparison.OrdinalIgnoreCase));
-                matches.Add((id, url, sourcePage, tags,
-                    matchingTerms * 10d - aspectPenalty * 3d));
-            }
-
-            bool downloaded = false;
-            foreach (var match in matches.OrderByDescending(x => x.Score).Take(5))
-            {
-                var path = Path.Combine(videoDir, match.Id + "-medium.mp4");
-                try
+                var matches = candidates[index];
+                foreach (var hit in hits.EnumerateArray())
                 {
-                    if (!File.Exists(path) || new FileInfo(path).Length < 4096)
-                        await DownloadAsync(match.Url, path, ct);
-                    usedIds.Add(match.Id);
-                    clips.Add(new PixabayFlowClip(
-                        match.Id, path, match.Page, query, match.Tags));
-                    log?.Invoke("Pixabay: selected licensed stock clip " + match.Id +
-                        " for '" + query + "'.");
-                    downloaded = true;
-                    break;
+                    if (!hit.TryGetProperty("id", out var node) ||
+                        !node.TryGetInt64(out var id) ||
+                        !hit.TryGetProperty("videos", out var versions) ||
+                        !TrySelectVideo(versions, out var url, out var width, out var height))
+                        continue;
+                    var sourcePage = ReadString(hit, "pageURL");
+                    var tags = ReadString(hit, "tags");
+                    var targetRatio = ratio == "9:16" ? 9d / 16 : 16d / 9;
+                    var aspectPenalty = Math.Abs(Math.Log((double)width / height / targetRatio));
+                    var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    var matchingTerms = terms.Count(term =>
+                        tags.Contains(term, StringComparison.OrdinalIgnoreCase));
+                    // Favor title/tag overlap and compatible aspect ratio, but keep
+                    // relevant search results whose tags use different wording.
+                    matches.Add((id, url, sourcePage, tags,
+                        matchingTerms * 10d - aspectPenalty * 3d));
                 }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex)
-                {
-                    log?.Invoke("Pixabay: clip " + match.Id + " could not be used: " + ex.Message);
-                }
-            }
-            if (!downloaded)
-                log?.Invoke("Pixabay: no downloadable match for '" + query + "'.");
+                candidates[index] = matches.OrderByDescending(x => x.Score)
+                    .ThenBy(x => x.Id).ToList();
             }
         }
-        // Never render an apparently finished documentary after missing searches:
-        // three repeating clips are not a substitute for the requested footage.
-        // Preserve successful API response caches and downloaded files for retry.
+
+        // Fair round-robin allocation across narration-ordered queries.
+        // A single popular search cannot monopolize all 150 slots.
+        var positions = new int[queries.Count];
+        var failedDownloads = new HashSet<long>();
+        bool selectedAny;
+        do
+        {
+            selectedAny = false;
+            for (var i = 0; i < queries.Count && clips.Count < target; i++)
+            {
+                var matches = candidates[i];
+                if (matches is null) continue;
+                while (positions[i] < matches.Count)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var candidate = matches[positions[i]++];
+                    if (usedIds.Contains(candidate.Id) || failedDownloads.Contains(candidate.Id))
+                        continue;
+                    var destination = Path.Combine(videoDir, candidate.Id + "-medium.mp4");
+                    try
+                    {
+                        if (!File.Exists(destination) || new FileInfo(destination).Length < 4096)
+                            await DownloadAsync(candidate.Url, destination, ct);
+                        usedIds.Add(candidate.Id);
+                        clips.Add(new PixabayFlowClip(candidate.Id, destination,
+                            candidate.Page, queries[i], candidate.Tags));
+                        selectedAny = true;
+                        if (clips.Count <= 10 || clips.Count % 10 == 0 || clips.Count == target)
+                            log?.Invoke($"Pixabay: {clips.Count}/{target} distinct licensed clips ready.");
+                        break;
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        failedDownloads.Add(candidate.Id);
+                        log?.Invoke($"Pixabay: could not download clip {candidate.Id}: {ex.Message}");
+                    }
+                }
+            }
+        } while (selectedAny && clips.Count < target);
+
         if (rateLimit is not null)
         {
-            log?.Invoke($"Pixabay quota is still exhausted after the safe retry budget. {clips.Count}/{queries.Count} footage searches succeeded; not rendering an incomplete video.");
+            log?.Invoke($"Pixabay rate limit: {clips.Count}/{target} cached/available clips. Saving the project for a quota-respecting retry; no incomplete MP4 will be labeled finished.");
             throw new PixabayRateLimitException(rateLimit.RetryAfter);
         }
-        var requiredClips = Math.Min(6, queries.Count);
-        if (clips.Count < requiredClips)
+        if (clips.Count < target)
             throw new InvalidOperationException(
-                $"Only {clips.Count}/{queries.Count} Pixabay footage searches produced usable clips (minimum {requiredClips}). Video was not rendered. Saved voiceover and cached clips remain available for retry; broaden your footage queries if this persists.");
+                $"Pixabay provided {clips.Count}/{target} distinct clips across {queries.Count} searches. The job remains resumable; expand/change the footage searches or use more licensed media rather than repeating unrelated clips.");
+        // Render in narration order, keeping each search's varied shot sequence.
         return clips.OrderBy(c => queries.FindIndex(q =>
             q.Equals(c.SearchQuery, StringComparison.OrdinalIgnoreCase))).ToList();
     }
@@ -240,7 +271,7 @@ public sealed class PixabayVideoService
 
         var url = "https://pixabay.com/api/videos/?key=" +
             Uri.EscapeDataString(key) + "&q=" + Uri.EscapeDataString(query) +
-            "&per_page=20&video_type=all";
+            "&per_page=50&video_type=all&safesearch=true";
         // Repeated HTTP 429 is possible even after a window resets. Respect
         // each provider reset time; cap the retries/wait so the UI never hangs
         // indefinitely and never flood the service with rapid requests.
