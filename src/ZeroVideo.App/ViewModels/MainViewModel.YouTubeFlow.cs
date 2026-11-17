@@ -582,7 +582,7 @@ public sealed partial class MainViewModel
             {
                 var nextWords = Regex.Matches(sentences[index], @"\b[\p{L}\p{N}]+\b").Count;
                 var availableAfter = sentences.Count - index - 1;
-                if (segment.Count > 0 &&
+                if (left > 1 && segment.Count > 0 &&
                     (count >= targetWords || availableAfter < left - 1))
                     break;
                 segment.Add(sentences[index++]);
