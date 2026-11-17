@@ -367,7 +367,12 @@ public sealed partial class MainViewModel
             var pixabay = new PixabayVideoService();
             var clips = await pixabay.AcquireAsync(
                 queries, Settings.PixabayApiKey, YouTubeFlowRatio, Log, _cts.Token,
-                targetClips);
+                targetClips,
+                (ready, total) =>
+                {
+                    Progress = 45 + (int)Math.Round(15d * ready / total);
+                    Status = YouTubeFlowStatus = $"Pixabay footage: {ready}/{total} distinct clips ready...";
+                });
             var manifest = new
             {
                 title = YouTubeFlowTitle,
