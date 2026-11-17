@@ -454,7 +454,7 @@
                             Style="{StaticResource SecondaryButton}" Margin="0,10,0,0"
                             HorizontalAlignment="Left"/>
                     <TextBlock Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,9,0,0"
-                               Text="API responses are cached for 24 hours. Maximum 10 videos per project. Keys are stored in your local ZeroVideo settings file."/>
+                               Text="24-hour Pixabay API search caching. Video target: 10 unique stock clips per minute (up to 150 for a 15-minute narration). Saved clips are reused. Your API key stays in local settings; Pixabay rate limits and license rules apply."/>
                     <TextBlock Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0">
                       Pixabay Content License applies. Avoid using generic B-roll as purported real-event footage.
                     </TextBlock>
