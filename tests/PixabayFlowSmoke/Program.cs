@@ -519,3 +519,70 @@ sealed class PixabayStub : HttpMessageHandler
         throw new Exception("Unexpected request in offline Pixabay test: " + uri.Host);
     }
 }
+
+
+sealed class CommonsStub : HttpMessageHandler
+{
+    public int ApiCalls { get; private set; }
+    public int ImageCalls { get; private set; }
+
+    protected override Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var path = request.RequestUri?.AbsolutePath ?? "";
+        if (path.EndsWith("/w/api.php", StringComparison.Ordinal))
+        {
+            ApiCalls++;
+            var json = JsonSerializer.Serialize(new
+            {
+                query = new {
+                    pages = new object[] {
+                        new {
+                            pageid = 9001,
+                            title = "File:Australian spider macro photograph.jpg",
+                            imageinfo = new[] { new {
+                                mime = "image/jpeg",
+                                thumburl = "https://upload.wikimedia.org/wikipedia/commons/thumb/a/spider.jpg",
+                                extmetadata = new {
+                                    LicenseShortName = new { value = "CC BY 4.0" },
+                                    LicenseUrl = new { value = "https://creativecommons.org/licenses/by/4.0/" },
+                                    Artist = new { value = "<b>Photo Author</b>" },
+                                    ImageDescription = new { value = "Australian spider macro image" },
+                                    Restrictions = new { value = "" }
+                                }
+                            }}
+                        },
+                        new {
+                            pageid = 9002,
+                            title = "File:Australian spider noncommercial.jpg",
+                            imageinfo = new[] { new {
+                                mime = "image/jpeg",
+                                thumburl = "https://upload.wikimedia.org/wikipedia/commons/thumb/b/spider.jpg",
+                                extmetadata = new {
+                                    LicenseShortName = new { value = "CC BY-NC 4.0" },
+                                    LicenseUrl = new { value = "https://creativecommons.org/licenses/by-nc/4.0/" },
+                                    Artist = new { value = "<b>Restricted Author</b>" },
+                                    ImageDescription = new { value = "Australian spider" },
+                                    Restrictions = new { value = "" }
+                                }
+                            }}
+                        }
+                    }
+                }
+            });
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            });
+        }
+        if (path.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase))
+        {
+            ImageCalls++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(new byte[8192])
+            });
+        }
+        throw new Exception("Unexpected Commons request: " + request.RequestUri);
+    }
+}
