@@ -22,6 +22,9 @@ try
     await SmallSceneShortfallCanRenderWithoutUnrelatedClips();
     await EmptySceneStillBlockedEvenAboveCoverageThreshold();
     await LargeSceneShortfallStillBlocked();
+    await RejectChromaScreenStock();
+    await VerifyCommonsLicenseAndImageFallback();
+    ValidateNarrationTiming();
     Console.WriteLine("PASS: Pixabay 24h cache, HTTP 429, resume-safe footage and bounded retry");
 }
 finally
@@ -328,6 +331,109 @@ async Task LargeSceneShortfallStillBlocked()
         Check(stub.VideoRequests == 34, "Downloaded footage should remain usable for retries.");
         Console.WriteLine("PASS: insufficient coverage does not produce a misleading finished MP4");
     }
+}
+
+async Task RejectChromaScreenStock()
+{
+    Check(PixabayVideoService.IsChromaKeyStockMetadata(
+        "animated campfire on green screen chroma key"),
+        "Stock footage tagged green screen must be blocked.");
+    Check(!PixabayVideoService.IsChromaKeyStockMetadata(
+        "night forest dark green moss"),
+        "Natural greenery must not be excluded from metadata alone.");
+    var neonGreen = new byte[144 * 81 * 3];
+    for (var i = 0; i < neonGreen.Length; i += 3)
+    {
+        neonGreen[i] = 2; neonGreen[i + 1] = 246; neonGreen[i + 2] = 10;
+    }
+    Check(StockVideoQualityService.IsChromaKeyFrame(neonGreen),
+        "A flat neon-green video frame must be rejected.");
+    var naturalForest = new byte[144 * 81 * 3];
+    for (var i = 0; i < naturalForest.Length; i += 3)
+    {
+        naturalForest[i] = 64; naturalForest[i + 1] = 106;
+        naturalForest[i + 2] = 57;
+    }
+    Check(!StockVideoQualityService.IsChromaKeyFrame(naturalForest),
+        "Muted forest greenery should remain usable.");
+
+    var stub = new PixabayStub { HitsPerQuery = 3 };
+    using var http = new HttpClient(stub);
+    var service = new PixabayVideoService(http,
+        Path.Combine(baseDir, "chroma-reject"), TimeSpan.Zero);
+    var scenes = new[] {
+        new PixabayFootageScene(1, "An ominous spider waits in the forest.",
+            "dark forest", "ominous")
+    };
+    stub.TagForHit = (_, _) => "dark forest night shadows";
+    var clips = await service.AcquireAsync(["dark forest"], "TEST-KEY", "16:9",
+        null, CancellationToken.None, 2, null, scenes,
+        (path, _) => Task.FromResult(Path.GetFileName(path).StartsWith("2100-")));
+    Check(clips.Count == 2 && clips.All(x => x.Id != 2100L),
+        "Frame-detected chroma video must be replaced by another relevant result.");
+    Console.WriteLine("PASS: green-screen and chroma-key stock rejected");
+}
+
+async Task VerifyCommonsLicenseAndImageFallback()
+{
+    Check(WikimediaCommonsImageService.IsCommerciallyReusableLicense(
+        "CC BY 4.0", "https://creativecommons.org/licenses/by/4.0/", "Photo Author"),
+        "CC BY with author and license link is reusable.");
+    Check(!WikimediaCommonsImageService.IsCommerciallyReusableLicense(
+        "CC BY-SA 4.0", "https://creativecommons.org/licenses/by-sa/4.0/", "Photo Author"),
+        "ShareAlike photos are not eligible for the conservative automatic pipeline.");
+    Check(!WikimediaCommonsImageService.IsCommerciallyReusableLicense(
+        "CC BY-NC 4.0", "", "Photo Author"),
+        "Noncommercial-only photos must not enter monetized documentary videos.");
+    Check(WikimediaCommonsImageService.IsCommerciallyReusableLicense(
+        "CC0 1.0", "", ""), "Public-domain equivalent CC0 must be eligible.");
+    var mock = new CommonsStub();
+    using var http = new HttpClient(mock);
+    var service = new WikimediaCommonsImageService(
+        http, Path.Combine(baseDir, "commons"));
+    var scene = new PixabayFootageScene(1,
+        "The Australian spider scared parents.",
+        "dark Australian spider", "ominous");
+    var photos = await service.FindImagesAsync(scene, 2, null, CancellationToken.None);
+    Check(photos.Count == 1 && photos[0].IsStillImage && photos[0].Id < 0,
+        "Only properly licensed Commons images should be admitted.");
+    Check(photos[0].License == "CC BY 4.0" &&
+        photos[0].Attribution == "Photo Author" &&
+        photos[0].SourcePage.Contains("commons.wikimedia.org"),
+        "Attribution and file URL must survive media selection.");
+    Check(mock.ApiCalls == 1 && mock.ImageCalls == 1,
+        "One Commons API search should download only selected licensed images.");
+
+    var pixabayStub = new PixabayStub { HitsPerQuery = 2 };
+    pixabayStub.TagForHit = (_, _) => "dark forest shadows night";
+    using var stockClient = new HttpClient(pixabayStub);
+    var stock = new PixabayVideoService(stockClient,
+        Path.Combine(baseDir, "hybrid"), TimeSpan.Zero);
+    var scenes = new[] {
+        new PixabayFootageScene(1, "Dark forest at night", "dark forest", "ominous")
+    };
+    var mixed = await stock.AcquireAsync(["dark forest"], "TEST-KEY", "16:9",
+        null, CancellationToken.None, 3, null, scenes, null,
+        (_, _, _) => Task.FromResult<IReadOnlyList<PixabayFlowClip>>(photos));
+    Check(mixed.Count == 3 && mixed.Count(x => x.IsStillImage) == 1 &&
+        mixed.Count(x => !x.IsStillImage) == 2,
+        "Two relevant videos plus one Commons photo should fill a 3-shot scene.");
+    Console.WriteLine("PASS: licensed Commons photo fallbacks, attribution and mixed scene video");
+}
+
+void ValidateNarrationTiming()
+{
+    var scenes = new[] {
+        new PixabayFootageScene(1, "Short intro.", "intro title", "neutral"),
+        new PixabayFootageScene(2,
+            "A much longer part of the story talks about the televised episode and Australian broadcasters.",
+            "television broadcast", "somber")
+    };
+    var durations = YouTubeFlowRenderService.PlanSceneDurations(scenes, 60d);
+    Check(durations.Length == 2 && durations[1] > durations[0] &&
+        Math.Abs(durations.Sum() - 60d) < 0.0001,
+        "Longer narration segments must receive proportional footage time.");
+    Console.WriteLine("PASS: footage timing follows narration length, not arbitrary equal splits");
 }
 
 static void Check(bool result, string message)
