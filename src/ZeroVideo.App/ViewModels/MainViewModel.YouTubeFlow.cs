@@ -336,34 +336,34 @@ public sealed partial class MainViewModel
             Log($"YouTube Flow: narration {narrationSeconds:0}s; aiming for {targetClips} unique six-second stock clips from ~{desiredQueries} specific searches.");
 
             Progress = 35;
-            Status = YouTubeFlowStatus = $"Planning {desiredQueries} narration-ordered stock searches...";
-            var planFile = Path.Combine(folder, "pixabay-queries.json");
-            List<string>? queries = null;
-            if (File.Exists(planFile))
+            Status = YouTubeFlowStatus = $"Storyboarding {desiredQueries} script scenes and their visual tone...";
+            var scenePlanFile = Path.Combine(folder, "pixabay-scenes-v2.json");
+            List<PixabayFootageScene>? scenes = null;
+            if (File.Exists(scenePlanFile))
             {
                 try
                 {
-                    queries = JsonSerializer.Deserialize<List<string>>(
-                        await File.ReadAllTextAsync(planFile, _cts.Token));
-                    if (queries is null || queries.Count < desiredQueries)
-                    {
-                        // Older builds had only 6-10 searches even for 15 minutes.
-                        Log("YouTube Flow: expanding the old footage search plan for this video's duration.");
-                        queries = null;
-                    }
-                    else Log("YouTube Flow: reusing the narration-ordered footage plan.");
+                    scenes = JsonSerializer.Deserialize<List<PixabayFootageScene>>(
+                        await File.ReadAllTextAsync(scenePlanFile, _cts.Token));
+                    if (scenes?.Count != desiredQueries ||
+                        scenes.Any(x => string.IsNullOrWhiteSpace(x.SearchQuery)))
+                        scenes = null;
+                    else Log("YouTube Flow: reusing storyboard and scene moods from previous attempt.");
                 }
-                catch (JsonException) { queries = null; }
+                catch (JsonException) { scenes = null; }
             }
-            if (queries is null)
+            if (scenes is null)
             {
-                queries = await GenerateYouTubeFlowQueriesAsync(desiredQueries);
-                await File.WriteAllTextAsync(
-                    planFile, JsonSerializer.Serialize(queries), _cts.Token);
+                scenes = await GenerateYouTubeFlowScenesAsync(desiredQueries);
+                await File.WriteAllTextAsync(scenePlanFile,
+                    JsonSerializer.Serialize(scenes, new JsonSerializerOptions { WriteIndented = true }),
+                    _cts.Token);
             }
+            var queries = scenes.Select(scene => scene.SearchQuery).ToList();
+            Log($"YouTube Flow: {scenes.Count} narration-matched scenes ready. Incompatible visual moods or unrelated tags will be rejected.");
 
             Progress = 45;
-            Status = YouTubeFlowStatus = $"Downloading up to {targetClips} relevant Pixabay stock clips...";
+            Status = YouTubeFlowStatus = $"Selecting {targetClips} script-relevant Pixabay clips...";
             var pixabay = new PixabayVideoService();
             var clips = await pixabay.AcquireAsync(
                 queries, Settings.PixabayApiKey, YouTubeFlowRatio, Log, _cts.Token,
@@ -371,8 +371,9 @@ public sealed partial class MainViewModel
                 (ready, total) =>
                 {
                     Progress = 45 + (int)Math.Round(15d * ready / total);
-                    Status = YouTubeFlowStatus = $"Pixabay footage: {ready}/{total} distinct clips ready...";
-                });
+                    Status = YouTubeFlowStatus = $"Scene-matched footage: {ready}/{total} distinct clips...";
+                },
+                scenes);
             var manifest = new
             {
                 title = YouTubeFlowTitle,
@@ -383,6 +384,13 @@ public sealed partial class MainViewModel
                 target_clip_count = targetClips,
                 narration_seconds = narrationSeconds,
                 searches = queries,
+                scenes = scenes.Select(scene => new
+                {
+                    scene.SceneNumber, scene.NarrationExcerpt, scene.SearchQuery, scene.Mood,
+                    start_seconds = Math.Round((scene.SceneNumber - 1d) * narrationSeconds / scenes.Count, 2),
+                    end_seconds = Math.Round(scene.SceneNumber * narrationSeconds / scenes.Count, 2),
+                    matching_clips = clips.Count(c => c.SearchQuery == scene.SearchQuery)
+                }).ToArray(),
                 clips = clips.Select(c => new
                 {
                     c.Id, c.SourcePage, c.SearchQuery, c.Tags,
@@ -438,36 +446,84 @@ public sealed partial class MainViewModel
         }
     }
 
-    private async Task<List<string>> GenerateYouTubeFlowQueriesAsync(int desiredQueries)
+    private async Task<List<PixabayFootageScene>> GenerateYouTubeFlowScenesAsync(int desiredQueries)
     {
-        var prompt = "You are a stock-footage editor. Based on the following narrated " +
-            "script, produce exactly " + desiredQueries + " distinct, specific, visually searchable, " +
-            "non-misleading Pixabay VIDEO search queries. Focus on visible people, " +
-            "places, objects and actions. Queries should be 2-5 common English words. " +
-            "Order queries according to the narration's progression. " +
-            "No fabricated archival or crime-scene claims; generic symbolic B-roll " +
-            "must never be presented as authentic historical footage. " +
-            "Return ONLY a valid fenced JSON object shaped " +
-            "{\"response_type\":\"youtube_flow_footage_v1\",\"queries\":[\"search words\"]}. " +
-            "TITLE: " + YouTubeFlowTitle + "\nSCRIPT:\n" + YouTubeFlowScript;
+        var narrationSegments = SplitNarrationIntoScenes(YouTubeFlowScript, desiredQueries);
+        // Scary/horror titles have a genre-wide dark art direction. Other
+        // narratives can shift mood naturally with each scene.
+        var scaryTitle = Regex.IsMatch(YouTubeFlowTitle,
+            @"\b(horror|haunted|haunting|scary|creepy|ghost|exorcism|demon|nightmare|curse|darkest|terrifying|paranormal|sinister|chilling)\b",
+            RegexOptions.IgnoreCase);
+        var storyboard = string.Join("\n", narrationSegments.Select((segment, i) =>
+            $"SCENE {i + 1} (narration in this exact order): {segment}"));
+        var prompt =
+            "You are a documentary stock-footage storyboard editor. Produce EXACTLY " +
+            desiredQueries + " chronological Pixabay VIDEO searches, ONE for each numbered script scene. " +
+            "Each search MUST depict a visible person/object/action/place actually appropriate to its " +
+            "corresponding narration segment. Keep the video's genre and EMOTIONAL MOOD consistent. " +
+            "For scary, haunted, creepy or suspenseful material use genuinely dark/eerie/ominous " +
+            "visuals (night, shadows, fog, abandoned places, etc.). Never choose bright, happy, " +
+            "sunny vacation or party footage for a scary narration. For positive stories, use " +
+            "positive imagery. Match changes in mood only when the narration changes. " +
+            "Every search must be 2–5 ordinary searchable English words, concrete and specific, " +
+            "with visual mood where helpful (e.g. 'dark abandoned hallway', not 'interesting history'). " +
+            "Make all queries DIFFERENT while keeping each relevant to its numbered segment. " +
+            "Use one mood from: ominous, tense, somber, neutral, calm, upbeat. " +
+            "Do NOT invent eyewitness videos, archival recordings, or authentic footage of " +
+            "historical crimes. Symbolic B-roll is symbolic, not evidence. " +
+            "Return ONLY one valid fenced JSON object: " +
+            "{\"response_type\":\"youtube_flow_scenes_v2\",\"scenes\":[" +
+            "{\"query\":\"dark empty hallway\",\"mood\":\"ominous\"}]}." +
+            " The scenes array MUST contain exactly " + desiredQueries + " entries in " +
+            "the SAME ORDER as the numbered narration. No extra keys or explanation. " +
+            "VIDEO TITLE: " + YouTubeFlowTitle +
+            (scaryTitle ? "\nGLOBAL VISUAL TONE: DARK / OMINOUS across all scenes." : "") +
+            "\nNUMBERED NARRATION SCENES:\n" + storyboard;
         var raw = await _chat.GenerateTextAsync(
             new VideoProject { Title = YouTubeFlowTitle, Topic = YouTubeFlowTitle },
             Settings, prompt, Log, _cts.Token);
         using var doc = JsonDocument.Parse(raw);
-        if (GetString(doc.RootElement, "response_type") != "youtube_flow_footage_v1" ||
-            !doc.RootElement.TryGetProperty("queries", out var array) ||
-            array.ValueKind != JsonValueKind.Array)
-            throw new InvalidDataException("ChatGPT did not provide a valid Pixabay search plan.");
-        var queries = array.EnumerateArray()
-            .Where(x => x.ValueKind == JsonValueKind.String)
-            .Select(x => x.GetString()?.Trim() ?? "")
-            .Where(x => x.Length > 1)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(PixabayVideoService.MaxQueriesPerVideo)
-            .ToList();
-        if (queries.Count < Math.Min(6, desiredQueries))
-            throw new InvalidDataException("Too few specific Pixabay queries were generated. Try again before downloading footage.");
-        return queries;
+        if (GetString(doc.RootElement, "response_type") != "youtube_flow_scenes_v2" ||
+            !doc.RootElement.TryGetProperty("scenes", out var array) ||
+            array.ValueKind != JsonValueKind.Array ||
+            array.GetArrayLength() != desiredQueries)
+            throw new InvalidDataException(
+                $"Storyboard must return exactly {desiredQueries} ordered scenes. Please retry.");
+
+        var allowedMoods = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "ominous", "tense", "somber", "neutral", "calm", "upbeat" };
+        var usedQueries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var scenes = new List<PixabayFootageScene>(desiredQueries);
+        for (int i = 0; i < desiredQueries; i++)
+        {
+            var entry = array[i];
+            var query = Regex.Replace(GetString(entry, "query"), @"\s+", " ").Trim();
+            var mood = GetString(entry, "mood").ToLowerInvariant();
+            if (scaryTitle) mood = "ominous";
+            if (query.Length < 5 || query.Length > 100 ||
+                query.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length is < 2 or > 6 ||
+                !usedQueries.Add(query) || !allowedMoods.Contains(mood))
+                throw new InvalidDataException(
+                    $"Storyboard scene {i + 1} has an invalid/repeated visual query or mood. Retry the storyboard.");
+            scenes.Add(new PixabayFootageScene(i + 1, narrationSegments[i], query, mood));
+        }
+        return scenes;
+    }
+
+    private static List<string> SplitNarrationIntoScenes(string narration, int sceneCount)
+    {
+        var words = Regex.Split(narration.Trim(), @"\s+")
+            .Where(x => !string.IsNullOrWhiteSpace(x)).ToArray();
+        if (words.Length < sceneCount * 2)
+            throw new InvalidDataException("Not enough narration to assign distinct stock-footage scenes.");
+        var segments = new List<string>(sceneCount);
+        for (var i = 0; i < sceneCount; i++)
+        {
+            var start = i * words.Length / sceneCount;
+            var end = (i + 1) * words.Length / sceneCount;
+            segments.Add(string.Join(" ", words[start..end]));
+        }
+        return segments;
     }
 
     private static List<string> SplitYouTubeFlowNarration(string script)
