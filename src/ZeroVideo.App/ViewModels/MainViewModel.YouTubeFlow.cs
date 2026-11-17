@@ -158,6 +158,8 @@ public sealed partial class MainViewModel
             if (safeName.Length == 0) safeName = "YouTube Flow";
             var root = Path.Combine(Settings.ProjectsRoot, "YouTube Flow");
             Directory.CreateDirectory(root);
+            var expectedTarget = Math.Clamp(YouTubeFlowMinutes * PixabayVideoService.ClipsPerMinute,
+                1, PixabayVideoService.MaxClipsPerVideo);
             // A retry after Pixabay HTTP 429 must resume the existing voiceover
             // instead of generating (and billing for) the narration again.
             // Never put the API key in project IDs or checkpoint filenames.
@@ -178,7 +180,7 @@ public sealed partial class MainViewModel
                         File.Exists(Path.Combine(candidate, "script.txt")) &&
                         !File.Exists(Path.Combine(candidate, "youtube-flow-complete.mp4")) &&
                         (!File.Exists(Path.Combine(candidate, "youtube-flow.mp4")) ||
-                         IsIncompletePixabayPreview(candidate)) &&
+                         IsIncompletePixabayPreview(candidate, expectedTarget)) &&
                         await File.ReadAllTextAsync(Path.Combine(candidate, "script.txt"), _cts.Token) ==
                             YouTubeFlowScript)
                     {
@@ -206,7 +208,7 @@ public sealed partial class MainViewModel
                     if (!File.Exists(savedScript) || !File.Exists(savedAudio) ||
                         File.Exists(Path.Combine(previous, "youtube-flow-complete.mp4")) ||
                         (File.Exists(Path.Combine(previous, "youtube-flow.mp4")) &&
-                            !IsIncompletePixabayPreview(previous)))
+                            !IsIncompletePixabayPreview(previous, expectedTarget)))
                         continue;
                     try
                     {
@@ -228,7 +230,7 @@ public sealed partial class MainViewModel
             // Keep existing #338 three-clip previews intact. A recovered, fully
             // populated video is rendered to a *new* filename in that folder.
             var existingPreview = Path.Combine(folder, "youtube-flow.mp4");
-            var output = File.Exists(existingPreview) && IsIncompletePixabayPreview(folder)
+            var output = File.Exists(existingPreview) && IsIncompletePixabayPreview(folder, expectedTarget)
                 ? Path.Combine(folder, "youtube-flow-complete.mp4")
                 : existingPreview;
             YouTubeFlowOutput = output; // Open Output Folder works after a failed job.
@@ -325,8 +327,16 @@ public sealed partial class MainViewModel
                 voiceover, Settings, "YouTube Flow complete voiceover",
                 YouTubeFlowScript, Log, _cts.Token);
             }
+            // Scale footage to the real narration duration, not merely the
+            // duration dropdown (a hand-edited script can be shorter/longer).
+            var narrationSeconds = await _ffmpeg.ProbeDurationAsync(voiceover, Settings, _cts.Token);
+            var targetClips = PixabayVideoService.TargetClipCount(
+                TimeSpan.FromSeconds(narrationSeconds));
+            var desiredQueries = PixabayVideoService.SuggestedQueryCount(targetClips);
+            Log($"YouTube Flow: narration {narrationSeconds:0}s; aiming for {targetClips} unique six-second stock clips from ~{desiredQueries} specific searches.");
+
             Progress = 35;
-            Status = YouTubeFlowStatus = "Preparing stock video queries...";
+            Status = YouTubeFlowStatus = $"Planning {desiredQueries} narration-ordered stock searches...";
             var planFile = Path.Combine(folder, "pixabay-queries.json");
             List<string>? queries = null;
             if (File.Exists(planFile))
@@ -335,23 +345,29 @@ public sealed partial class MainViewModel
                 {
                     queries = JsonSerializer.Deserialize<List<string>>(
                         await File.ReadAllTextAsync(planFile, _cts.Token));
-                    if (queries is null || queries.Count == 0) queries = null;
-                    else Log("YouTube Flow: reusing previous footage search plan.");
+                    if (queries is null || queries.Count < desiredQueries)
+                    {
+                        // Older builds had only 6-10 searches even for 15 minutes.
+                        Log("YouTube Flow: expanding the old footage search plan for this video's duration.");
+                        queries = null;
+                    }
+                    else Log("YouTube Flow: reusing the narration-ordered footage plan.");
                 }
                 catch (JsonException) { queries = null; }
             }
             if (queries is null)
             {
-                queries = await GenerateYouTubeFlowQueriesAsync();
+                queries = await GenerateYouTubeFlowQueriesAsync(desiredQueries);
                 await File.WriteAllTextAsync(
                     planFile, JsonSerializer.Serialize(queries), _cts.Token);
             }
 
             Progress = 45;
-            Status = YouTubeFlowStatus = "Searching Pixabay and preparing clips...";
+            Status = YouTubeFlowStatus = $"Downloading up to {targetClips} relevant Pixabay stock clips...";
             var pixabay = new PixabayVideoService();
             var clips = await pixabay.AcquireAsync(
-                queries, Settings.PixabayApiKey, YouTubeFlowRatio, Log, _cts.Token);
+                queries, Settings.PixabayApiKey, YouTubeFlowRatio, Log, _cts.Token,
+                targetClips);
             var manifest = new
             {
                 title = YouTubeFlowTitle,
@@ -359,6 +375,8 @@ public sealed partial class MainViewModel
                 provider = "Pixabay",
                 captions = false,
                 footage_complete = true,
+                target_clip_count = targetClips,
+                narration_seconds = narrationSeconds,
                 searches = queries,
                 clips = clips.Select(c => new
                 {
@@ -391,7 +409,7 @@ public sealed partial class MainViewModel
         }
     }
 
-    private static bool IsIncompletePixabayPreview(string folder)
+    private static bool IsIncompletePixabayPreview(string folder, int desiredClipCount)
     {
         // Older builds considered three clips "complete" after HTTP 429.
         // Detect that old partial output by its existing source manifest,
@@ -402,15 +420,12 @@ public sealed partial class MainViewModel
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(manifest));
             var root = doc.RootElement;
-            if (root.TryGetProperty("footage_complete", out var complete) &&
-                complete.ValueKind == JsonValueKind.True)
-                return false;
-            if (!root.TryGetProperty("searches", out var searches) ||
-                searches.ValueKind != JsonValueKind.Array ||
-                !root.TryGetProperty("clips", out var clips) ||
+            if (!root.TryGetProperty("clips", out var clips) ||
                 clips.ValueKind != JsonValueKind.Array)
                 return false;
-            return clips.GetArrayLength() < Math.Min(6, searches.GetArrayLength());
+            // Even a "complete" old 6-10 clip video is only a preview under
+            // the newer duration-based one-clip-per-six-seconds requirement.
+            return clips.GetArrayLength() < desiredClipCount;
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
         {
@@ -418,10 +433,10 @@ public sealed partial class MainViewModel
         }
     }
 
-    private async Task<List<string>> GenerateYouTubeFlowQueriesAsync()
+    private async Task<List<string>> GenerateYouTubeFlowQueriesAsync(int desiredQueries)
     {
         var prompt = "You are a stock-footage editor. Based on the following narrated " +
-            "script, produce 6 to 10 distinct, specific, visually searchable, " +
+            "script, produce exactly " + desiredQueries + " distinct, specific, visually searchable, " +
             "non-misleading Pixabay VIDEO search queries. Focus on visible people, " +
             "places, objects and actions. Queries should be 2-5 common English words. " +
             "Order queries according to the narration's progression. " +
@@ -443,10 +458,10 @@ public sealed partial class MainViewModel
             .Select(x => x.GetString()?.Trim() ?? "")
             .Where(x => x.Length > 1)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(PixabayVideoService.MaxDownloadsPerVideo)
+            .Take(PixabayVideoService.MaxQueriesPerVideo)
             .ToList();
-        if (queries.Count == 0)
-            throw new InvalidDataException("No usable Pixabay queries were generated.");
+        if (queries.Count < Math.Min(6, desiredQueries))
+            throw new InvalidDataException("Too few specific Pixabay queries were generated. Try again before downloading footage.");
         return queries;
     }
 
