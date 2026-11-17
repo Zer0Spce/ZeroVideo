@@ -14,44 +14,80 @@ public static class YouTubeFlowVisualPromptService
             @"\b(peppa pig|spongebob|simpsons|pokemon|pokémon|looney tunes|cartoon|animated series|anime|nickelodeon|disney episode|banned episode)\b",
             RegexOptions.IgnoreCase);
 
+    // Requests involving a protected animated franchise use the real-world
+    // subject of the narration instead of requesting a lookalike character.
+    // This avoids a misleading official-looking recreation and does not try to
+    // work around any refusal from the image provider.
+    public static string SafeDocumentaryContext(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return "";
+        var substitutions = new (string Pattern, string Value)[]
+        {
+            (@"\bpeppa\s+pig\b", "a preschool animated television series"),
+            (@"\bspongebob(?:\s+squarepants)?\b", "an underwater animated comedy"),
+            (@"\bthe\s+simpsons\b", "an animated family sitcom"),
+            (@"\bpok[eé]mon\b", "an animated creature-adventure series"),
+            (@"\blooney\s+tunes\b", "classic animated shorts"),
+            (@"\bmickey\s+mouse\b", "a classic animated mouse character"),
+            (@"\bnickelodeon\b", "a children's television network"),
+            (@"\bdisney\b", "an entertainment company"),
+            (@"\bpixar\b", "an animation studio")
+        };
+        var value = text;
+        foreach (var (pattern, replacement) in substitutions)
+            value = Regex.Replace(value, pattern, replacement, RegexOptions.IgnoreCase);
+        return value;
+    }
+
     public static string TopicAnchor(string title, string narration, string query)
     {
-        if (Regex.IsMatch(title, @"\bpeppa pig\b", RegexOptions.IgnoreCase))
-            return "Topic: the children's animated series Peppa Pig. For a scene ABOUT the cartoon itself, feature a recognizable editorial IDEA of a piglet cartoon character: an ORIGINAL pink piglet illustration, simplified 2D linework, playful round features, reimagined with eerie shadows and a slightly uncanny expression. Make clear this is not official show art. Do not recreate an official TV frame or trace official character designs, logos or lettering. For scenes about Australian broadcasters, spiders, public safety or a studio, feature THAT concrete subject instead of the piglet.";
-        if (Regex.IsMatch(title, @"\b(celebration|disney.*town)\b",
-                RegexOptions.IgnoreCase))
-            return "Topic: Celebration, Florida, the real planned community associated with Disney. Represent only the specific historical/social subject described in this exact scene: housing standards, Florida town layout, planning documents, education, community meetings, or a tense Florida residential street as appropriate. Do NOT invent a futuristic EPCOT city, theme-park monorail, fictional residents or a random American boardroom unless the narration specifically describes it. It must be an illustrative reconstruction, not asserted as a photo of the actual town.";
         if (IsCartoonTopic(title))
-            return "This is commentary on a named animated show. When the scene explicitly discusses its characters, make one distinctive ORIGINAL, editorially reimagined cartoon character connected to the show's subject (eerie when the mood is ominous), not generic suburbia. Avoid copied official character art, logos, frame replicas, official branding and fake screengrabs. If the scene describes real broadcasters, parent protests or TV decisions, illustrate those actual subjects instead.";
-        return "Identify the single MOST CONCRETE subject of the exact narration: object, person role, event context or place. The image must visibly show that subject or a truthful contextual diagram. Avoid bland corporate meetings, anonymous houses, futuristic landscapes and unrelated decorative people unless specifically named in the scene.";
+            return "This is factual documentary commentary about children's animation or a broadcast controversy. " +
+                   "Depict only a concrete non-proprietary visual directly justified by this scene: " +
+                   "for example a real spider, family watching television, broadcasting room, parental concern, " +
+                   "cartoon-production workspace, or an unbranded television interface. " +
+                   "No franchise characters, character likenesses, derivative piglet cartoons, mascot, brand identity, " +
+                   "official episode frames or artwork. Do not attempt to simulate the copyrighted show's visual style. " +
+                   "Use grounded original visual journalism, not a generic neighborhood or invented crime scene.";
+        if (Regex.IsMatch(title, @"\b(celebration|disney.*town)\b", RegexOptions.IgnoreCase))
+            return "For a documentary about Celebration, Florida, illustrate only the exact community subject in the narration. " +
+                   "Do not depict theme-park attractions, futuristic cities, made-up historical evidence or unrelated boardrooms.";
+        return "Identify and illustrate the single most concrete subject named in the narration: " +
+               "person role, object, event context or setting. Avoid generic corporate meetings, suburban homes, " +
+               "futuristic landscapes or filler unless they genuinely belong to this segment.";
     }
 
     public static string BuildScenePrompt(string title, PixabayFootageScene scene, string ratio)
     {
+        var protectedTopic = IsCartoonTopic(title);
+        var safeTitle = protectedTopic ? "Children's television documentary commentary" : SafeDocumentaryContext(title);
+        var excerpt = protectedTopic ? SafeDocumentaryContext(scene.NarrationExcerpt) : scene.NarrationExcerpt;
+        var query = protectedTopic ? SafeDocumentaryContext(scene.SearchQuery) : scene.SearchQuery;
         var direction = scene.Mood switch
         {
-            "ominous" => "Ominous, dark, suspenseful shadows. No cheerful sunlight or cheerful smiling people.",
-            "tense" => "Grounded unease, real-world suspense, controlled contrast.",
-            "somber" => "Respectful muted documentary tones, restrained emotional weight.",
-            "upbeat" => "Natural positive, optimistic color and mood appropriate to the narration.",
-            "calm" => "Peaceful and realistic atmosphere without manufactured drama.",
-            _ => "Observational, grounded documentary mood."
+            "ominous" => "Ominous, dark, suspenseful shadows. Never sunny or cheerful.",
+            "tense" => "Grounded unease and controlled high-contrast suspense.",
+            "somber" => "Respectful muted documentary tones.",
+            "upbeat" => "Natural optimistic lighting appropriate to the narration.",
+            "calm" => "Peaceful realistic atmosphere without forced drama.",
+            _ => "Grounded observational documentary lighting."
         };
         return $"""
-Create exactly ONE high-quality, ORIGINAL illustration for a documentary video, {ratio}, full bleed.
+Create exactly ONE original {ratio} full-bleed illustration for a factual YouTube documentary.
 
-VIDEO TITLE: {title}
-SCENE NUMBER: {scene.SceneNumber}
-NARRATION: {scene.NarrationExcerpt}
-SEARCH SUBJECT: {scene.SearchQuery}
-MOOD: {scene.Mood}
-TOPIC RULES: {TopicAnchor(title, scene.NarrationExcerpt, scene.SearchQuery)}
+DOCUMENTARY CATEGORY: {safeTitle}
+NARRATION SCENE NUMBER: {scene.SceneNumber}
+SPECIFIC NARRATED SUBJECT: {excerpt}
+VISUAL SEARCH SUBJECT: {query}
+EMOTIONAL MOOD: {scene.Mood}
+EDITORIAL ART DIRECTION: {TopicAnchor(title, excerpt, query)}
 LIGHTING: {direction}
 
-The depicted subject MUST be directly justified by the narration. Build a clear, intentional composition, not a generic beautiful-looking stock scene. For disturbing cartoon/TV episode commentary, use an original stylized character illustration when the narration talks about its cartoon character; otherwise depict the actual episode-related objects (such as an Australian spider, a television broadcaster, a protest or production context).
-Never fabricate evidence, official TV screenshots, historical crimes, documents, actual people or purported authentic photos. A dramatization must remain visibly illustrative.
-No green or blue screen, chroma key, stock watermark, text labels, extra characters, typography, brand logo, border, embedded UI or unrelated symbols.
-ONE image only. Do not explain.
+Illustrate the particular concrete event context or object described, not random stock photography.
+This is a stand-alone original conceptual illustration. Do not use copyrighted character designs, recognizable lookalikes, franchise art styles, logos, official cartoon frames, fake screenshots, fabricated evidence, alleged archival photos, or faces of specific real people.
+For television controversy, favor the real-world objects and contexts: viewers, television, studio, public discussion, or the specific animal/object actually named in the narration. Mood should follow the scene.
+No green/blue screen, chroma key, unrelated characters, text overlays, labels, watermarks, borders or UI mockups.
+Exactly ONE finished original illustration. No explanation.
 """;
     }
 
@@ -59,13 +95,15 @@ ONE image only. Do not explain.
         string style, string headline)
     {
         var hook = script.Length > 1300 ? script[..1300] : script;
-        var character = IsCartoonTopic(title)
-            ? "For cartoon/TV topics, prioritize a distinctive original editorial reinterpretation of the relevant animated subject, such as an ominous piglet-inspired cartoon for a scary Peppa Pig documentary. Not an official episode image, copied character frame or official logo."
-            : "Use ONE striking, topic-specific subject from the script, not generic corporate meetings, stock houses or filler.";
+        if (IsCartoonTopic(title)) hook = SafeDocumentaryContext(hook);
+        var protectedTopic = IsCartoonTopic(title);
+        var character = protectedTopic
+            ? "Use one concrete, non-proprietary visual tied to the broadcast controversy (for example a spider, dark television room or anxious audience). Do NOT depict the franchise character, a similar cartoon piglet, a mascot, an official TV still or a copied animation style."
+            : "Use one striking subject from the actual narration; no generic corporate meetings or filler.";
         return $"""
 Create exactly ONE finished 16:9 YouTube documentary thumbnail, widescreen 1280x720 composition.
 
-VIDEO: {title}
+VIDEO TOPIC: {(protectedTopic ? "Children's TV controversy documentary" : SafeDocumentaryContext(title))}
 OPENING CONTEXT: {hook}
 STYLE: {style}
 THUMBNAIL HEADLINE: {headline}
