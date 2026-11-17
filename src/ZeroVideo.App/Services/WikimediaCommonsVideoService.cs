@@ -127,73 +127,166 @@ public sealed class WikimediaCommonsVideoService
                 !WikimediaCommonsImageService.IsCommerciallyReusableLicense(
                     license, licenseUrl, author)) continue;
             var searchable = title + " " + description;
-            var overlap = terms.Count(term => term.Length >= 3 &&
-                Regex.IsMatch(searchable, @"\b" + Regex.Escape(term) + @"\b",
-                    RegexOptions.IgnoreCase));
-            if (overlap < Math.Min(2, terms.Length) ||
+            if (!IsRelevantToNarration(scene, title, description) ||
                 !WikimediaCommonsImageService.IsMoodCompatible(searchable, scene.Mood) ||
                 PixabayVideoService.IsChromaKeyStockMetadata(searchable))
+            {
+                log?.Invoke($"Wikimedia scene {scene.SceneNumber}: rejected unrelated or mood-incompatible video '{title}'.");
                 continue;
-            var url = SelectVideoUrl(info);
-            if (url is null) continue;
-            var extension = url.EndsWith(".ogv", StringComparison.OrdinalIgnoreCase) ||
-                            url.EndsWith(".ogg", StringComparison.OrdinalIgnoreCase)
-                ? ".ogv" : ".webm";
-            var local = Path.Combine(videoDir, pageId + extension);
-            try
+            }
+
+            // Do not fetch the same 80 MB source repeatedly. Try Commons'
+            // smaller transcodes in order, verifying the HTTP Content-Length
+            // before streaming any large payload. All formats remain capped.
+            var videoUrls = SelectVideoUrls(info);
+            if (videoUrls.Count == 0) continue;
+            var oversized = 0;
+            var downloaded = false;
+            foreach (var url in videoUrls)
             {
-                if (!File.Exists(local) || new FileInfo(local).Length < 4096)
-                    await DownloadBoundedAsync(url, local, ct);
-                if (chromaScreenCheck is not null &&
-                    await chromaScreenCheck(local, ct))
+                ct.ThrowIfCancellationRequested();
+                var extension = url.EndsWith(".ogv", StringComparison.OrdinalIgnoreCase) ||
+                                url.EndsWith(".ogg", StringComparison.OrdinalIgnoreCase)
+                    ? ".ogv" : ".webm";
+                var urlId = Convert.ToHexString(SHA256.HashData(
+                    Encoding.UTF8.GetBytes(url)))[..12];
+                var local = Path.Combine(videoDir, $"{pageId}-{urlId}{extension}");
+                try
                 {
-                    log?.Invoke($"Wikimedia video {pageId} excluded: chroma screen detected.");
-                    continue;
+                    if (!File.Exists(local) || new FileInfo(local).Length < 4096 ||
+                        new FileInfo(local).Length > MaxBytes)
+                        await DownloadBoundedAsync(url, local, ct);
+                    if (chromaScreenCheck is not null &&
+                        await chromaScreenCheck(local, ct))
+                    {
+                        log?.Invoke($"Wikimedia video {pageId} excluded: chroma screen detected.");
+                        break;
+                    }
+                    _selected.Add(pageId);
+                    results.Add(new PixabayFlowClip(-1_000_000_000L - pageId,
+                        local, "https://commons.wikimedia.org/wiki/" +
+                               Uri.EscapeDataString(title.Replace(' ', '_')),
+                        scene.SearchQuery, searchable, false,
+                        author, license, licenseUrl, "Wikimedia Commons"));
+                    log?.Invoke($"Wikimedia video: scene {scene.SceneNumber}, '{title}' ({license}).");
+                    downloaded = true;
+                    break;
                 }
-                _selected.Add(pageId);
-                results.Add(new PixabayFlowClip(-1_000_000_000L - pageId,
-                    local, "https://commons.wikimedia.org/wiki/" +
-                           Uri.EscapeDataString(title.Replace(' ', '_')),
-                    scene.SearchQuery, searchable, false,
-                    author, license, licenseUrl, "Wikimedia Commons"));
-                log?.Invoke($"Wikimedia video: scene {scene.SceneNumber}, '{title}' ({license}).");
+                catch (OperationCanceledException) { throw; }
+                catch (InvalidDataException ex) when (ex.Message.Contains("80 MB", StringComparison.Ordinal))
+                {
+                    oversized++;
+                    // Large candidates are skipped; the next smaller Commons
+                    // derivative is tried automatically.
+                }
+                catch (Exception ex)
+                {
+                    log?.Invoke($"Wikimedia video {pageId}: candidate unavailable ({ex.Message}); trying another version.");
+                }
             }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex)
-            {
-                log?.Invoke($"Wikimedia video {pageId} skipped: {ex.Message}");
-            }
+            if (!downloaded && oversized > 0)
+                log?.Invoke($"Wikimedia video {pageId}: {oversized} oversized version(s); " +
+                    "no usable version under 80 MB. Skipping this file, then trying other media sources.");
         }
         return results;
     }
 
-    public static string? SelectVideoUrl(JsonElement info)
+    // Relevance is checked against BOTH the search phrase and the real narration.
+    // Commons titles such as unrelated politicians' interviews must not pass
+    // simply because they contain generic words such as "house" or "people".
+    private static readonly HashSet<string> StopWords = new(
+        new[] { "the", "and", "for", "this", "that", "with", "from", "into",
+            "over", "then", "there", "were", "they", "them", "their", "when",
+            "what", "which", "where", "while", "would", "about", "could",
+            "more", "once", "just", "some", "been", "have", "having", "also",
+            "video", "film", "scene", "stock", "history", "historical", "story",
+            "really", "people", "person", "shows", "show", "today", "years",
+            "time", "many", "made", "used", "still", "back", "very", "even" },
+        StringComparer.OrdinalIgnoreCase);
+
+    public static bool IsRelevantToNarration(
+        PixabayFootageScene scene, string title, string description)
     {
-        // Prefer Wikimedia's compressed WebM derivatives to downloading
-        // potentially multi-gigabyte original videos.
+        var subject = WikimediaCommonsImageService.SubjectSearch(scene.SearchQuery);
+        var subjectWords = SubjectWords(subject);
+        var searchable = title + " " + description;
+        var mediaWords = SubjectWords(searchable);
+        if (subjectWords.Length == 0 ||
+            subjectWords.Count(mediaWords.Contains) < Math.Min(2, subjectWords.Length))
+            return false;
+
+        // The actual spoken content is more trustworthy than a generated search
+        // prompt. Require at least one distinctive narration term in Commons
+        // metadata, avoiding completely unrelated historical B-roll.
+        var narration = SubjectWords(scene.NarrationExcerpt);
+        if (narration.Length > 0 &&
+            !narration.Any(mediaWords.Contains)) return false;
+
+        // Avoid passing off named historical speakers as footage of a different
+        // event. Interview or speech footage is only appropriate when the named
+        // person is actually mentioned in narration.
+        var titleBody = Regex.Replace(title, @"^File:", "", RegexOptions.IgnoreCase);
+        var speaker = Regex.Match(titleBody,
+            @"^(?<name>(?:(?:[A-Z]\.\s*)?[A-Z][a-z]+\s+){1,4}[A-Z][a-z]+)\s+" +
+            @"(?:Discusses|Recalls|Speaks|Talks|Explains|Testifies|Interviewed)\b");
+        if (speaker.Success && !scene.NarrationExcerpt.Contains(
+                speaker.Groups["name"].Value, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return true;
+    }
+
+    private static string[] SubjectWords(string text) =>
+        Regex.Matches(text.ToLowerInvariant(), @"[\p{L}\p{N}]+")
+            .Select(m => m.Value)
+            .Where(w => w.Length >= 4 && !StopWords.Contains(w))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    /// <summary>Available WebM derivatives ordered from reasonable resolution
+    /// to smaller bandwidth, with the original only when its size is known to
+    /// fit the per-file limit. No oversized file is silently accepted.</summary>
+    public static IReadOnlyList<string> SelectVideoUrls(JsonElement info)
+    {
+        var choices = new List<(string Url, int Width, long Bytes)>();
         if (info.TryGetProperty("derivatives", out var derivatives) &&
             derivatives.ValueKind == JsonValueKind.Array)
         {
-            var matches = derivatives.EnumerateArray()
-                .Select(v => new
-                {
-                    Url = Read(v, "src"),
-                    Type = Read(v, "type"),
-                    Width = Int(v, "width")
-                })
-                .Where(x => (x.Type.StartsWith("video/webm",
-                              StringComparison.OrdinalIgnoreCase) ||
-                             x.Url.EndsWith(".webm", StringComparison.OrdinalIgnoreCase)) &&
-                            IsAllowedVideoUrl(x.Url))
-                .OrderBy(x => x.Width > 0 && x.Width <= 1280 ? 0 : 1)
-                .ThenBy(x => Math.Abs(x.Width - 854))
-                .ToList();
-            if (matches.Count > 0) return matches[0].Url;
+            foreach (var item in derivatives.EnumerateArray())
+            {
+                var url = Read(item, "src");
+                var kind = Read(item, "type");
+                if (!(kind.StartsWith("video/webm", StringComparison.OrdinalIgnoreCase) ||
+                      url.EndsWith(".webm", StringComparison.OrdinalIgnoreCase)) ||
+                    !IsAllowedVideoUrl(url)) continue;
+                var size = Long(item, "size");
+                if (size > MaxBytes) continue;
+                choices.Add((url, Int(item, "width"), size));
+            }
         }
-        var size = Long(info, "size");
-        var url = Read(info, "url");
-        return size is > 0 and <= MaxBytes && IsAllowedVideoUrl(url) ? url : null;
+        // Try ~480p first, then 360p and 240p. Avoid 1080p downloads merely
+        // for a short B-roll excerpt. A large first transcode automatically
+        // falls through to the next candidate.
+        var sorted = choices.OrderBy(x =>
+                x.Width is >= 720 and <= 1024 ? 0 :
+                x.Width is >= 450 and < 720 ? 1 :
+                x.Width is > 0 and < 450 ? 2 : 3)
+            .ThenBy(x => Math.Abs(x.Width - 854))
+            .Select(x => x.Url)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(4)
+            .ToList();
+        var originalSize = Long(info, "size");
+        var originalUrl = Read(info, "url");
+        if (originalSize is > 0 and <= MaxBytes &&
+            IsAllowedVideoUrl(originalUrl) &&
+            !sorted.Contains(originalUrl, StringComparer.OrdinalIgnoreCase))
+            sorted.Add(originalUrl);
+        return sorted;
     }
+
+    public static string? SelectVideoUrl(JsonElement info) =>
+        SelectVideoUrls(info).FirstOrDefault();
 
     public static bool IsAllowedVideoUrl(string url)
         => Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
