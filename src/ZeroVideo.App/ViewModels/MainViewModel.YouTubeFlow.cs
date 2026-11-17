@@ -365,15 +365,41 @@ public sealed partial class MainViewModel
             Progress = 45;
             Status = YouTubeFlowStatus = $"Selecting {targetClips} script-relevant Pixabay clips...";
             var pixabay = new PixabayVideoService();
+            var commons = new WikimediaCommonsImageService();
             var clips = await pixabay.AcquireAsync(
                 queries, Settings.PixabayApiKey, YouTubeFlowRatio, Log, _cts.Token,
                 targetClips,
                 (ready, total) =>
                 {
                     Progress = 45 + (int)Math.Round(15d * ready / total);
-                    Status = YouTubeFlowStatus = $"Scene-matched footage: {ready}/{total} distinct clips...";
+                    Status = YouTubeFlowStatus = $"Relevant video + photos: {ready}/{total} scene-matched assets...";
                 },
-                scenes);
+                scenes,
+                async (path, cancellation) => await StockVideoQualityService
+                    .ContainsChromaScreenAsync(path, Settings.FfmpegPath, cancellation),
+                async (scene, needed, cancellation) => await commons.FindImagesAsync(
+                    scene, needed, Log, cancellation));
+            var photos = clips.Where(c => c.IsStillImage).ToArray();
+            if (photos.Length > 0)
+            {
+                var credits = new StringBuilder(
+                    "WIKIMEDIA COMMONS IMAGE CREDITS — Add these credits to the YouTube description.\n" +
+                    "Images have cinematic crop, zoom/pan and fade effects. Check each file page " +
+                    "for any extra depicted-person, trademark or jurisdiction restrictions.\n\n");
+                foreach (var photo in photos)
+                    credits.AppendLine(photo.SourcePage)
+                        .AppendLine("Author: " + photo.Attribution)
+                        .AppendLine("License: " + photo.License +
+                            (string.IsNullOrWhiteSpace(photo.LicenseUrl) ? "" :
+                                " — " + photo.LicenseUrl))
+                        .AppendLine("Edits: cropped, animated, graded and faded")
+                        .AppendLine();
+                await File.WriteAllTextAsync(
+                    Path.Combine(folder, "Wikimedia-image-credits.txt"),
+                    credits.ToString(), _cts.Token);
+                Log($"Wikimedia Commons: {photos.Length} licensed still images mixed with " +
+                    $"{clips.Count - photos.Length} video clips; image credits saved in the project.");
+            }
             var manifest = new
             {
                 title = YouTubeFlowTitle,
@@ -383,6 +409,8 @@ public sealed partial class MainViewModel
                 footage_complete = true,
                 target_clip_count = targetClips,
                 matched_clip_count = clips.Count,
+                video_clip_count = clips.Count(c => !c.IsStillImage),
+                licensed_still_image_count = photos.Length,
                 shortfall_compensated_by_scene_duration = pixabay.SceneFootageShortfall,
                 narration_seconds = narrationSeconds,
                 searches = queries,
@@ -396,6 +424,10 @@ public sealed partial class MainViewModel
                 clips = clips.Select(c => new
                 {
                     c.Id, c.SourcePage, c.SearchQuery, c.Tags,
+                    is_still_image = c.IsStillImage,
+                    attribution = c.Attribution,
+                    license = c.License,
+                    license_url = c.LicenseUrl,
                     local_file = c.FilePath
                 }).ToArray()
             };
@@ -413,7 +445,7 @@ public sealed partial class MainViewModel
                 ? $"Complete: {clips.Count}/{targetClips} scene-matched clips; " +
                     $"{pixabay.SceneFootageShortfall} shot slots covered by extending relevant footage: " + output
                 : $"Complete with {clips.Count} distinct Pixabay footage clips: " + output;
-            Log("YouTube Flow finished without captions. Output: " + output);
+            Log("YouTube Flow finished with scene-aligned stock video and cinematic photo transitions. Output: " + output);
             try { File.Delete(resumeFile); } catch { /* Finished output remains safe. */ }
             await _settingsService.SaveAsync(Settings);
         }
