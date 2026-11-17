@@ -236,7 +236,8 @@ public sealed class PixabayVideoService
                 // already-covered scenes as documentary context. If no relevant
                 // Commons image is available, keep the original video instead.
                 var mixStill = missing == 0 &&
-                    (i % 4 == 1 || i % 5 == 2) && sceneCounts[i] >= 2;
+                    ((i % 4 == 1 && sceneCounts[i] >= 2) ||
+                     (i % 5 == 2 && sceneCounts[i] >= 1));
                 if (missing <= 0 && !mixStill) continue;
                 var photos = await imageFallback(scenePlan[i],
                     mixStill ? 1 : Math.Min(3, missing), ct);
