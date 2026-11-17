@@ -13,7 +13,8 @@ namespace ZeroVideo.App.Services;
 /// </summary>
 public sealed class WikimediaCommonsVideoService
 {
-    private const long MaxBytes = 80L * 1024 * 1024;
+    public const int MaxVideoMegabytes = 500;
+    private const long MaxBytes = MaxVideoMegabytes * 1024L * 1024;
     private static readonly HttpClient Shared = CreateClient();
     private readonly HttpClient _http;
     private readonly string _base;
@@ -28,7 +29,9 @@ public sealed class WikimediaCommonsVideoService
 
     private static HttpClient CreateClient()
     {
-        var http = new HttpClient { Timeout = TimeSpan.FromSeconds(75) };
+        // Large, otherwise-valid Commons clips may take several minutes to
+        // transfer. API searches use their own short timeout below.
+        var http = new HttpClient { Timeout = TimeSpan.FromMinutes(15) };
         http.DefaultRequestHeaders.UserAgent.ParseAdd(
             "ZeroVideo/0.1 (+https://github.com/Zer0Spce/ZeroVideo)");
         return http;
@@ -78,7 +81,9 @@ public sealed class WikimediaCommonsVideoService
                     Uri.EscapeDataString(p.Key) + "=" + Uri.EscapeDataString(p.Value)));
             try
             {
-                using var response = await _http.GetAsync(url, ct);
+                using var apiDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                apiDeadline.CancelAfter(TimeSpan.FromSeconds(60));
+                using var response = await _http.GetAsync(url, apiDeadline.Token);
                 if (response.StatusCode is HttpStatusCode.TooManyRequests or
                     HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout)
                 {
@@ -135,7 +140,7 @@ public sealed class WikimediaCommonsVideoService
                 continue;
             }
 
-            // Do not fetch the same 80 MB source repeatedly. Try Commons'
+            // Avoid fetching excessively large originals. Try Commons'
             // smaller transcodes in order, verifying the HTTP Content-Length
             // before streaming any large payload. All formats remain capped.
             var videoUrls = SelectVideoUrls(info);
@@ -173,7 +178,7 @@ public sealed class WikimediaCommonsVideoService
                     break;
                 }
                 catch (OperationCanceledException) { throw; }
-                catch (InvalidDataException ex) when (ex.Message.Contains("80 MB", StringComparison.Ordinal))
+                catch (InvalidDataException ex) when (ex.Message.Contains($"{MaxVideoMegabytes} MB", StringComparison.Ordinal))
                 {
                     oversized++;
                     // Large candidates are skipped; the next smaller Commons
@@ -186,7 +191,7 @@ public sealed class WikimediaCommonsVideoService
             }
             if (!downloaded && oversized > 0)
                 log?.Invoke($"Wikimedia video {pageId}: {oversized} oversized version(s); " +
-                    "no usable version under 80 MB. Skipping this file, then trying other media sources.");
+                    $"no usable version under {MaxVideoMegabytes} MB. Skipping this file, then trying other media sources.");
         }
         return results;
     }
@@ -304,7 +309,7 @@ public sealed class WikimediaCommonsVideoService
         using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
         response.EnsureSuccessStatusCode();
         if (response.Content.Headers.ContentLength is long size && size > MaxBytes)
-            throw new InvalidDataException("Wikimedia video exceeds the 80 MB per-file download limit.");
+            throw new InvalidDataException($"Wikimedia video exceeds the {MaxVideoMegabytes} MB per-file download limit.");
         var tmp = destination + "." + Guid.NewGuid().ToString("N") + ".part";
         try
         {
@@ -319,7 +324,7 @@ public sealed class WikimediaCommonsVideoService
                 {
                     total += received;
                     if (total > MaxBytes)
-                        throw new InvalidDataException("Wikimedia video download exceeded 80 MB.");
+                        throw new InvalidDataException($"Wikimedia video download exceeded {MaxVideoMegabytes} MB.");
                     await output.WriteAsync(buffer.AsMemory(0, received), ct);
                 }
             }
