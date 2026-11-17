@@ -590,6 +590,21 @@ sealed class CommonsStub : HttpMessageHandler
                             }}
                         },
                         new {
+                            pageid = 9003,
+                            title = "File:Australian national library building.jpg",
+                            imageinfo = new[] { new {
+                                mime = "image/jpeg",
+                                thumburl = "https://upload.wikimedia.org/wikipedia/commons/thumb/c/library.jpg",
+                                extmetadata = new {
+                                    LicenseShortName = new { value = "CC BY 4.0" },
+                                    LicenseUrl = new { value = "https://creativecommons.org/licenses/by/4.0/" },
+                                    Artist = new { value = "Unrelated Author" },
+                                    ImageDescription = new { value = "Australian library architecture" },
+                                    Restrictions = new { value = "" }
+                                }
+                            }}
+                        },
+                        new {
                             pageid = 9002,
                             title = "File:Australian spider noncommercial.jpg",
                             imageinfo = new[] { new {
