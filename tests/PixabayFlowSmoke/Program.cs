@@ -24,6 +24,8 @@ try
     await LargeSceneShortfallStillBlocked();
     await RejectChromaScreenStock();
     await VerifyCommonsLicenseAndImageFallback();
+    await VerifyCommonsVideosAndLicenses();
+    await VerifyCommonsVideosInNarrationSequence();
     await VerifyChatGptArtworkMixedIntoChronologicalScenes();
     await RescueEmptySceneWithAiImage();
     VerifyTopicSpecificArtPrompts();
@@ -561,6 +563,62 @@ void VerifyChatGptGuardrailResponseFallback()
     Console.WriteLine("PASS: image guardrail refusal recognized and normal scene text preserved");
 }
 
+async Task VerifyCommonsVideosAndLicenses()
+{
+    var fake = new CommonsVideoStub();
+    using var client = new HttpClient(fake);
+    var dir = Path.Combine(baseDir, "commons-video");
+    var service = new WikimediaCommonsVideoService(client, dir);
+    var scene = new PixabayFootageScene(1,
+        "An eerie, shadowy forest scene at night.",
+        "dark forest night", "ominous");
+    var first = await service.FindVideosAsync(scene, 2, null, null, CancellationToken.None);
+    Check(first.Count == 1 && first[0].MediaSource == "Wikimedia Commons" &&
+        !first[0].IsStillImage && first[0].License == "CC BY 4.0" &&
+        first[0].Attribution == "Video Author" &&
+        first[0].FilePath.EndsWith(".webm", StringComparison.OrdinalIgnoreCase),
+        "Wikimedia video must retain valid CC BY license, attribution and WebM media kind.");
+    Check(first[0].SourcePage.StartsWith("https://commons.wikimedia.org/wiki/") &&
+        File.Exists(first[0].FilePath), "Accepted Commons video needs a source page and local file.");
+    Check(fake.ApiCalls == 1 && fake.VideoCalls == 1,
+        "Only the selected eligible video may be downloaded.");
+    var cached = new WikimediaCommonsVideoService(client, dir);
+    var second = await cached.FindVideosAsync(scene, 1, null, null, CancellationToken.None);
+    Check(second.Count == 1 && fake.ApiCalls == 1 && fake.VideoCalls == 1,
+        "Fresh Commons API results and media files must be reused for this project.");
+    Check(!WikimediaCommonsVideoService.IsAllowedVideoUrl(
+        "https://evil.example/video.webm") &&
+        WikimediaCommonsVideoService.IsAllowedVideoUrl(
+        "https://upload.wikimedia.org/wikipedia/commons/example.webm"),
+        "Only trusted HTTPS Wikimedia hosts may serve video files.");
+    Console.WriteLine("PASS: Commons videos, licenses, source provenance, caching and safe downloads");
+}
+
+async Task VerifyCommonsVideosInNarrationSequence()
+{
+    var fake = new CommonsVideoStub();
+    using var mediaHttp = new HttpClient(fake);
+    var service = new WikimediaCommonsVideoService(
+        mediaHttp, Path.Combine(baseDir, "commons-into-storyboard"));
+    var pixabayStub = new PixabayStub { HitsPerQuery = 0 };
+    using var pixabayHttp = new HttpClient(pixabayStub);
+    var pixabay = new PixabayVideoService(
+        pixabayHttp, Path.Combine(baseDir, "commons-storyboard"), TimeSpan.Zero);
+    var scene = new PixabayFootageScene(1,
+        "The shadowy forest at night.",
+        "dark forest night", "ominous");
+    var matched = await pixabay.AcquireAsync(
+        [scene.SearchQuery], "TEST-KEY", "16:9", null,
+        CancellationToken.None, 4, null, [scene],
+        null, null,
+        (x, count, ct) => service.FindVideosAsync(x, count, null, null, ct));
+    Check(matched.Count == 1 && matched[0].MediaSource == "Wikimedia Commons" &&
+        matched[0].SearchQuery == scene.SearchQuery &&
+        pixabay.SceneFootageShortfall == 3,
+        "An actual scene may be rescued by Commons video without a Pixabay result or unrelated image.");
+    Console.WriteLine("PASS: Commons video rescues an empty storyboard scene without breaking narration");
+}
+
 void VerifyActualNarrationCardRender()
 {
     // The final fallback must produce a real PNG even if every remote
@@ -754,5 +812,94 @@ sealed class CommonsStub : HttpMessageHandler
             });
         }
         throw new Exception("Unexpected Commons request: " + request.RequestUri);
+    }
+}
+
+
+sealed class CommonsVideoStub : HttpMessageHandler
+{
+    public int ApiCalls { get; private set; }
+    public int VideoCalls { get; private set; }
+
+    protected override Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var url = request.RequestUri?.ToString() ?? "";
+        if (url.Contains("/w/api.php?", StringComparison.OrdinalIgnoreCase))
+        {
+            ApiCalls++;
+            var json = JsonSerializer.Serialize(new
+            {
+                query = new
+                {
+                    pages = new object[] {
+                        new {
+                            pageid = 101,
+                            title = "File:Dark forest night shadows.webm",
+                            videoinfo = new[] { new {
+                                mime = "video/webm", size = 12000000,
+                                url = "https://upload.wikimedia.org/wikipedia/commons/a/source.webm",
+                                derivatives = new [] { new {
+                                    src = "https://upload.wikimedia.org/wikipedia/commons/transcoded/a/forest.webm",
+                                    type = "video/webm", width = 854, height = 480
+                                }},
+                                extmetadata = new {
+                                    LicenseShortName = new { value = "CC BY 4.0" },
+                                    LicenseUrl = new { value = "https://creativecommons.org/licenses/by/4.0/" },
+                                    Artist = new { value = "<b>Video Author</b>" },
+                                    ImageDescription = new { value = "Dark forest night shadows under the moon" },
+                                    Restrictions = new { value = "" }
+                                }
+                            }}
+                        },
+                        new {
+                            pageid = 102,
+                            title = "File:Dark forest night unlicensed.webm",
+                            videoinfo = new[] { new {
+                                mime = "video/webm", size = 5000000,
+                                url = "https://upload.wikimedia.org/wikipedia/commons/b/forbidden.webm",
+                                derivatives = Array.Empty<object>(),
+                                extmetadata = new {
+                                    LicenseShortName = new { value = "CC BY-SA 4.0" },
+                                    LicenseUrl = new { value = "https://creativecommons.org/licenses/by-sa/4.0/" },
+                                    Artist = new { value = "ShareAlike Author" },
+                                    ImageDescription = new { value = "Dark forest night" },
+                                    Restrictions = new { value = "" }
+                                }
+                            }}
+                        },
+                        new {
+                            pageid = 103,
+                            title = "File:Happy sunny forest vacation.webm",
+                            videoinfo = new[] { new {
+                                mime = "video/webm", size = 5000000,
+                                url = "https://upload.wikimedia.org/wikipedia/commons/c/irrelevant.webm",
+                                derivatives = Array.Empty<object>(),
+                                extmetadata = new {
+                                    LicenseShortName = new { value = "CC0 1.0" },
+                                    LicenseUrl = new { value = "" },
+                                    Artist = new { value = "" },
+                                    ImageDescription = new { value = "Sunny happy vacation in the forest" },
+                                    Restrictions = new { value = "" }
+                                }
+                            }}
+                        }
+                    }
+                }
+            });
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            });
+        }
+        if (url.EndsWith(".webm", StringComparison.OrdinalIgnoreCase))
+        {
+            VideoCalls++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(new byte[8192])
+            });
+        }
+        throw new Exception("Unexpected Commons video URL: " + request.RequestUri);
     }
 }
