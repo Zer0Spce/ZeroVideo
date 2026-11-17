@@ -26,8 +26,8 @@ async Task CacheStopsDuplicateRequests()
     var handler = new PixabayStub();
     using var client = new HttpClient(handler);
     var service = new PixabayVideoService(client, Path.Combine(baseDir, "cache"), TimeSpan.Zero);
-    var first = await service.AcquireAsync(["alpha"], "TEST-KEY", "16:9", null, CancellationToken.None);
-    var second = await service.AcquireAsync(["alpha"], "TEST-KEY", "16:9", null, CancellationToken.None);
+    var first = await service.AcquireAsync(["alpha"], "TEST-KEY", "16:9", Console.WriteLine, CancellationToken.None);
+    var second = await service.AcquireAsync(["alpha"], "TEST-KEY", "16:9", Console.WriteLine, CancellationToken.None);
     Check(first.Count == 1 && second.Count == 1, "Cached search must return usable footage.");
     Check(handler.ApiRequests == 1 && handler.VideoRequests == 1,
         "24-hour cache should prevent duplicate API calls and downloads.");
@@ -41,7 +41,7 @@ async Task RateLimitReportsResetWithoutFlooding()
     var service = new PixabayVideoService(client, Path.Combine(baseDir, "429"), TimeSpan.Zero);
     try
     {
-        await service.AcquireAsync(["rate"], "TEST-SECRET-KEY", "16:9", null, CancellationToken.None);
+        await service.AcquireAsync(["rate"], "TEST-SECRET-KEY", "16:9", Console.WriteLine, CancellationToken.None);
         throw new Exception("Expected PixabayRateLimitException.");
     }
     catch (PixabayRateLimitException ex)
@@ -60,11 +60,11 @@ async Task PartialCachedFootageSurvives429()
     using var client = new HttpClient(handler);
     var service = new PixabayVideoService(client, Path.Combine(baseDir, "partial"), TimeSpan.Zero);
     var warmed = await service.AcquireAsync(
-        ["alpha", "beta", "gamma"], "TEST-KEY", "16:9", null, CancellationToken.None);
+        ["alpha", "beta", "gamma"], "TEST-KEY", "16:9", Console.WriteLine, CancellationToken.None);
     Check(warmed.Count == 3, "Warmup should save three licensed clips.");
     handler.RateLimitTerm = "rate";
     var recovered = await service.AcquireAsync(
-        ["rate", "gamma", "alpha", "beta"], "TEST-KEY", "16:9", null, CancellationToken.None);
+        ["rate", "gamma", "alpha", "beta"], "TEST-KEY", "16:9", Console.WriteLine, CancellationToken.None);
     Check(recovered.Count == 3, "Cached footage must survive a separate 429.");
     Check(recovered[0].SearchQuery == "gamma" && recovered[1].SearchQuery == "alpha",
         "Recovered clips must return in narration query order.");
@@ -79,7 +79,7 @@ async Task ServerDirectedSingleRetry()
     using var client = new HttpClient(handler);
     var service = new PixabayVideoService(client, Path.Combine(baseDir, "retry"),
         TimeSpan.FromSeconds(3));
-    var result = await service.AcquireAsync(["alpha"], "TEST-KEY", "16:9", null, CancellationToken.None);
+    var result = await service.AcquireAsync(["alpha"], "TEST-KEY", "16:9", Console.WriteLine, CancellationToken.None);
     Check(result.Count == 1 && handler.ApiRequests == 2,
         "One bounded retry after the provider's reset should recover.");
     Console.WriteLine("PASS: single retry after documented reset delay");
@@ -91,14 +91,14 @@ async Task OlderCacheCanRecoverWhenThrottled()
     using var client = new HttpClient(handler);
     var dataDir = Path.Combine(baseDir, "stale");
     var service = new PixabayVideoService(client, dataDir, TimeSpan.Zero);
-    var original = await service.AcquireAsync(["alpha"], "TEST-KEY", "16:9", null, CancellationToken.None);
+    var original = await service.AcquireAsync(["alpha"], "TEST-KEY", "16:9", Console.WriteLine, CancellationToken.None);
     Check(original.Count == 1, "Warmup failed.");
     var hashed = Convert.ToHexString(
         SHA256.HashData(Encoding.UTF8.GetBytes("TEST-KEY|alpha")));
     var cacheFile = Path.Combine(dataDir, "Pixabay", "ApiCache", hashed + ".json");
     File.SetLastWriteTimeUtc(cacheFile, DateTime.UtcNow.AddHours(-48));
     handler.AlwaysRateLimit = true;
-    var fallback = await service.AcquireAsync(["alpha"], "TEST-KEY", "16:9", null, CancellationToken.None);
+    var fallback = await service.AcquireAsync(["alpha"], "TEST-KEY", "16:9", Console.WriteLine, CancellationToken.None);
     Check(fallback.Count == 1, "Stale local response may be used during API outage.");
     Check(handler.ApiRequests == 2, "Stale fallback should not generate repeated API requests.");
     Console.WriteLine("PASS: older valid cache remains useful during 429");
