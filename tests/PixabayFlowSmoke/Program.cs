@@ -27,6 +27,7 @@ try
     await VerifyChatGptArtworkMixedIntoChronologicalScenes();
     await RescueEmptySceneWithAiImage();
     VerifyTopicSpecificArtPrompts();
+    VerifyActualNarrationCardRender();
     ValidateNarrationTiming();
     Console.WriteLine("PASS: Pixabay 24h cache, HTTP 429, resume-safe footage and bounded retry");
 }
@@ -534,6 +535,36 @@ void VerifyTopicSpecificArtPrompts()
         thumb.Contains("TOO SCARY?"),
         "Thumbnail prompts should anchor the actual show and user headline.");
     Console.WriteLine("PASS: cartoon-aware imagery, historical context and thumbnail prompt rules");
+}
+
+void VerifyActualNarrationCardRender()
+{
+    // The final fallback must produce a real PNG even if every remote
+    // provider is unavailable. WPF image rendering requires an STA thread.
+    var scene = new PixabayFootageScene(29,
+        "Residents continued living, discussing shared decisions, and building community.",
+        "neighbors discussing town rules", "calm");
+    Exception? failure = null;
+    string? path = null;
+    var thread = new Thread(() =>
+    {
+        try
+        {
+            path = SceneFactCardService.Create(scene,
+                Path.Combine(baseDir, "real-narration-card"));
+        }
+        catch (Exception ex) { failure = ex; }
+    });
+    thread.SetApartmentState(ApartmentState.STA);
+    thread.Start();
+    if (!thread.Join(TimeSpan.FromSeconds(25)))
+        throw new Exception("Rendering the last-resort narration card timed out.");
+    if (failure is not null)
+        throw new Exception("WPF failed to generate a last-resort narration card.", failure);
+    Check(path is not null && File.Exists(path) &&
+        new FileInfo(path).Length > 2000,
+        "A real fallback PNG must be created and available for FFmpeg.");
+    Console.WriteLine("PASS: real 1920x1080 narration-based fallback PNG renders locally");
 }
 
 static void Check(bool result, string message)
