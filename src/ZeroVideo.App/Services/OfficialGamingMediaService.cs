@@ -1594,6 +1594,56 @@ public sealed class OfficialGamingMediaService
                     var alt = await img.GetAttributeAsync("alt") ?? "";
                     candidates.Add(new GoogleImageCandidate(url, "", alt));
                 }
+                // Modern Google Images often hides original URLs until a
+                // result is expanded. Open a few relevant result cards (within
+                // the user's own normal Edge session), then inspect the real
+                // image URLs it reveals; never use Google thumbnail bytes.
+                if (candidates.Count < 18)
+                {
+                    var resultCards = await page.Locator("img[alt]").AllAsync();
+                    var expanded = 0;
+                    foreach (var tile in resultCards.Take(75))
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        if (expanded >= 22 || candidates.Count >= 55) break;
+                        try
+                        {
+                            var alt = await tile.GetAttributeAsync("alt") ?? "";
+                            if (alt.Length < 5 ||
+                                (IsGtaSixStory(project.Title, focus) &&
+                                 (!IsGtaSix(alt) || IsGtaFive(alt)))) continue;
+                            var bounds = await tile.BoundingBoxAsync();
+                            if (bounds is null || bounds.Width < 80 || bounds.Height < 60)
+                                continue;
+                            await tile.ClickAsync(new Microsoft.Playwright.LocatorClickOptions
+                            {
+                                Timeout = 2500
+                            });
+                            expanded++;
+                            var expandedImages = await page.Locator("img[src^='https://']")
+                                .AllAsync();
+                            foreach (var shown in expandedImages.TakeLast(55))
+                            {
+                                var url = await shown.GetAttributeAsync("src") ?? "";
+                                if (!Uri.TryCreate(url, UriKind.Absolute, out var external) ||
+                                    !IsPublicHttps(external) ||
+                                    external.Host.Contains("google", StringComparison.OrdinalIgnoreCase) ||
+                                    external.Host.Contains("gstatic", StringComparison.OrdinalIgnoreCase))
+                                    continue;
+                                var width = await shown.EvaluateAsync<int>(
+                                    "el => el.naturalWidth || 0");
+                                if (width < 900) continue;
+                                candidates.Add(new GoogleImageCandidate(
+                                    url, "", alt));
+                            }
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception ex)
+                        {
+                            log?.Invoke("Google Images result preview unavailable: " + ex.Message);
+                        }
+                    }
+                }
                 // HTML fallback for Google's legacy image-result markup.
                 foreach (Match match in Regex.Matches(html,
                     @"(?:imgurl=|[\\u0022""']ou[\\u0022""']\s*:\s*[\\u0022""'])(?<url>https?[^&\s""'<>{}]+)",
