@@ -32,6 +32,117 @@ public sealed class OfficialGamingMediaService
          uri.Host.EndsWith(".steamstatic.com", StringComparison.OrdinalIgnoreCase) ||
          uri.Host == "steamcdn-a.akamaihd.net");
 
+    // First-party/platform editorial and media hosts. These are sourcing rules,
+    // not copyright licenses. Never follow arbitrary links or private addresses.
+    private static readonly string[] PlatformHosts =
+    [
+        "blog.playstation.com", "news.xbox.com", "www.nintendo.com",
+        "www.rockstargames.com", "www.ea.com", "www.ubisoft.com",
+        "www.bandainamcoent.com", "www.square-enix-games.com",
+        "www.capcom-games.com", "www.epicgames.com", "store.epicgames.com",
+        "store.steampowered.com", "www.gog.com", "bethesda.net",
+        "www.activision.com", "www.callofduty.com", "www.riotgames.com",
+        "www.blizzard.com", "www.playstation.com", "www.xbox.com"
+    ];
+
+    private static bool PublisherHost(Uri uri) => uri.Scheme == "https" &&
+        PlatformHosts.Any(host => uri.Host.Equals(host, StringComparison.OrdinalIgnoreCase) ||
+            uri.Host.EndsWith("." + host, StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsPublicHttps(Uri uri) =>
+        uri.Scheme == Uri.UriSchemeHttps &&
+        !uri.IsLoopback && !Uri.CheckHostName(uri.Host).Equals(UriHostNameType.Unknown) &&
+        !IPAddress.TryParse(uri.Host, out _);
+
+    private static async Task<string> DownloadPublisherHtmlAsync(Uri uri, CancellationToken ct)
+    {
+        if (!PublisherHost(uri)) throw new InvalidDataException("Not an approved publisher URL.");
+        using var response = await Http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength > 850_000)
+            return "";
+        var type = response.Content.Headers.ContentType?.MediaType ?? "";
+        if (!type.Contains("html", StringComparison.OrdinalIgnoreCase)) return "";
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var memory = new MemoryStream();
+        var block = new byte[32 * 1024];
+        int count;
+        while ((count = await stream.ReadAsync(block, ct)) > 0)
+        {
+            if (memory.Length + count > 850_000) return "";
+            await memory.WriteAsync(block.AsMemory(0, count), ct);
+        }
+        return System.Text.Encoding.UTF8.GetString(memory.ToArray());
+    }
+
+    private static IEnumerable<Uri> ExtractPublisherImages(string html, Uri page)
+    {
+        // OpenGraph/Twitter cards and first-party article illustrations.
+        foreach (Match meta in Regex.Matches(html,
+                     @"<meta\b[^>]{0,1200}>", RegexOptions.IgnoreCase))
+        {
+            var tag = meta.Value;
+            if (!Regex.IsMatch(tag, @"(?:og:image|twitter:image)", RegexOptions.IgnoreCase))
+                continue;
+            var value = Regex.Match(tag, @"content\s*=\s*[""'](?<v>[^""']+)[""']",
+                RegexOptions.IgnoreCase).Groups["v"].Value;
+            value = WebUtility.HtmlDecode(value);
+            if (Uri.TryCreate(page, value, out var image) && IsPublicHttps(image))
+                yield return image;
+        }
+        foreach (Match match in Regex.Matches(html,
+                     @"<img\b[^>]{0,1800}>", RegexOptions.IgnoreCase).Cast<Match>().Take(80))
+        {
+            var tag = match.Value;
+            var value = Regex.Match(tag,
+                @"(?:data-src|src)\s*=\s*[""'](?<v>[^""']+)[""']",
+                RegexOptions.IgnoreCase).Groups["v"].Value;
+            value = WebUtility.HtmlDecode(value);
+            if (Uri.TryCreate(page, value, out var image) && IsPublicHttps(image) &&
+                !Regex.IsMatch(image.AbsolutePath,
+                    @"(avatar|logo|icon|pixel|sprite|tracking|placeholder)",
+                    RegexOptions.IgnoreCase))
+                yield return image;
+        }
+    }
+
+    private static async Task<byte[]> DownloadPublisherImageAsync(
+        Uri image, Uri origin, CancellationToken ct)
+    {
+        // Official publisher pages sometimes serve images through their CDN,
+        // often on a different domain. Only take addresses literally found in
+        // first-party HTML; reject redirects, local hosts, nonimages and large responses.
+        if (!IsPublicHttps(image)) throw new InvalidDataException("Invalid image URL.");
+        using var response = await Http.GetAsync(image, HttpCompletionOption.ResponseHeadersRead, ct);
+        response.EnsureSuccessStatusCode();
+        var type = response.Content.Headers.ContentType?.MediaType ?? "";
+        if (!type.StartsWith("image/jpeg", StringComparison.OrdinalIgnoreCase) &&
+            !type.StartsWith("image/png", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Official page linked non-JPEG/PNG content.");
+        if (response.Content.Headers.ContentLength > 12 * 1024 * 1024)
+            throw new InvalidDataException("Official image too large.");
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var memory = new MemoryStream();
+        var block = new byte[65536];
+        int count;
+        while ((count = await stream.ReadAsync(block, ct)) > 0)
+        {
+            if (memory.Length + count > 12 * 1024 * 1024)
+                throw new InvalidDataException("Official image too large.");
+            await memory.WriteAsync(block.AsMemory(0, count), ct);
+        }
+        return memory.ToArray();
+    }
+
+    private static IEnumerable<Uri> PublisherPages(VideoProject project)
+    {
+        var urls = project.Sources;
+        foreach (var url in urls)
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && PublisherHost(uri))
+                yield return uri;
+        }
+    }
+
     private static string Normalize(string value) =>
         Regex.Replace(WebUtility.HtmlDecode(value).ToLowerInvariant(), @"[^a-z0-9]+", " ").Trim();
 
@@ -98,6 +209,28 @@ public sealed class OfficialGamingMediaService
         var candidates = Queries(project, focus).Take(15).ToList();
         var examined = new HashSet<int>();
         var images = new List<(Uri Uri, string Game, string Store)>();
+        // Priority 1: images genuinely hosted/linked by the official publisher
+        // or platform article, when the news report itself comes from one.
+        var publisherImages = new List<(Uri Image, Uri Source)>();
+        foreach (var sourcePage in PublisherPages(project).Take(4))
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var html = await DownloadPublisherHtmlAsync(sourcePage, ct);
+                if (html.Length < 100) continue;
+                foreach (var img in ExtractPublisherImages(html, sourcePage).Take(24))
+                {
+                    if (publisherImages.Any(x => x.Image == img)) continue;
+                    publisherImages.Add((img, sourcePage));
+                    if (publisherImages.Count >= 12) break;
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("Official publisher imagery unavailable: " + ex.Message); }
+        }
+        // Priority 2: the publisher's game screenshots on Steam. This
+        // fallback only matches actual game titles mentioned in the narration.
         foreach (var term in candidates)
         {
             ct.ThrowIfCancellationRequested();
@@ -153,17 +286,39 @@ public sealed class OfficialGamingMediaService
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { log?.Invoke("Gaming official-media search skipped: " + ex.Message); }
         }
-        if (images.Count == 0)
+        if (images.Count == 0 && publisherImages.Count == 0)
             throw new InvalidDataException(
-                "No verified game-matched publisher-supplied official screenshots found. " +
+                "No matched first-party publisher/newsroom or Steam screenshots found. " +
                 "Gaming News will NOT generate AI pictures, use random stock, or publish an empty backdrop.");
 
         var mediaDir = Path.Combine(project.ProjectDirectory, "media");
         Directory.CreateDirectory(mediaDir);
         var downloaded = new List<OfficialAsset>();
         var unique = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (imageUri, sourcePage) in publisherImages)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (downloaded.Count >= 8) break;
+            if (!unique.Add(imageUri.ToString())) continue;
+            try
+            {
+                var bytes = await DownloadPublisherImageAsync(imageUri, sourcePage, ct);
+                if (!IsJpeg(bytes) && !IsPng(bytes)) continue;
+                var ext = IsJpeg(bytes) ? ".jpg" : ".png";
+                var file = Path.Combine(mediaDir, "official-" +
+                    (downloaded.Count + 1).ToString("00") + ext);
+                await File.WriteAllBytesAsync(file, bytes, ct);
+                downloaded.Add(new OfficialAsset(file, imageUri.ToString(), project.Title,
+                    sourcePage.ToString(), sourcePage.Host + " official article image",
+                    "Platform or publisher owns or controls media; credit is not a license."));
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("First-party image skipped: " + ex.Message); }
+        }
+        // Steam is a fallback, and never used for a mismatched game title.
         foreach (var (uri, game, store) in images)
         {
+            if (downloaded.Count >= 8) break;
             if (!unique.Add(uri.ToString())) continue;
             try
             {
@@ -192,7 +347,7 @@ public sealed class OfficialGamingMediaService
             chapter.Scenes[i].MediaPath = photo.LocalPath;
             chapter.Scenes[i].MediaPaths = [];
         }
-        var label = "Official screenshots: " + downloaded[0].GameTitle + " / Steam";
+        var label = "Source: " + downloaded[0].Source;
         var manifest = Path.Combine(project.ProjectDirectory, "official-media-credits.json");
         await File.WriteAllTextAsync(manifest, JsonSerializer.Serialize(new
         {
