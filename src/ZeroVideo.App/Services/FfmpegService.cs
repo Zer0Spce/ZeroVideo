@@ -289,10 +289,13 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
                 {
                     motion = aiClip is null ? "source video"
                         : "AI subtle facial motion (LivePortrait)";
-                    var vf = $"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h},fps=30";
+                    var vf = project.Options.GamingNewsPreserveImageDetail
+                        ? GamingNewsPhotoFramingFilter(w, h)
+                        : $"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h},fps=30";
                     var styleFx = BuildStyleEffectFilter(project);
                     if (!string.IsNullOrWhiteSpace(styleFx)) vf += "," + styleFx;
-                    args = $"-y -stream_loop -1 -i \"{renderMedia}\" -t {duration} -vf \"{vf}\" -an -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p \"{output}\"";
+                    var quality = project.Options.GamingNewsPreserveImageDetail ? 17 : 18;
+                    args = $"-y -stream_loop -1 -i \"{renderMedia}\" -t {duration} -vf \"{vf}\" -an -c:v libx264 -preset medium -crf {quality} -pix_fmt yuv420p \"{output}\"";
                 }
                 else
                 {
@@ -423,9 +426,26 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
         return chapterVisual;
     }
 
+    // A 1920x1080 screenshot cropped to portrait uses only ~608 source
+    // pixels of horizontal detail. Keep the entire original in sharp focus
+    // over a soft, fill-frame version of itself instead of enlarging a small
+    // center crop. Only Gaming News opts into this filter.
+    private static string GamingNewsPhotoFramingFilter(int w, int h)
+        => $"split=2[background][foreground];" +
+           $"[background]scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos," +
+           $"crop={w}:{h},boxblur=25:1[blurred];" +
+           $"[foreground]scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos[sharp];" +
+           "[blurred][sharp]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1,fps=30";
+
     private static string BuildStillRenderArgs(string media, string output, double seconds, int w, int h, string motion, VideoProject project)
     {
         var duration = F(seconds);
+        if (project.Options.GamingNewsPreserveImageDetail)
+        {
+            var filter = GamingNewsPhotoFramingFilter(w, h);
+            return $"-y -loop 1 -i \"{media}\" -t {duration} -vf \"{filter}\" " +
+                   $"-an -c:v libx264 -preset medium -crf 17 -pix_fmt yuv420p \"{output}\"";
+        }
         var frames = Math.Max(30, (int)Math.Ceiling(seconds * 30));
         if (motion == "parallax" && project.Options.SmartParallax)
             return BuildParallaxArgs(media, output, duration, frames, w, h, project);
