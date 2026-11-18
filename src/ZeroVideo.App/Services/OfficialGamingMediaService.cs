@@ -940,11 +940,13 @@ public sealed class OfficialGamingMediaService
             var decoder = BitmapDecoder.Create(stream,
                 BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
             var frame = decoder.Frames[0];
-            var longest = Math.Max(frame.PixelWidth, frame.PixelHeight);
+            // Gaming News uses a blurred canvas and contained foreground.
+            // A 360p-class source is usable; square 1024x1024 is absolutely
+            // acceptable. Other ZeroVideo tabs retain their own standards.
             var shortest = Math.Min(frame.PixelWidth, frame.PixelHeight);
-            if (longest >= 1400 && shortest >= 700) return true;
+            if (shortest >= 360) return true;
             log?.Invoke($"Gaming quality: skipping {Path.GetFileName(path)} " +
-                $"({frame.PixelWidth}x{frame.PixelHeight}); too small for sharp 1080p.");
+                $"({frame.PixelWidth}x{frame.PixelHeight}); shortest side below 360px.");
         }
         catch (Exception ex)
         {
@@ -1398,14 +1400,16 @@ public sealed class OfficialGamingMediaService
             .ToList();
         // Don't refuse a valid video just because Google supplied fewer than
         // twenty photos. Use all available distinct images across 24 cuts.
-        var requiredDistinct = 6;
+        var requiredDistinct = 3;
         if (uniqueAssets.Count < requiredDistinct)
             throw new InvalidDataException(
                 $"Gaming News found only {uniqueAssets.Count}/{requiredDistinct} distinct matching game assets. " +
-                "A 24-shot video needs enough real screenshots/clips, not repeats of one image. " +
-                "Try again when the official gallery or news media is accessible; " +
-                "no GTA V or unrelated visual replacements will be published.");
+                "At least three relevant photos or clips are needed; " +
+                "24 smooth visual shots can reuse those assets with varied ordering.");
 
+        if (uniqueAssets.Count < 6)
+            log?.Invoke($"Gaming News: only {uniqueAssets.Count} unique assets; " +
+                "continuing with 24 smoothly transitioned shots and controlled reuse.");
         var history = ReadMediaHistory(log);
         var selectedShots = SelectDiverseShots(project, uniqueAssets, history, log);
         if (selectedShots.Count != 24)
