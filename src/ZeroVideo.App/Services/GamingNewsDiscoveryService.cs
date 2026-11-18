@@ -73,7 +73,7 @@ public sealed class GamingNewsDiscoveryService
         if (!string.IsNullOrWhiteSpace(focus) &&
             !focus.Equals("all gaming news", StringComparison.OrdinalIgnoreCase))
         {
-            var topic = Regex.Replace(focus.Trim(), @"\\s+", " ");
+            var topic = Regex.Replace(focus.Trim(), @"\s+", " ");
             if (topic.Length > 75) topic = topic[..75];
             queries.InsertRange(0, [
                 topic + " video game news when:7d",
@@ -94,7 +94,7 @@ public sealed class GamingNewsDiscoveryService
         // Google News appends " - Publisher" and the same story may appear
         // from a direct publisher feed. Normalize before deduplication.
         var normalized = Regex.Replace(headline,
-            @"\\s+[-–—]\\s+[^-–—]{2,75}$", "");
+            @"\s+[-–—]\s+[^-–—]{2,75}$", "");
         return Regex.Replace(normalized.ToLowerInvariant(),
             @"[^a-z0-9]+", " ").Trim();
     }
