@@ -115,6 +115,16 @@ public sealed class OfficialGamingMediaService
         }).ToList();
         var pool = keyed.GroupBy(x => x.Fingerprint).Select(x => x.First()).ToList();
         var hosts = pool.Select(x => x.Host).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var rankedSourceCounts = pool.GroupBy(x => x.Host, StringComparer.OrdinalIgnoreCase)
+            .Select(x => (Host: x.Key, Count: x.Count()))
+            .OrderByDescending(x => x.Count).ToList();
+        log?.Invoke("Gaming News verified source pool: " + string.Join(", ",
+            rankedSourceCounts.Select(x => x.Host + "=" + x.Count)));
+        if (rankedSourceCounts.Count >= 2 && rankedSourceCounts[1].Count < 5)
+            throw new InvalidDataException(
+                "Second source supplied only " + rankedSourceCounts[1].Count +
+                " unique full-resolution assets. At least five from a second website " +
+                "are needed to avoid another nearly identical 24-shot video.");
         // One real publisher does not satisfy a multi-source news workflow.
         // Never falsely describe 24 reordered Rockstar images as diverse.
         if (hosts.Count < 2)
