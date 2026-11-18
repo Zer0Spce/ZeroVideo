@@ -44,10 +44,6 @@ public sealed partial class MainViewModel
 
     private void InitializeGamingNewsCommands()
     {
-        GamingNewsMusicPath = Settings.BackgroundMusicPath;
-        GamingNewsMusicEnabled = !string.IsNullOrWhiteSpace(GamingNewsMusicPath);
-        GamingNewsMusicDb = Settings.BackgroundMusicDb is >= -40 and <= 0
-            ? Settings.BackgroundMusicDb : -15;
         GamingNewsChooseMusicCommand = new RelayCommand(() =>
         {
             var picker = new OpenFileDialog
@@ -63,6 +59,68 @@ public sealed partial class MainViewModel
         });
         GamingNewsStartBatchCommand = new AsyncCommand(() =>
             RunManagedJobAsync("Gaming News — One Click Batch", RunGamingNewsBatchAsync, publishing:true));
+    }
+
+    private sealed class GamingNewsPreferences
+    {
+        public int VideoCount { get; set; } = 48;
+        public string Focus { get; set; } = "";
+        public string ChannelName { get; set; } = "";
+        public string FirstSlot { get; set; } = "";
+        public string MusicPath { get; set; } = "";
+        public double MusicDb { get; set; } = -15;
+        public bool MusicEnabled { get; set; }
+        public bool AutoSubmit { get; set; } = true;
+    }
+
+    private static string GamingNewsPreferencesPath =>
+        Path.Combine(AppPaths.DataDirectory, "gaming-news-batch-settings.json");
+
+    private void LoadGamingNewsPreferences()
+    {
+        try
+        {
+            if (!File.Exists(GamingNewsPreferencesPath))
+            {
+                GamingNewsMusicPath = Settings.BackgroundMusicPath;
+                GamingNewsMusicDb = Settings.BackgroundMusicDb is >= -40 and <= 0
+                    ? Settings.BackgroundMusicDb : -15;
+                GamingNewsMusicEnabled = !string.IsNullOrWhiteSpace(GamingNewsMusicPath);
+                return;
+            }
+            var config = JsonSerializer.Deserialize<GamingNewsPreferences>(
+                File.ReadAllText(GamingNewsPreferencesPath));
+            if (config is null) return;
+            GamingNewsVideoCount = config.VideoCount;
+            GamingNewsFocus = config.Focus;
+            GamingNewsChannelName = config.ChannelName;
+            GamingNewsScheduleStart = config.FirstSlot;
+            GamingNewsMusicPath = config.MusicPath;
+            GamingNewsMusicDb = config.MusicDb;
+            GamingNewsMusicEnabled = config.MusicEnabled;
+            GamingNewsUploadAutomatically = config.AutoSubmit;
+        }
+        catch (Exception ex) { Log("Gaming News settings recovery: " + ex.Message); }
+    }
+
+    private void SaveGamingNewsPreferences()
+    {
+        Directory.CreateDirectory(AppPaths.DataDirectory);
+        var config = new GamingNewsPreferences
+        {
+            VideoCount = GamingNewsVideoCount,
+            Focus = GamingNewsFocus,
+            ChannelName = GamingNewsChannelName,
+            FirstSlot = GamingNewsScheduleStart,
+            MusicPath = GamingNewsMusicPath,
+            MusicDb = GamingNewsMusicDb,
+            MusicEnabled = GamingNewsMusicEnabled,
+            AutoSubmit = GamingNewsUploadAutomatically
+        };
+        var temporary = GamingNewsPreferencesPath + ".tmp";
+        File.WriteAllText(temporary, JsonSerializer.Serialize(config,
+            new JsonSerializerOptions { WriteIndented = true }));
+        File.Move(temporary, GamingNewsPreferencesPath, true);
     }
 
     private static DateTime GamingNewsInitialSlot(string text)
@@ -99,6 +157,7 @@ public sealed partial class MainViewModel
     {
         GamingNewsGenerated = 0;
         GamingNewsScheduled = 0;
+        SaveGamingNewsPreferences();
         if (Settings.TextToSpeechEngine != "OmniVoice (Local)" ||
             !_omniVoice.IsInstalled ||
             !OmniVoiceProfiles.Any(x => x.Id == Settings.OmniVoiceProfileId))
@@ -160,6 +219,7 @@ public sealed partial class MainViewModel
                     ". Original report: " + topic.Url +
                     ". Publisher: " + topic.Publisher +
                     ". Publication date: " + topic.PublishedAt.ToString("yyyy-MM-dd") +
+                    ". RSS article summary for fact grounding: " + topic.Summary +
                     ". Verify claims from the cited source, do not fabricate details, " +
                     "use only topic-relevant visuals with appropriate rights. " +
                     "Make an original 9:16 English news explainer with burned-in Shorts captions. " +
