@@ -955,6 +955,15 @@ public sealed class OfficialGamingMediaService
         string articleSummary, BrowserSession browser, ZeroVideoSettings settings,
         Action<string>? log, CancellationToken ct)
     {
+        var mediaDir = Path.Combine(project.ProjectDirectory, "media");
+        Directory.CreateDirectory(mediaDir);
+        // Google Images is the PRIMARY source. Search for the core game
+        // itself before publisher/news/Steam fallbacks, and retrieve ORIGINAL
+        // JPEG/PNG files from diverse underlying websites.
+        var downloaded = await SearchGoogleImagesAsync(
+            project, focus, browser, settings, mediaDir, log, ct);
+        var unique = downloaded.Select(x => x.Url)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var context = Normalize(project.Title + " " + project.Topic + " " +
             articleSummary + " " + focus + " " +
             string.Join(" ", project.Chapters.SelectMany(x => x.Scenes)
@@ -1063,15 +1072,6 @@ public sealed class OfficialGamingMediaService
             $"independent article images={editorialImages.Count}, " +
             $"non-Steam videos={movies.Count}. Steam reserved for LAST fallback.");
 
-        var mediaDir = Path.Combine(project.ProjectDirectory, "media");
-        Directory.CreateDirectory(mediaDir);
-        // Google Images is the PRIMARY source. Search for the core game
-        // itself before publisher/news/Steam fallbacks, and retrieve ORIGINAL
-        // JPEG/PNG files from diverse underlying websites.
-        var downloaded = await SearchGoogleImagesAsync(
-            project, focus, browser, settings, mediaDir, log, ct);
-        var unique = downloaded.Select(x => x.Url)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var publisherCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var (imageUri, sourcePage) in publisherImages)
         {
