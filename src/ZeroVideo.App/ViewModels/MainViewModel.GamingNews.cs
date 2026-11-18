@@ -138,8 +138,12 @@ public sealed partial class MainViewModel
         var wasLoadingShortsCheckpoint = _loadingShortsCheckpoint;
         _loadingShortsCheckpoint = true;
         var originalShortDuration = ShortDuration;
-        var previousMusicPath = Settings.BackgroundMusicPath;
-        var previousMusicDb = Settings.BackgroundMusicDb;
+        // A private settings snapshot ensures that the existing Create/Shorts
+        // music and voice preferences are not overwritten by this batch.
+        var originalSettings = Settings;
+        Settings = JsonSerializer.Deserialize<ZeroVideo.App.Models.ZeroVideoSettings>(
+            JsonSerializer.Serialize(originalSettings))
+            ?? throw new InvalidDataException("Could not isolate gaming settings.");
         var previousMusicEnabled = Project.Options.AddBackgroundMusic;
         var initialIds = PublishingQueue.Select(x => x.Id).ToHashSet();
         try
@@ -294,8 +298,7 @@ public sealed partial class MainViewModel
         }
         finally
         {
-            Settings.BackgroundMusicPath = previousMusicPath;
-            Settings.BackgroundMusicDb = previousMusicDb;
+            Settings = originalSettings;
             Project.Options.AddBackgroundMusic = previousMusicEnabled;
             ShortQueue.Clear();
             foreach (var entry in originalShortQueue) ShortQueue.Add(entry);
