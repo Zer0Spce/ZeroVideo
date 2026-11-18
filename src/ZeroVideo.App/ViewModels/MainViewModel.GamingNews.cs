@@ -459,84 +459,10 @@ public sealed partial class MainViewModel
             // as the original publishing tab, without modifying that workflow.
             // Never retry an uncertain TikTok submission.
             if (GamingNewsUploadAutomatically && newItems.Count > 0)
-            {
-                var uploader = new StudioUploadService(_browser);
-                var sent = 0;
-                for (var index = 0; index < newItems.Count; index++)
-                {
-                    _cts.Token.ThrowIfCancellationRequested();
-                    var item = newItems[index];
-                    // Rendering a full batch can take hours. A time slot that
-                    // has already passed cannot be submitted to TikTok Studio.
-                    if (!item.ScheduledAt.HasValue ||
-                        item.ScheduledAt.Value <= DateTimeOffset.Now.AddMinutes(25))
-                    {
-                        GamingNewsStatus = "Scheduling paused: a posting slot is no longer in the future. " +
-                            "Completed MP4s remain in the Publish queue.";
-                        break;
-                    }
-                    GamingNewsStatus = $"TikTok submission {index + 1}/{newItems.Count}: {item.Title}";
-                    item.TikTokStatus = "Uploading";
-                    SavePublishingQueue();
-                    string outcome;
-                    try
-                    {
-                        outcome = await uploader.PrepareAsync(
-                            Settings, "TikTok", item.VideoPath,
-                            item.YouTubeTitle, item.YouTubeDescription, item.TikTokCaption,
-                            item.ThumbnailPath, item.ScheduledAt, Log, _cts.Token,
-                            freshTikTokUploadPage: index > 0);
-                    }
-                    catch (OperationCanceledException) { throw; }
-                    catch (Exception ex)
-                    {
-                        item.TikTokStatus = "Failed - review Studio";
-                        GamingNewsStatus = "TikTok stopped: " + ex.Message +
-                            ". No automatic retry; check Studio first.";
-                        SavePublishingQueue();
-                        break;
-                    }
-                    if (outcome.StartsWith("TikTok: SUBMISSION_CONFIRMED",
-                        StringComparison.Ordinal))
-                    {
-                        item.TikTokStatus = "Scheduled";
-                        item.IsChecked = false;
-                        sent++;
-                        GamingNewsSubmitted = sent;
-                    }
-                    else if (outcome.StartsWith("TikTok: SUBMISSION_ATTEMPTED",
-                        StringComparison.Ordinal))
-                    {
-                        item.TikTokStatus = "Submission attempted - check Studio";
-                        item.IsChecked = false;
-                        sent++;
-                        GamingNewsSubmitted = sent;
-                        SavePublishingQueue();
-                        if (!outcome.Contains("left the upload page",
-                            StringComparison.OrdinalIgnoreCase))
-                        {
-                            GamingNewsStatus = "TikTok returned an uncertain submission. " +
-                                "Stopped to prevent duplicates. Verify in Studio.";
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        item.TikTokStatus = "Needs review";
-                        GamingNewsStatus = "TikTok paused before confirmation: " + outcome;
-                        SavePublishingQueue();
-                        break;
-                    }
-                    SavePublishingQueue();
-                }
-                if (sent == newItems.Count)
-                    GamingNewsStatus = $"Finished: {GamingNewsGenerated} Shorts; {sent} TikTok " +
-                        "Studio schedule submissions completed. TikTok will publish at the selected " +
-                        "times without manual hourly clicks. Verify platform posts in Studio.";
-                else if (sent < newItems.Count)
-                    GamingNewsStatus += $" ({sent}/{newItems.Count} submissions sent; " +
-                        "remaining videos are safely kept in Publish.)";
-            }
+                await SubmitGamingNewsToTikTokAsync(newItems);
+            else if (newItems.Count == 0)
+                GamingNewsStatus = "No new Gaming News queue videos found to submit.";
+
         }
         finally
         {
@@ -545,4 +471,185 @@ public sealed partial class MainViewModel
             ProjectDirectory = originalProjectDirectory;
         }
     }
+    private static bool HasGamingNewsMediaManifest(string videoPath)
+    {
+        try
+        {
+            var folder = Path.GetDirectoryName(videoPath);
+            for (var depth = 0; depth < 5 && !string.IsNullOrWhiteSpace(folder); depth++)
+            {
+                if (File.Exists(Path.Combine(folder, "official-media-credits.json")))
+                    return true;
+                folder = Path.GetDirectoryName(folder);
+            }
+        }
+        catch { /* A missing or inaccessible video is never auto-submitted. */ }
+        return false;
+    }
+
+    private static DateTime NextGamingNewsTikTokSlot(int intervalMinutes)
+    {
+        var now = DateTime.Now.AddHours(3);
+        var midnight = now.Date;
+        var sinceMidnight = (int)(now - midnight).TotalMinutes;
+        var steps = sinceMidnight / intervalMinutes + 1;
+        return midnight.AddMinutes(steps * intervalMinutes);
+    }
+
+    private async Task SubmitPendingGamingNewsAsync()
+    {
+        // Recover previous Gaming News videos without touching regular Shorts
+        // or Publish queue items. Legacy builds had no explicit marker, so
+        // detect the Gaming News-only media manifest from the output folder.
+        var pending = PublishingQueue.Where(item =>
+            File.Exists(item.VideoPath) &&
+            (item.IsGamingNews || HasGamingNewsMediaManifest(item.VideoPath)) &&
+            !item.TikTokStatus.Equals("Scheduled", StringComparison.OrdinalIgnoreCase) &&
+            !item.TikTokStatus.Equals("Published", StringComparison.OrdinalIgnoreCase) &&
+            !item.TikTokStatus.Equals("Uploading", StringComparison.OrdinalIgnoreCase) &&
+            !item.TikTokStatus.StartsWith("Submission attempted", StringComparison.OrdinalIgnoreCase) &&
+            !item.TikTokStatus.Contains("review Studio", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (pending.Count == 0)
+        {
+            GamingNewsStatus = "No unsubmitted Gaming News videos found. " +
+                "Already scheduled or uncertain submissions are not retried.";
+            return;
+        }
+        if (!GamingNewsUploadAutomatically)
+        {
+            GamingNewsStatus = "Enable 'Automatically submit schedules to TikTok Studio' first.";
+            return;
+        }
+        foreach (var item in pending) item.IsGamingNews = true;
+        var blocked = PublishingQueue.Except(pending)
+            .Where(x => x.ScheduledAt.HasValue && x.IsScheduled)
+            .Select(x => x.ScheduledAt!.Value.LocalDateTime).ToHashSet();
+        var slot = NextGamingNewsTikTokSlot(GamingNewsPostingIntervalMinutes);
+        foreach (var item in pending)
+        {
+            while (blocked.Contains(slot)) slot = slot.AddMinutes(GamingNewsPostingIntervalMinutes);
+            item.IsScheduled = true;
+            item.ScheduleDateText = slot.ToString("yyyy-MM-dd HH:mm");
+            item.ScheduledAt = new DateTimeOffset(slot);
+            item.IsChecked = true;
+            item.TikTokCaption = string.IsNullOrWhiteSpace(item.TikTokCaption)
+                ? item.Title + " #GamingNews #VideoGames"
+                : item.TikTokCaption;
+            blocked.Add(slot);
+            slot = slot.AddMinutes(GamingNewsPostingIntervalMinutes);
+        }
+        SavePublishingQueue();
+        GamingNewsSubmitted = 0;
+        GamingNewsScheduled = pending.Count;
+        GamingNewsStatus = "Submitting " + pending.Count +
+            " previously generated Gaming News videos to TikTok Studio...";
+        await SubmitGamingNewsToTikTokAsync(pending);
+    }
+
+    private async Task SubmitGamingNewsToTikTokAsync(
+        IReadOnlyList<PublishQueueItem> items)
+    {
+        // TikTok Studio receives all accepted schedules NOW; it then posts
+        // at the requested time. No hourly clicking in the Publish tab or
+        // background automation is needed once Studio confirms scheduling.
+        var uploader = new StudioUploadService(_browser);
+        var sent = 0;
+        for (var index = 0; index < items.Count; index++)
+        {
+            _cts.Token.ThrowIfCancellationRequested();
+            var item = items[index];
+            if (!File.Exists(item.VideoPath))
+            {
+                GamingNewsStatus = "TikTok stopped: missing file " + item.VideoPath;
+                break;
+            }
+            if (!item.ScheduledAt.HasValue ||
+                item.ScheduledAt.Value <= DateTimeOffset.Now.AddMinutes(25))
+            {
+                // Never silently quit after a slow render/upload. Shift this
+                // and the remaining unsent videos forward to safe slots.
+                var latest = NextGamingNewsTikTokSlot(GamingNewsPostingIntervalMinutes);
+                var occupied = PublishingQueue.Except(items.Skip(index))
+                    .Where(x => x.IsScheduled && x.ScheduledAt.HasValue)
+                    .Select(x => x.ScheduledAt!.Value.LocalDateTime).ToHashSet();
+                foreach (var unsent in items.Skip(index))
+                {
+                    while (occupied.Contains(latest))
+                        latest = latest.AddMinutes(GamingNewsPostingIntervalMinutes);
+                    unsent.IsScheduled = true;
+                    unsent.ScheduleDateText = latest.ToString("yyyy-MM-dd HH:mm");
+                    unsent.ScheduledAt = new DateTimeOffset(latest);
+                    occupied.Add(latest);
+                    latest = latest.AddMinutes(GamingNewsPostingIntervalMinutes);
+                }
+                SavePublishingQueue();
+                Log("Gaming News: automatically shifted pending TikTok Studio " +
+                    "slots forward after elapsed posting time.");
+            }
+
+            GamingNewsStatus = $"Submitting to TikTok Studio {index + 1}/{items.Count}: " +
+                item.Title;
+            item.TikTokStatus = "Uploading";
+            SavePublishingQueue();
+            string outcome;
+            try
+            {
+                outcome = await uploader.PrepareAsync(
+                    Settings, "TikTok", item.VideoPath,
+                    item.YouTubeTitle, item.YouTubeDescription, item.TikTokCaption,
+                    item.ThumbnailPath, item.ScheduledAt, Log, _cts.Token,
+                    freshTikTokUploadPage: index > 0);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                item.TikTokStatus = "Failed - review Studio";
+                GamingNewsStatus = "TikTok stopped: " + ex.Message +
+                    ". Check TikTok Studio before resubmitting.";
+                SavePublishingQueue();
+                break;
+            }
+            if (outcome.StartsWith("TikTok: SUBMISSION_CONFIRMED",
+                StringComparison.Ordinal))
+            {
+                item.TikTokStatus = "Scheduled";
+                item.IsChecked = false;
+                sent++;
+                GamingNewsSubmitted = sent;
+            }
+            else if (outcome.StartsWith("TikTok: SUBMISSION_ATTEMPTED",
+                StringComparison.Ordinal))
+            {
+                item.TikTokStatus = "Submission attempted - check Studio";
+                item.IsChecked = false;
+                sent++;
+                GamingNewsSubmitted = sent;
+                SavePublishingQueue();
+                if (!outcome.Contains("left the upload page",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    GamingNewsStatus = "TikTok submission outcome uncertain; " +
+                        "stopped to prevent accidental duplicate posts.";
+                    break;
+                }
+            }
+            else
+            {
+                item.TikTokStatus = "Needs review";
+                GamingNewsStatus = "TikTok stopped before final confirmation: " + outcome;
+                SavePublishingQueue();
+                break;
+            }
+            SavePublishingQueue();
+        }
+        if (sent == items.Count)
+            GamingNewsStatus = $"TikTok Studio accepted/attempted {sent}/{items.Count} " +
+                "schedules. Studio will publish at the chosen times without manual " +
+                "hourly clicks; check Studio for platform confirmation.";
+        else
+            GamingNewsStatus += $" ({sent}/{items.Count} submitted; " +
+                "remaining files are saved for review.)";
+    }
+
 }
