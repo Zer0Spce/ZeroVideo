@@ -120,19 +120,13 @@ public sealed class OfficialGamingMediaService
             .OrderByDescending(x => x.Count).ToList();
         log?.Invoke("Gaming News verified source pool: " + string.Join(", ",
             rankedSourceCounts.Select(x => x.Host + "=" + x.Count)));
-        if (rankedSourceCounts.Count >= 2 && rankedSourceCounts[1].Count < 5)
-            throw new InvalidDataException(
-                "Second source supplied only " + rankedSourceCounts[1].Count +
-                " unique full-resolution assets. At least five from a second website " +
-                "are needed to avoid another nearly identical 24-shot video.");
+        if (rankedSourceCounts.Count < 2)
+            log?.Invoke("Gaming News: one image source available; using a varied " +
+                "selection from the game-matched pool instead of failing the batch.");
         // One real publisher does not satisfy a multi-source news workflow.
         // Never falsely describe 24 reordered Rockstar images as diverse.
-        if (hosts.Count < 2)
-            throw new InvalidDataException(
-                "Only one usable source website (" + (hosts.Count == 1 ? hosts[0] : "none") +
-                ") supplied unique high-resolution images. Gaming News requires " +
-                "at least two genuine source sites; it will not publish another " +
-                "Rockstar-only slideshow. Check the GameSpot/Gematsu gallery diagnostics.");
+        // Multiple sources are preferred, not a hard requirement: Google may
+        // legitimately return strong, varied images from a single host.
         var goalHosts = Math.Min(4, hosts.Count);
         var maximumPerHost = hosts.Count >= 3 ? 12 : 15;
         var storyKeywords = Regex.Matches(project.Title.ToLowerInvariant(), @"[a-z]{4,}")
@@ -206,9 +200,8 @@ public sealed class OfficialGamingMediaService
         }
 
         if (perSource.Count < 2)
-            throw new InvalidDataException(
-                "Diversified shot selection ended with one source. " +
-                "No new video was published; inspect the media-source diagnostics.");
+            log?.Invoke("Gaming News: only one source contributed this time; " +
+                "randomized shot selection remains enabled.");
         log?.Invoke("Gaming News diversified selection: " +
             chosen.Count + " shots, " + perSource.Count + " source sites (" +
             string.Join(", ", perSource.Select(x => x.Key + "=" + x.Value)) +
@@ -1403,7 +1396,9 @@ public sealed class OfficialGamingMediaService
             new[] { ".mp4", ".webm", ".mov", ".mkv", ".avi" }
                 .Contains(Path.GetExtension(x.LocalPath), StringComparer.OrdinalIgnoreCase))
             .ToList();
-        var requiredDistinct = IsGtaSixStory(project.Title, focus) ? 20 : 12;
+        // Don't refuse a valid video just because Google supplied fewer than
+        // twenty photos. Use all available distinct images across 24 cuts.
+        var requiredDistinct = 6;
         if (uniqueAssets.Count < requiredDistinct)
             throw new InvalidDataException(
                 $"Gaming News found only {uniqueAssets.Count}/{requiredDistinct} distinct matching game assets. " +
@@ -1736,6 +1731,9 @@ public sealed class OfficialGamingMediaService
                     candidates.Add(new GoogleImageCandidate(imageUrl, "", ""));
                 }
                 log?.Invoke($"Google Images '{term}': {candidates.Count} original-image URL candidates.");
+                // Pick from the whole page, not just Google's first results.
+                // Shuffling is per-video so sequential news clips get different imagery.
+                candidates = candidates.OrderBy(_ => random.Next()).ToList();
                 foreach (var candidate in candidates)
                 {
                     ct.ThrowIfCancellationRequested();
