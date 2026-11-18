@@ -190,6 +190,7 @@ public sealed partial class MainViewModel
                 ImagesPerChapter = 24, // 8 narration beats x 3 real-media shots. Never AI-generated images.
                 SceneTransitions = true,
                 GamingNewsSmoothOnly = true,
+                GamingNewsPreserveImageDetail = true,
                 TransitionStyle = "Crossfade",
                 TransitionDurationSeconds = 0.28,
                 AddMotion = true,
