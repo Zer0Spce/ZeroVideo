@@ -410,6 +410,55 @@ public sealed class OfficialGamingMediaService
     private static string Normalize(string value) =>
         Regex.Replace(WebUtility.HtmlDecode(value).ToLowerInvariant(), @"[^a-z0-9]+", " ").Trim();
 
+    // A title-prefix or generic "grand theft auto" match is insufficient:
+    // GTA V media must never be selected for GTA VI. Require a complete
+    // game identifier and reject conflicting edition identifiers.
+    internal static bool IsGtaSix(string value) => Regex.IsMatch(value,
+        @"(?i)\b(?:gta[\s_-]*(?:vi|6)|grand[\s_-]+theft[\s_-]+auto[\s_-]*(?:vi|6))\b");
+    internal static bool IsGtaFive(string value) => Regex.IsMatch(value,
+        @"(?i)\b(?:gta[\s_-]*(?:v|5)|grand[\s_-]+theft[\s_-]+auto[\s_-]*(?:v|5))\b");
+
+    private static bool IsGtaSixStory(string title, string focus)
+        => IsGtaSix(title) || IsGtaSix(focus);
+
+    private static bool RejectGenericGraphic(Uri asset, string metadata)
+    {
+        var path = Uri.UnescapeDataString(asset.AbsolutePath);
+        var name = Path.GetFileNameWithoutExtension(path);
+        var combined = name + " " + metadata;
+        // Branding, web controls, banners, spinner/loading graphics and
+        // tiny icons are not game screenshots.
+        return Regex.IsMatch(combined,
+            @"(?i)(?:^|[^a-z0-9])(logo|icon|sprite|placeholder|spinner|loading|avatar|default|badge|button|whitebar|loadingbar|progress|skeleton|thumb_default|generic)(?:$|[^a-z0-9])");
+    }
+
+    private static bool ExactGameEvidence(
+        string title, string focus, Uri sourcePage, Uri image, string metadata)
+    {
+        if (!IsGtaSixStory(title, focus)) return true;
+        var source = Uri.UnescapeDataString(sourcePage.AbsoluteUri);
+        var asset = Uri.UnescapeDataString(image.AbsoluteUri);
+        var evidence = source + " " + asset + " " + metadata;
+        // GTA 5 and GTA 6 are different games. If the asset or its media
+        // label explicitly identifies GTA V, reject regardless of article.
+        if (IsGtaFive(asset + " " + metadata)) return false;
+        // A genuinely GTA VI-specific Rockstar/PlayStation/article URL,
+        // or explicit GTA VI media metadata, is required.
+        return IsGtaSix(evidence) &&
+            !RejectGenericGraphic(image, metadata);
+    }
+
+    private static bool MatchStoreGame(string expectedStory, string focus, string game)
+    {
+        if (IsGtaSixStory(expectedStory, focus))
+            return IsGtaSix(game) && !IsGtaFive(game);
+        var gameWords = Normalize(game);
+        var story = Normalize(expectedStory + " " + focus);
+        return gameWords.Length > 5 &&
+            Regex.IsMatch(story, @"(?i)(?<![a-z0-9])" +
+                Regex.Escape(gameWords) + @"(?![a-z0-9])");
+    }
+
     private static IEnumerable<string> Queries(VideoProject project, string focus)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -547,6 +596,11 @@ public sealed class OfficialGamingMediaService
                 if (html.Length < 100) continue;
                 foreach (var video in ExtractOfficialVideoUrls(html, sourcePage).Take(5))
                 {
+                    if (!ExactGameEvidence(project.Title, focus, sourcePage, video, ""))
+                    {
+                        log?.Invoke("Rejected publisher video without exact game evidence: " + video);
+                        continue;
+                    }
                     if (movieSeen.Add(video.ToString()))
                         movies.Add((video, project.Title, sourcePage.ToString(),
                             sourcePage.Host + " official video"));
@@ -554,6 +608,11 @@ public sealed class OfficialGamingMediaService
                 foreach (var img in ExtractPublisherImages(html, sourcePage).Take(24))
                 {
                     if (publisherImages.Any(x => x.Image == img)) continue;
+                    if (!ExactGameEvidence(project.Title, focus, sourcePage, img, ""))
+                    {
+                        log?.Invoke("Rejected publisher image without exact game evidence: " + img);
+                        continue;
+                    }
                     publisherImages.Add((img, sourcePage));
                     if (publisherImages.Count >= 12) break;
                 }
@@ -584,7 +643,7 @@ public sealed class OfficialGamingMediaService
                     var game = item.GetProperty("name").GetString() ?? "";
                     var normalizedName = Normalize(game);
                     if (normalizedName.Length < 5 ||
-                        !context.Contains(normalizedName, StringComparison.Ordinal))
+                        !MatchStoreGame(project.Title, focus, game))
                         continue;
                     var detailUri = new Uri("https://store.steampowered.com/api/appdetails?appids=" +
                         appid.ToString(CultureInfo.InvariantCulture) + "&l=english&cc=us");
@@ -600,8 +659,11 @@ public sealed class OfficialGamingMediaService
                         ? title.GetString() ?? game : game;
                     // Verify that the exact store title really occurs in the
                     // story/script, not a coincidental two-word Steam result.
-                    if (!context.Contains(Normalize(canonicalName), StringComparison.Ordinal))
+                    if (!MatchStoreGame(project.Title, focus, canonicalName))
+                    {
+                        log?.Invoke("Rejected different game edition: " + canonicalName);
                         continue;
+                    }
                     if (data.TryGetProperty("movies", out var trailers) &&
                         trailers.ValueKind == JsonValueKind.Array)
                     {
@@ -657,12 +719,18 @@ public sealed class OfficialGamingMediaService
                     var html = await DownloadNewsHtmlAsync(story, ct);
                     foreach (var clip in ExtractOfficialVideoUrls(html, story).Take(3))
                     {
+                        if (!ExactGameEvidence(project.Title, focus, story, clip, "")) continue;
                         if (movieSeen.Add(clip.ToString()))
                             movies.Add((clip, project.Title, story.ToString(),
                                 story.Host + " news article video"));
                     }
                     foreach (var candidate in ExtractPublisherImages(html, story).Take(12))
                     {
+                        if (!ExactGameEvidence(project.Title, focus, story, candidate, ""))
+                        {
+                            log?.Invoke("Rejected unrelated or generic article image: " + candidate);
+                            continue;
+                        }
                         if (editorialImages.All(x => x.Image != candidate))
                             editorialImages.Add((candidate, story));
                     }
