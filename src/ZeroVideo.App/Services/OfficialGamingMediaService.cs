@@ -495,4 +495,68 @@ public sealed class OfficialGamingMediaService
         File.Move(tmp, video, true);
         log?.Invoke("Small on-screen official source credit burned into MP4.");
     }
+    /// <summary>
+    /// Only Gaming News uses this final MP4 timing pass. Keep a visible first
+    /// frame before speech, hold the last frame after the final word, and delay
+    /// existing captions so they remain aligned with the narration.
+    /// </summary>
+    public async Task AddNarrationBreathingRoomAsync(
+        string video, ZeroVideoSettings settings, ProcessRunner runner,
+        Action<string>? log, CancellationToken ct)
+    {
+        const double leadSeconds = 1.5;
+        const double tailSeconds = 1.5;
+        if (!File.Exists(video))
+            throw new FileNotFoundException("Gaming News MP4 missing.", video);
+
+        var output = Path.Combine(Path.GetDirectoryName(video)!,
+            "gaming-news-padded-" + Guid.NewGuid().ToString("N") + ".mp4");
+        var args = "-hide_banner -loglevel error -y -i \"" + video +
+            "\" -filter_complex \"[0:v]tpad=start_mode=clone:stop_mode=clone:" +
+            "start_duration=1.5:stop_duration=1.5,format=yuv420p[v];" +
+            "[0:a]adelay=1500:all=1,apad=pad_dur=1.5[a]\"" +
+            " -map \"[v]\" -map \"[a]\" -c:v libx264 -preset veryfast -crf 20" +
+            " -c:a aac -b:a 192k -movflags +faststart -shortest \"" + output + "\"";
+        try
+        {
+            var result = await runner.RunAsync(settings.FfmpegPath, args, ct: ct);
+            if (result.ExitCode != 0 || !File.Exists(output) ||
+                new FileInfo(output).Length < 8192)
+                throw new InvalidOperationException(
+                    "Could not add Gaming News narration padding: " + result.StdErr);
+
+            // Retain the SRT for editors and keep it synchronized after the
+            // 1.5 second silent video lead-in. The burnt-in captions themselves
+            // are shifted together with the original first frame by tpad.
+            var srt = Path.ChangeExtension(video, ".srt");
+            if (File.Exists(srt))
+            {
+                var original = await File.ReadAllTextAsync(srt, ct);
+                var shifted = System.Text.RegularExpressions.Regex.Replace(
+                    original,
+                    @"(?<start>\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(?<end>\d{2}:\d{2}:\d{2},\d{3})",
+                    m =>
+                    {
+                        static string Add(string stamp)
+                        {
+                            var value = TimeSpan.ParseExact(stamp, @"hh\:mm\:ss\,fff",
+                                CultureInfo.InvariantCulture).Add(TimeSpan.FromMilliseconds(1500));
+                            return value.ToString(@"hh\:mm\:ss\,fff", CultureInfo.InvariantCulture);
+                        }
+                        return Add(m.Groups["start"].Value) + " --> " +
+                            Add(m.Groups["end"].Value);
+                    });
+                await File.WriteAllTextAsync(srt, shifted, ct);
+            }
+            File.Move(output, video, true);
+            log?.Invoke("Gaming News timing: 1.5s visual lead-in before voiceover " +
+                "and 1.5s last-frame hold after voiceover. Captions remain aligned.");
+        }
+        finally
+        {
+            if (File.Exists(output))
+                try { File.Delete(output); } catch { }
+        }
+    }
+
 }
