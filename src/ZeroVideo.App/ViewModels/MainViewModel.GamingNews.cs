@@ -17,6 +17,7 @@ public sealed partial class MainViewModel
 {
     private int _gamingNewsVideoCount = 48;
     private string _gamingNewsFocus = "";
+    private string _gamingNewsChannelName = "";
     private string _gamingNewsScheduleStart = "";
     private string _gamingNewsStatus = "Ready. Configure the batch and select Generate & Schedule.";
     private string _gamingNewsMusicPath = "";
@@ -27,6 +28,7 @@ public sealed partial class MainViewModel
     private int _gamingNewsScheduled;
     public int GamingNewsVideoCount { get => _gamingNewsVideoCount; set => Set(ref _gamingNewsVideoCount, Math.Clamp(value, 1, 96)); }
     public string GamingNewsFocus { get => _gamingNewsFocus; set => Set(ref _gamingNewsFocus, value); }
+    public string GamingNewsChannelName { get => _gamingNewsChannelName; set => Set(ref _gamingNewsChannelName, value); }
     public string GamingNewsScheduleStart { get => _gamingNewsScheduleStart; set => Set(ref _gamingNewsScheduleStart, value); }
     public string GamingNewsStatus { get => _gamingNewsStatus; private set => Set(ref _gamingNewsStatus, value); }
     public string GamingNewsMusicPath { get => _gamingNewsMusicPath; set => Set(ref _gamingNewsMusicPath, value); }
@@ -142,13 +144,27 @@ public sealed partial class MainViewModel
             ShortQueue.Clear();
             foreach (var topic in relevant)
             {
+                var channelName = GamingNewsChannelName.Trim();
+                var opening = string.IsNullOrWhiteSpace(channelName)
+                    ? "Hey guys! Here is the latest gaming news about " + topic.Title + "."
+                    : "Hey guys! Welcome to " + channelName + "! Here is the latest news about " + topic.Title + ".";
                 var detail = "Gaming news report: " + topic.Title +
                     ". Original report: " + topic.Url +
                     ". Publisher: " + topic.Publisher +
                     ". Publication date: " + topic.PublishedAt.ToString("yyyy-MM-dd") +
                     ". Verify claims from the cited source, do not fabricate details, " +
                     "use only topic-relevant visuals with appropriate rights. " +
-                    "Make an original 9:16 English news explainer with burned-in Shorts captions.";
+                    "Make an original 9:16 English news explainer with burned-in Shorts captions. " +
+                    "IMPORTANT SCRIPT FORMAT for this Gaming News video only: " +
+                    "The very first spoken words of chapter 1 MUST be this natural channel greeting, " +
+                    "verbatim (without quotation marks): " + opening + " " +
+                    "After this introduction, immediately report the verified facts with smooth " +
+                    "conversational transitions. Do not repeat the greeting in later chapters. " +
+                    "The very last spoken sentence of the final chapter MUST be a short, engaging " +
+                    "on-topic audience question or a factually justified cliffhanger, inviting comments. " +
+                    "Do not fabricate upcoming announcements, teasers or unresolved stories for suspense. " +
+                    "The greeting and ending MUST be part of spoken narration rather than captions, " +
+                    "stage directions or a separate unspoken prompt.";
                 ShortQueue.Add(new ShortQueueEntry { Idea = detail });
             }
             ShortDuration = 1;
