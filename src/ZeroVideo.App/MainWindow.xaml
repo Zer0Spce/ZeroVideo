@@ -411,6 +411,9 @@
                   <Grid>
                     <Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                     <StackPanel>
+                      <Label Content="TIKTOK CHANNEL NAME"/>
+                      <TextBox Text="{Binding GamingNewsChannelName, UpdateSourceTrigger=PropertyChanged}" ToolTip="Example: GamePulse Daily. This name will be spoken in the opening of every Gaming News video."/>
+                      <TextBlock Text="The narration welcomes viewers to your channel and finishes with a relevant question or cliffhanger." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,12"/>
                       <Label Content="ONLY THIS GAME / TOPIC (blank = all gaming news)"/>
                       <TextBox Text="{Binding GamingNewsFocus, UpdateSourceTrigger=PropertyChanged}" ToolTip="Example: GTA VI, PlayStation 5, Nintendo Switch 2. Blank for all gaming news."/>
                       <TextBlock Text="For example GTA VI: only matching headlines will qualify. Fewer news articles may mean fewer videos." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,12"/>
