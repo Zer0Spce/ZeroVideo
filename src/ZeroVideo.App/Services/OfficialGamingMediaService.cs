@@ -122,13 +122,13 @@ public sealed class OfficialGamingMediaService
         // in an <a href>, not in <img src>; the original extractor missed all
         // these actual screenshots and returned only thumbnails/branding.
         foreach (Match match in Regex.Matches(html,
-            @"<a\\b[^>]{0,1800}href\\s*=\\s*[""'](?<url>[^""']+)[""']",
+            @"<a\b[^>]{0,1800}href\s*=\s*[""'](?<url>[^""']+)[""']",
             RegexOptions.IgnoreCase).Cast<Match>().Take(400))
         {
             var raw = WebUtility.HtmlDecode(match.Groups["url"].Value);
             if (!Uri.TryCreate(page, raw, out var image) ||
                 !IsPublicHttps(image) ||
-                !Regex.IsMatch(image.AbsolutePath, @"(?i)\\.(?:jpg|jpeg|png)$"))
+                !Regex.IsMatch(image.AbsolutePath, @"(?i)\.(?:jpg|jpeg|png)$"))
                 continue;
             yield return image;
         }
@@ -586,7 +586,7 @@ public sealed class OfficialGamingMediaService
             sourcePage.AbsolutePath.StartsWith("/VI/media", StringComparison.OrdinalIgnoreCase) &&
             image.Host == "www.rockstargames.com" &&
             image.AbsolutePath.StartsWith("/VI/_next/static/media/", StringComparison.OrdinalIgnoreCase) &&
-            Regex.IsMatch(image.AbsolutePath, @"(?i)\\.(?:jpe?g|png)$");
+            Regex.IsMatch(image.AbsolutePath, @"(?i)\.(?:jpe?g|png)$");
         // A GTA VI-scoped publisher gallery explicitly identifies the game,
         // even when its individual filename is Jason_Duval_01.jpg.
         // Ordinary news article pages are NOT trustworthy game identity.
