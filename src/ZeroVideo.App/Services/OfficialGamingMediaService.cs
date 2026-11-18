@@ -347,8 +347,11 @@ public sealed class OfficialGamingMediaService
         response.EnsureSuccessStatusCode();
         var type = response.Content.Headers.ContentType?.MediaType ?? "";
         if (!type.StartsWith("image/jpeg", StringComparison.OrdinalIgnoreCase) &&
-            !type.StartsWith("image/png", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("Official page linked non-JPEG/PNG content.");
+            !type.StartsWith("image/png", StringComparison.OrdinalIgnoreCase) &&
+            !type.StartsWith("image/webp", StringComparison.OrdinalIgnoreCase) &&
+            !type.StartsWith("image/avif", StringComparison.OrdinalIgnoreCase) &&
+            !type.StartsWith("application/octet-stream", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Media server returned non-image content: " + type);
         if (response.Content.Headers.ContentLength > 12 * 1024 * 1024)
             throw new InvalidDataException("Official image too large.");
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
@@ -961,6 +964,65 @@ public sealed class OfficialGamingMediaService
     private static bool IsPng(byte[] bytes) =>
         bytes.Length > 2000 && bytes[0] == 137 && bytes[1] == 80 &&
         bytes[2] == 78 && bytes[3] == 71;
+    private static bool IsWebp(byte[] bytes) =>
+        bytes.Length > 20 &&
+        bytes[0] == (byte)'R' && bytes[1] == (byte)'I' &&
+        bytes[2] == (byte)'F' && bytes[3] == (byte)'F' &&
+        bytes[8] == (byte)'W' && bytes[9] == (byte)'E' &&
+        bytes[10] == (byte)'B' && bytes[11] == (byte)'P';
+    private static bool IsAvif(byte[] bytes) =>
+        bytes.Length > 16 &&
+        bytes[4] == (byte)'f' && bytes[5] == (byte)'t' &&
+        bytes[6] == (byte)'y' && bytes[7] == (byte)'p' &&
+        (System.Text.Encoding.ASCII.GetString(bytes, 8, 4) is "avif" or "avis" ||
+         System.Text.Encoding.ASCII.GetString(bytes, 16, 4) is "avif" or "avis");
+
+    // Keep original JPG/PNG, but transcode modern WEBP/AVIF to PNG so that
+    // WPF dimensions and FFmpeg Shorts stitching work consistently. Conversion
+    // is ONLY in Gaming News; the other tabs and caption pipelines are untouched.
+    private static async Task<string?> SaveGamingPhotoAsync(
+        byte[] bytes, string basePath, string ffmpeg, Action<string>? log, CancellationToken ct)
+    {
+        if (IsJpeg(bytes) || IsPng(bytes))
+        {
+            var file = basePath + (IsJpeg(bytes) ? ".jpg" : ".png");
+            await File.WriteAllBytesAsync(file, bytes, ct);
+            return file;
+        }
+        if (!IsWebp(bytes) && !IsAvif(bytes)) return null;
+        var ext = IsWebp(bytes) ? ".webp" : ".avif";
+        var input = basePath + ext;
+        var output = basePath + ".png";
+        try
+        {
+            await File.WriteAllBytesAsync(input, bytes, ct);
+            var runner = new ProcessRunner();
+            var response = await runner.RunAsync(ffmpeg,
+                "-hide_banner -loglevel error -y -i \"" + input +
+                "\" -frames:v 1 -update 1 \"" + output + "\"", ct: ct);
+            if (response.ExitCode != 0 || !File.Exists(output) ||
+                new FileInfo(output).Length < 512)
+            {
+                log?.Invoke("Gaming News " + ext + " conversion failed: " + response.StdErr);
+                return null;
+            }
+            log?.Invoke("Gaming News: converted " + ext + " image to renderable PNG.");
+            return output;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            log?.Invoke("Gaming News image conversion unavailable: " + ex.Message);
+            return null;
+        }
+        finally
+        {
+            try { if (File.Exists(input)) File.Delete(input); } catch { }
+            if (File.Exists(output) && new FileInfo(output).Length < 512)
+                try { File.Delete(output); } catch { }
+        }
+    }
+
     private static string MediaFingerprint(string file)
     {
         // Compare file contents, not just URLs: multiple news websites often
