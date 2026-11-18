@@ -311,11 +311,17 @@ public sealed class OfficialGamingMediaService
                         x => x.Name.LocalName == "description")?.Value ?? "";
                     if (!Uri.TryCreate(link, UriKind.Absolute, out var page) ||
                         !JournalismHost(page) || pages.Contains(page)) continue;
-                    // Exact focused niche must be in the search snippet or
-                    // headline; reject stories merely about a similar game.
-                    if (!string.IsNullOrWhiteSpace(focus) &&
-                        !Normalize(title + " " + summary).Contains(
-                            Normalize(focus), StringComparison.OrdinalIgnoreCase))
+                    // Search by the core game's full identity, not the
+                    // article headline. For GTA VI accept its edition aliases,
+                    // reject GTA V and unrelated games; subject boosters only
+                    // rank the results rather than restricting the entire search.
+                    var evidence = title + " " + summary + " " + page.AbsolutePath;
+                    if (IsGtaSixStory(project.Title, focus))
+                    {
+                        if (!IsGtaSix(evidence) || IsGtaFive(evidence)) continue;
+                    }
+                    else if (!Normalize(evidence).Contains(
+                        Normalize(subject), StringComparison.OrdinalIgnoreCase))
                         continue;
                     pages.Add(page);
                     if (pages.Count >= 10) break;
@@ -413,7 +419,7 @@ public sealed class OfficialGamingMediaService
         var named = project.Chapters.SelectMany(x => x.Scenes)
             .Select(x => x.VisualQuery?.Trim() ?? "")
             .FirstOrDefault(x => x.Length is >= 4 and <= 65 &&
-                !Regex.IsMatch(x, @"(?i)\\b(news|latest|screenshot|background|image|cinematic|gameplay|trailer)\\b"));
+                !Regex.IsMatch(x, @"(?i)\b(news|latest|screenshot|background|image|cinematic|gameplay|trailer)\b"));
         return named ?? project.Title.Split(':', ',', '—')[0].Trim();
     }
 
