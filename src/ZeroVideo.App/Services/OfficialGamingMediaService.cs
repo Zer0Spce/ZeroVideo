@@ -258,6 +258,58 @@ public sealed class OfficialGamingMediaService
     private static bool IsPng(byte[] bytes) =>
         bytes.Length > 2000 && bytes[0] == 137 && bytes[1] == 80 &&
         bytes[2] == 78 && bytes[3] == 71;
+    private static bool IsMp4(byte[] bytes) =>
+        bytes.Length > 4096 && bytes[4] == (byte)'f' &&
+        bytes[5] == (byte)'t' && bytes[6] == (byte)'y' && bytes[7] == (byte)'p';
+
+    // Videos come from the verified Steam game's publisher-provided trailers
+    // and from direct MP4 sources embedded in genuine official news pages.
+    // Do not follow redirects to unrelated hosts.
+    private static IEnumerable<Uri> ExtractOfficialVideoUrls(string html, Uri page)
+    {
+        foreach (Match m in Regex.Matches(html,
+            @"<(?:video|source|meta)\b[^>]{0,2400}>",
+            RegexOptions.IgnoreCase).Cast<Match>().Take(90))
+        {
+            var tag = m.Value;
+            if (tag.StartsWith("<meta", StringComparison.OrdinalIgnoreCase) &&
+                !Regex.IsMatch(tag, @"(?:og:video|twitter:player:stream)",
+                    RegexOptions.IgnoreCase)) continue;
+            var match = Regex.Match(tag,
+                @"(?:src|content|data-src)\s*=\s*[""'](?<u>[^""']+)[""']",
+                RegexOptions.IgnoreCase);
+            var value = WebUtility.HtmlDecode(match.Groups["u"].Value);
+            if (!Uri.TryCreate(page, value, out var uri) ||
+                !IsPublicHttps(uri) || !uri.AbsolutePath.EndsWith(".mp4",
+                    StringComparison.OrdinalIgnoreCase)) continue;
+            yield return uri;
+        }
+    }
+
+    private static async Task<byte[]> GetVideoAsync(Uri uri, CancellationToken ct)
+    {
+        if (!IsPublicHttps(uri)) throw new InvalidDataException("Invalid video URL.");
+        const int maxSize = 120 * 1024 * 1024;
+        using var response = await Http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct);
+        response.EnsureSuccessStatusCode();
+        if (response.Content.Headers.ContentLength > maxSize)
+            throw new InvalidDataException("Gameplay clip too large.");
+        var type = response.Content.Headers.ContentType?.MediaType ?? "";
+        if (type.Length > 0 && !type.Contains("mp4", StringComparison.OrdinalIgnoreCase) &&
+            !type.Contains("octet-stream", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Not an MP4 video.");
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var memory = new MemoryStream();
+        var block = new byte[64 * 1024];
+        int length;
+        while ((length = await stream.ReadAsync(block, ct)) > 0)
+        {
+            if (memory.Length + length > maxSize)
+                throw new InvalidDataException("Gameplay video exceeds safe download cap.");
+            await memory.WriteAsync(block.AsMemory(0, length), ct);
+        }
+        return memory.ToArray();
+    }
 
     public async Task<OfficialMediaResult> AcquireAsync(VideoProject project, string focus,
         string articleSummary, Action<string>? log, CancellationToken ct)
@@ -269,6 +321,8 @@ public sealed class OfficialGamingMediaService
         var candidates = Queries(project, focus).Take(15).ToList();
         var examined = new HashSet<int>();
         var images = new List<(Uri Uri, string Game, string Store)>();
+        var movies = new List<(Uri Uri, string Game, string Page, string Source)>();
+        var movieSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         // Priority 1: images genuinely hosted/linked by the official publisher
         // or platform article, when the news report itself comes from one.
         var publisherImages = new List<(Uri Image, Uri Source)>();
@@ -280,6 +334,12 @@ public sealed class OfficialGamingMediaService
             {
                 var html = await DownloadPublisherHtmlAsync(sourcePage, ct);
                 if (html.Length < 100) continue;
+                foreach (var video in ExtractOfficialVideoUrls(html, sourcePage).Take(5))
+                {
+                    if (movieSeen.Add(video.ToString()))
+                        movies.Add((video, project.Title, sourcePage.ToString(),
+                            sourcePage.Host + " official video"));
+                }
                 foreach (var img in ExtractPublisherImages(html, sourcePage).Take(24))
                 {
                     if (publisherImages.Any(x => x.Image == img)) continue;
@@ -331,6 +391,24 @@ public sealed class OfficialGamingMediaService
                     // story/script, not a coincidental two-word Steam result.
                     if (!context.Contains(Normalize(canonicalName), StringComparison.Ordinal))
                         continue;
+                    if (data.TryGetProperty("movies", out var trailers) &&
+                        trailers.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var trailer in trailers.EnumerateArray().Take(4))
+                        {
+                            if (!trailer.TryGetProperty("mp4", out var mp4) ||
+                                !mp4.TryGetProperty("max", out var source)) continue;
+                            var url = source.GetString();
+                            if (!Uri.TryCreate(url, UriKind.Absolute, out var trailerUri) ||
+                                !SteamHost(trailerUri) ||
+                                !trailerUri.AbsolutePath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase))
+                                continue;
+                            if (movieSeen.Add(trailerUri.ToString()))
+                                movies.Add((trailerUri, canonicalName,
+                                    "https://store.steampowered.com/app/" + appid,
+                                    "Publisher gameplay trailer / Steam"));
+                        }
+                    }
                     foreach (var screenshot in screenshots.EnumerateArray().Take(10))
                     {
                         var url = screenshot.TryGetProperty("path_full", out var full)
@@ -372,7 +450,8 @@ public sealed class OfficialGamingMediaService
                 catch (Exception ex) { log?.Invoke("Editorial article images unavailable: " + ex.Message); }
             }
         }
-        if (images.Count == 0 && publisherImages.Count == 0 && editorialImages.Count == 0)
+        if (images.Count == 0 && publisherImages.Count == 0 &&
+            editorialImages.Count == 0 && movies.Count == 0)
             throw new InvalidDataException(
                 "No matched first-party publisher/newsroom or Steam screenshots found. " +
                 "Gaming News will NOT generate AI pictures, use random stock, or publish an empty backdrop.");
@@ -444,19 +523,51 @@ public sealed class OfficialGamingMediaService
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { log?.Invoke("Official screenshot download skipped: " + ex.Message); }
         }
-        if (downloaded.Count == 0)
-            throw new InvalidDataException("No valid original official media could be downloaded.");
+        // Save actual playable clips, not synthetic motion or AI animation.
+        // A publisher gameplay trailer is trimmed and reframed by the existing
+        // FFmpeg Shorts renderer. Its original audio is discarded so narration
+        // and selected background music retain their levels.
+        var videos = new List<OfficialAsset>();
+        foreach (var (uri, game, store, source) in movies.Take(7))
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var bytes = await GetVideoAsync(uri, ct);
+                if (!IsMp4(bytes)) continue;
+                var file = Path.Combine(mediaDir, "official-video-" +
+                    (videos.Count + 1).ToString("00") + ".mp4");
+                await File.WriteAllBytesAsync(file, bytes, ct);
+                videos.Add(new OfficialAsset(file, uri.ToString(), game, store,
+                    source, "Source attribution recorded; observe publisher/editorial use terms."));
+                if (videos.Count >= 3) break;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("Official gameplay video skipped: " + ex.Message); }
+        }
+        if (downloaded.Count == 0 && videos.Count == 0)
+            throw new InvalidDataException("No usable authentic game screenshot or video found.");
 
+        // Mix across eight beats. Keep the first and final beats as screenshots
+        // when available; show real footage in the middle. Never create AI
+        // frames to fill missing assets.
         var chapter = project.Chapters.Single();
         for (var i = 0; i < chapter.Scenes.Count; i++)
         {
-            // Prefer distinct real game screenshots, then cycle only if the
-            // official publisher exposes fewer than eight images.
-            var photo = downloaded[i % downloaded.Count];
-            chapter.Scenes[i].MediaPath = photo.LocalPath;
+            var isVideoBeat = videos.Count > 0 && (i == 1 || i == 3 || i == 5);
+            var asset = isVideoBeat ? videos[(i / 2) % videos.Count] :
+                downloaded.Count > 0 ? downloaded[i % downloaded.Count] :
+                videos[i % videos.Count];
+            chapter.Scenes[i].MediaPath = asset.LocalPath;
             chapter.Scenes[i].MediaPaths = [];
         }
-        var sourceNames = downloaded
+        if (videos.Count > 0)
+            log?.Invoke($"Gaming media mix: {downloaded.Count} real screenshots + " +
+                $"{videos.Count} real gameplay trailer clips across 8 visual beats.");
+        else
+            log?.Invoke("No downloadable official MP4 clips were available; " +
+                "rendering authentic screenshots only (never AI imagery).");
+        var sourceNames = downloaded.Concat(videos)
             .Select(x => x.Source.Contains("Steam", StringComparison.OrdinalIgnoreCase)
                 ? "Steam / " + x.GameTitle : x.Source.Replace(" official article image", ""))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -467,11 +578,11 @@ public sealed class OfficialGamingMediaService
         {
             project = project.Title, credit = label,
             legalNote = "Attribution is not a license. Confirm publisher's use rules or applicable news/editorial exception.",
-            assets = downloaded
+            assets = downloaded.Concat(videos).ToList()
         }, new JsonSerializerOptions { WriteIndented = true }), ct);
-        log?.Invoke($"Gaming News: {downloaded.Count} publisher-supplied official screenshots. " +
-            "No ComfyUI/AI images will run. Manifest: " + manifest);
-        return new OfficialMediaResult(label, downloaded);
+        log?.Invoke($"Gaming News: {downloaded.Count} screenshots and " +
+            $"{videos.Count} real video clip(s); no ComfyUI/AI images. Manifest: " + manifest);
+        return new OfficialMediaResult(label, downloaded.Concat(videos).ToList());
     }
 
     public async Task BurnSmallCreditAsync(string video, string credit,
