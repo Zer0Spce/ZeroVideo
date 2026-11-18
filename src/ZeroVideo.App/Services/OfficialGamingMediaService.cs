@@ -150,7 +150,8 @@ public sealed class OfficialGamingMediaService
         "www.polygon.com", "www.theverge.com", "kotaku.com",
         "www.destructoid.com", "www.rockpapershotgun.com",
         "www.gamesradar.com", "www.pushsquare.com", "www.nintendolife.com",
-        "www.purexbox.com", "www.digitaltrends.com", "www.techradar.com"
+        "www.purexbox.com", "www.digitaltrends.com", "www.techradar.com",
+        "www.gamespress.com", "gamespress.com"
     ];
 
     private static bool JournalismHost(Uri uri) => uri.Scheme == "https" &&
@@ -281,8 +282,11 @@ public sealed class OfficialGamingMediaService
         if (subject.Length < 4) return pages;
         var searches = new[]
         {
-            "\"" + subject + "\" game screenshots news",
-            "\"" + subject + "\" gameplay trailer screenshots"
+            "\"" + subject + "\" site:ign.com gameplay screenshots",
+            "\"" + subject + "\" site:gamespot.com game footage",
+            "\"" + subject + "\" site:gamespress.com press kit screenshots trailer",
+            "\"" + subject + "\" site:gematsu.com screenshots trailers",
+            "\"" + subject + "\" gaming news screenshots"
         };
         foreach (var query in searches)
         {
@@ -327,6 +331,76 @@ public sealed class OfficialGamingMediaService
         }
         log?.Invoke($"Gaming media web search: {pages.Count} additional gaming journalism pages.");
         return pages;
+    }
+
+    private sealed record VideoLead(string SourceName, string Channel, string Url,
+        string Title, bool VerifiedGameMatch);
+
+    // YouTube channels are discovery/catalog leads, not downloadable MP4
+    // endpoints. Record exact candidate URLs and titles. Video downloads
+    // require a platform-compliant authorized source.
+    private static readonly (string Name, string Channel)[] VideoChannels =
+    [
+        ("IGN YouTube", "IGN"),
+        ("GameSpot YouTube", "GameSpot"),
+        ("PlayStation YouTube", "PlayStation"),
+        ("Nintendo YouTube", "NintendoAmerica")
+    ];
+
+    private static async Task<IReadOnlyList<VideoLead>> DiscoverVideoChannelLeadsAsync(
+        VideoProject project, string focus, Action<string>? log, CancellationToken ct)
+    {
+        var subject = string.IsNullOrWhiteSpace(focus)
+            ? project.Title.Trim() : focus.Trim();
+        if (subject.Length > 115) subject = subject[..115];
+        var leads = new List<VideoLead>();
+        foreach (var (sourceName, channel) in VideoChannels)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var query = "\"" + subject + "\" site:youtube.com " + channel +
+                    " official gameplay trailer";
+                var uri = new Uri("https://www.bing.com/search?format=rss&q=" +
+                    Uri.EscapeDataString(query));
+                using var response = await Http.GetAsync(
+                    uri, HttpCompletionOption.ResponseHeadersRead, ct);
+                if (!response.IsSuccessStatusCode ||
+                    response.Content.Headers.ContentLength > 350_000) continue;
+                var xml = await response.Content.ReadAsStringAsync(ct);
+                if (xml.Length > 350_000) continue;
+                var document = XDocument.Parse(xml, LoadOptions.None);
+                foreach (var item in document.Descendants()
+                    .Where(x => x.Name.LocalName == "item").Take(15))
+                {
+                    var link = item.Elements().FirstOrDefault(
+                        x => x.Name.LocalName == "link")?.Value ?? "";
+                    var title = item.Elements().FirstOrDefault(
+                        x => x.Name.LocalName == "title")?.Value ?? "";
+                    if (!Uri.TryCreate(link, UriKind.Absolute, out var candidate) ||
+                        candidate.Scheme != "https" ||
+                        !(candidate.Host == "www.youtube.com" ||
+                          candidate.Host == "youtube.com") ||
+                        !(candidate.AbsolutePath.StartsWith("/watch", StringComparison.Ordinal) ||
+                          candidate.AbsolutePath.StartsWith("/shorts/", StringComparison.Ordinal)) ||
+                        !title.Contains(subject, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    // A search result mentioning GTA VI is not evidence of
+                    // what a thumbnail actually shows. Treat as a lead only.
+                    if (IsGtaSixStory(project.Title, focus) && IsGtaFive(title))
+                        continue;
+                    if (leads.All(x => x.Url != candidate.ToString()))
+                        leads.Add(new VideoLead(sourceName, channel,
+                            candidate.ToString(), title, true));
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke(sourceName +
+                " search unavailable: " + ex.Message); }
+        }
+        log?.Invoke($"YouTube source discovery: {leads.Count} matching IGN, GameSpot, PlayStation and Nintendo video links. " +
+            "References only; no unlicensed download attempted.");
+        return leads;
     }
 
     private static string GamingMediaSubject(VideoProject project, string focus)
@@ -584,6 +658,8 @@ public sealed class OfficialGamingMediaService
         var independentPublishers = await DiscoverIndependentPublisherPagesAsync(
             project, focus, log, ct);
         var independentNewsPages = await DiscoverGamingNewsMediaPagesAsync(
+            project, focus, log, ct);
+        var youtubeLeads = await DiscoverVideoChannelLeadsAsync(
             project, focus, log, ct);
         foreach (var sourcePage in PublisherPages(project)
                      .Concat(linkedPublishers).Concat(independentPublishers)
@@ -911,7 +987,23 @@ public sealed class OfficialGamingMediaService
         {
             project = project.Title, credit = label,
             legalNote = "Attribution is not a license. Confirm publisher's use rules or applicable news/editorial exception.",
-            assets = downloaded.Concat(videos).ToList()
+            assets = downloaded.Concat(videos).ToList(),
+            youtubeReferenceLeads = youtubeLeads,
+            providerPriority = new[]
+            {
+                "Official publisher / game website",
+                "IGN, GameSpot, Games Press, Gematsu",
+                "Other relevant gaming publications",
+                "Wikimedia Commons",
+                "Original article screenshot",
+                "Steam (last resort)"
+            },
+            youtubeVideoSources = new[]
+            {
+                "IGN YouTube", "GameSpot YouTube",
+                "PlayStation YouTube", "Nintendo YouTube"
+            },
+            rumorPolicy = "Reddit GamingLeaksAndRumours is unverified: never treat rumors as established fact."
         }, new JsonSerializerOptions { WriteIndented = true }), ct);
         log?.Invoke($"Gaming News: {downloaded.Count} screenshots and " +
             $"{videos.Count} real video clip(s); no ComfyUI/AI images. Manifest: " + manifest);
