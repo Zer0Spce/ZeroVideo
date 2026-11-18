@@ -326,7 +326,7 @@ public sealed partial class MainViewModel
                 try
                 {
                     var official = await new OfficialGamingMediaService().AcquireAsync(
-                        project, GamingNewsFocus, topic.Summary, Log, _cts.Token);
+                        project, GamingNewsFocus, topic.Summary, _browser, Settings, Log, _cts.Token);
                     await _store.SaveAsync(project, Settings.ProjectsRoot);
                     GamingNewsStatus = $"Rendering real game media {index+1}/{relevant.Count}...";
                     var result = await _pipeline.RunAsync(project, Settings, Log,
