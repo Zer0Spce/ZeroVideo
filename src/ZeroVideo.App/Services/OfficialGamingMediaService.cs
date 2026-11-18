@@ -456,8 +456,8 @@ public sealed class OfficialGamingMediaService
             chapter.Scenes[i].MediaPath = photo.LocalPath;
             chapter.Scenes[i].MediaPaths = [];
         }
-        var sourceNames = downloaded.Select(x => x.Source)
-            .Select(x => x.Contains("Steam", StringComparison.OrdinalIgnoreCase)
+        var sourceNames = downloaded
+            .Select(x => x.Source.Contains("Steam", StringComparison.OrdinalIgnoreCase)
                 ? "Steam / " + x.GameTitle : x.Source.Replace(" official article image", ""))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(3);
