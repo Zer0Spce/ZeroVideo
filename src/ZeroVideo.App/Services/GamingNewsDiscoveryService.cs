@@ -19,7 +19,15 @@ public sealed class GamingNewsDiscoveryService
         ("PC Gamer", "https://www.pcgamer.com/rss/"),
         ("Gematsu", "https://www.gematsu.com/feed"),
         ("PlayStation Blog", "https://blog.playstation.com/feed/"),
-        ("Xbox Wire", "https://news.xbox.com/en-us/feed/")
+        ("Xbox Wire", "https://news.xbox.com/en-us/feed/"),
+        ("Eurogamer", "https://www.eurogamer.net/feed"),
+        ("Video Games Chronicle", "https://www.videogameschronicle.com/feed/"),
+        ("Nintendo Life", "https://www.nintendolife.com/feeds/latest"),
+        ("Push Square", "https://www.pushsquare.com/feeds/latest"),
+        ("Rock Paper Shotgun", "https://www.rockpapershotgun.com/feed"),
+        ("Destructoid", "https://www.destructoid.com/feed/"),
+        ("Polygon", "https://www.polygon.com/rss/index.xml"),
+        ("Kotaku", "https://kotaku.com/rss")
     ];
     private static async Task LogUnverifiedRedditLeadsAsync(
         Action<string>? log, CancellationToken ct)
@@ -49,16 +57,58 @@ public sealed class GamingNewsDiscoveryService
         }
     }
 
+    private static IEnumerable<(string Name, string Url)> NewsSearchFeeds(string focus)
+    {
+        // Google News aggregates independent publications worldwide, so
+        // discovery is no longer restricted to a hardcoded RSS outlet list.
+        // These are ordinary public search feeds, no API or credentials.
+        var queries = new List<string>
+        {
+            "video game news when:3d",
+            "gaming industry news when:3d",
+            "new game announcements when:3d",
+            "PC gaming console gaming news when:3d",
+            "video game trailers updates when:3d"
+        };
+        if (!string.IsNullOrWhiteSpace(focus) &&
+            !focus.Equals("all gaming news", StringComparison.OrdinalIgnoreCase))
+        {
+            var topic = Regex.Replace(focus.Trim(), @"\\s+", " ");
+            if (topic.Length > 75) topic = topic[..75];
+            queries.InsertRange(0, [
+                topic + " video game news when:7d",
+                topic + " game updates when:7d",
+                topic + " gaming announcement when:7d"
+            ]);
+        }
+        foreach (var query in queries)
+        {
+            yield return ("Google News: " + query,
+                "https://news.google.com/rss/search?q=" +
+                Uri.EscapeDataString(query) + "&hl=en-US&gl=US&ceid=US:en");
+        }
+    }
+
+    private static string NormalizedHeadline(string headline)
+    {
+        // Google News appends " - Publisher" and the same story may appear
+        // from a direct publisher feed. Normalize before deduplication.
+        var normalized = Regex.Replace(headline,
+            @"\\s+[-–—]\\s+[^-–—]{2,75}$", "");
+        return Regex.Replace(normalized.ToLowerInvariant(),
+            @"[^a-z0-9]+", " ").Trim();
+    }
+
     private static string Field(XElement parent, string name) =>
         parent.Elements().FirstOrDefault(x => x.Name.LocalName == name)?.Value.Trim() ?? "";
 
     public async Task<List<GamingNewsTopic>> DiscoverAsync(
-        int target, Action<string>? log, CancellationToken ct)
+        int target, Action<string>? log, CancellationToken ct, string focus = "")
     {
         var topics = new List<GamingNewsTopic>();
         var seenUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var seenTitles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (publisher, feed) in Feeds)
+        foreach (var (publisher, feed) in NewsSearchFeeds(focus).Concat(Feeds))
         {
             ct.ThrowIfCancellationRequested();
             try
@@ -73,6 +123,11 @@ public sealed class GamingNewsDiscoveryService
                              x.Name.LocalName is "item" or "entry").Take(120))
                 {
                     var title = Regex.Replace(Field(item, "title"), @"\s+", " ").Trim();
+                    var sourceName = Field(item, "source");
+                    var isGoogleNews = publisher.StartsWith("Google News:", StringComparison.Ordinal);
+                    if (isGoogleNews && sourceName.Length > 0 &&
+                        title.EndsWith(" - " + sourceName, StringComparison.OrdinalIgnoreCase))
+                        title = title[..^(sourceName.Length + 3)].Trim();
                     var link = Field(item, "link");
                     if (string.IsNullOrWhiteSpace(link))
                         link = item.Elements().FirstOrDefault(x => x.Name.LocalName == "link")
@@ -80,7 +135,7 @@ public sealed class GamingNewsDiscoveryService
                     if (!Uri.TryCreate(link, UriKind.Absolute, out var uri) ||
                         uri.Scheme != Uri.UriSchemeHttps || title.Length < 12)
                         continue;
-                    var key = Regex.Replace(title.ToLowerInvariant(), @"[^a-z0-9]+", " ").Trim();
+                    var key = NormalizedHeadline(title);
                     if (!seenUrls.Add(uri.GetLeftPart(UriPartial.Path)) || !seenTitles.Add(key))
                         continue;
                     var publishedText = Field(item, "pubDate");
@@ -100,7 +155,13 @@ public sealed class GamingNewsDiscoveryService
                     description = System.Net.WebUtility.HtmlDecode(description);
                     description = Regex.Replace(description, @"\s+", " ").Trim();
                     if (description.Length > 750) description = description[..750];
-                    topics.Add(new GamingNewsTopic(title, uri.ToString(), publisher, when, description));
+                    // Google News is a discovery index. Preserve the
+                    // publication shown in its <source> field, not Google as
+                    // the claimed original reporter.
+                    var originalPublisher = isGoogleNews && sourceName.Length > 0
+                        ? sourceName : publisher;
+                    topics.Add(new GamingNewsTopic(
+                        title, uri.ToString(), originalPublisher, when, description));
                     accepted++;
                 }
                 log?.Invoke($"Gaming News: {publisher}: {accepted} recent stories.");
@@ -109,6 +170,22 @@ public sealed class GamingNewsDiscoveryService
             catch (Exception ex) { log?.Invoke($"Gaming News: {publisher} unavailable: {ex.Message}"); }
         }
         await LogUnverifiedRedditLeadsAsync(log, ct);
-        return topics.OrderByDescending(x => x.PublishedAt).Take(Math.Clamp(target, 1, 96)).ToList();
+        // Rank recent stories across publishers rather than allowing one
+        // high-volume outlet to fill all 48 news slots.
+        var recent = topics.OrderByDescending(x => x.PublishedAt).ToList();
+        var publishers = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var selected = new List<GamingNewsTopic>();
+        foreach (var story in recent)
+        {
+            if (selected.Count >= Math.Clamp(target, 1, 96)) break;
+            var count = publishers.GetValueOrDefault(story.Publisher);
+            if (count >= Math.Max(5, target / 6)) continue;
+            selected.Add(story);
+            publishers[story.Publisher] = count + 1;
+        }
+        log?.Invoke("Gaming News worldwide discovery: " + topics.Count +
+            " recent stories; " + selected.Count + " selected across " +
+            publishers.Count + " publishers.");
+        return selected;
     }
 }
