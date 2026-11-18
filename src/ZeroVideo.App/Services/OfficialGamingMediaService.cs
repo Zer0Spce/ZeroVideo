@@ -675,6 +675,82 @@ public sealed class OfficialGamingMediaService
             core + " trailer", core + " press media"];
     }
 
+    private static List<string> SimpleGoogleImageQueries(VideoProject project, string focus)
+    {
+        // Plain Google Images searches, not source-filtered searches and not
+        // entire article headlines. "GTA VI Romance Guide" => "GTA VI
+        // screenshots"; "AMD says it loves gamers" => "AMD news".
+        var headline = project.Title + " " + project.Topic;
+        var explicitFocus = focus?.Trim() ?? "";
+        var core = "";
+        var suffix = " news";
+
+        if (IsGtaSixStory(headline, explicitFocus))
+        {
+            core = "GTA VI";
+            suffix = " screenshots";
+        }
+        else if (Regex.IsMatch(headline + " " + explicitFocus,
+                     @"(?i)\b(?:amd|advanced micro devices)\b"))
+        {
+            core = "AMD";
+        }
+        else if (Regex.IsMatch(headline + " " + explicitFocus,
+                     @"(?i)\bnvidia\b"))
+        {
+            core = "NVIDIA";
+        }
+        else if (Regex.IsMatch(headline + " " + explicitFocus,
+                     @"(?i)\bintel\b"))
+        {
+            core = "Intel";
+        }
+        else if (Regex.IsMatch(headline + " " + explicitFocus,
+                     @"(?i)\belon musk\b"))
+        {
+            core = "Elon Musk";
+        }
+        else if (Regex.IsMatch(headline + " " + explicitFocus,
+                     @"(?i)\b(?:playstation|ps5)\b"))
+        {
+            core = "PlayStation";
+        }
+        else if (Regex.IsMatch(headline + " " + explicitFocus,
+                     @"(?i)\b(?:nintendo|switch)\b"))
+        {
+            core = "Nintendo";
+        }
+        else if (!string.IsNullOrWhiteSpace(explicitFocus) &&
+                 !explicitFocus.Equals("all gaming news", StringComparison.OrdinalIgnoreCase) &&
+                 explicitFocus.Length <= 60)
+        {
+            core = explicitFocus;
+            suffix = " screenshots";
+        }
+        else
+        {
+            // A recognizable proper-name subject at the beginning is better
+            // than a full headline. Prefer an existing scene visual query
+            // when it is a concise entity and not an art-direction prompt.
+            var shortScene = project.Chapters.SelectMany(c => c.Scenes)
+                .Select(x => (x.VisualQuery ?? "").Trim())
+                .FirstOrDefault(x => x.Length is >= 3 and <= 35 &&
+                    !Regex.IsMatch(x, @"(?i)\b(shot|cinematic|closeup|background|wide|style|art|image)\b"));
+            core = shortScene ?? project.Title.Split(':', ',', '—')[0].Trim();
+            if (core.Length > 55)
+                core = string.Join(" ", core.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(4));
+        }
+
+        core = Regex.Replace(core, @"(?i)\s+site:\S+", "").Trim();
+        if (core.Length == 0) core = "gaming news";
+        var queries = new[]
+        {
+            core + suffix,
+            core
+        };
+        return queries.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
     private static string GamingMediaSubject(VideoProject project, string focus)
     {
         if (IsGtaSixStory(project.Title, focus))
@@ -1531,28 +1607,16 @@ public sealed class OfficialGamingMediaService
         var urlsSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var contentSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var perHost = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        var searchTerms = CoreMediaQueries(project, focus).Take(3).ToList();
-        // Diverse Google Images discovery: supplement broad game queries
-        // with site-specific searches so one Rockstar gallery does not
-        // monopolize all 24 visual beats.
-        if (IsGtaSixStory(project.Title, focus))
-            searchTerms.AddRange([
-                "GTA VI screenshots site:ign.com",
-                "GTA VI screenshots site:gamespot.com",
-                "GTA VI screenshots site:gematsu.com",
-                "GTA VI media site:gamespress.com"
-            ]);
-        else
-        {
-            var core = CoreGameSubject(project, focus);
-            searchTerms.AddRange([
-                core + " gameplay site:ign.com",
-                core + " screenshots site:gamespot.com",
-                core + " game gallery site:gematsu.com"
-            ]);
-        }
-        log?.Invoke("Gaming News Google Images: PRIMARY media discovery for '" +
-            CoreGameSubject(project, focus) + "'. Looking for original large images, not thumbnails.");
+        var searchTerms = SimpleGoogleImageQueries(project, focus);
+        // Rotate the equally relevant simple queries per video so 48 batch
+        // videos don't always start with identical Google result pages.
+        var seedBytes = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            project.Id + "|" + project.Title + "|" + string.Join("|", project.Sources)));
+        var random = new Random(BitConverter.ToInt32(seedBytes, 0));
+        searchTerms = searchTerms.OrderBy(_ => random.Next()).ToList();
+        log?.Invoke("Gaming News Google Images: using plain searches: " +
+            string.Join(" | ", searchTerms) +
+            ". Downloading originals from varied results, not Google thumbnails.");
         foreach (var term in searchTerms)
         {
             ct.ThrowIfCancellationRequested();
@@ -1563,7 +1627,7 @@ public sealed class OfficialGamingMediaService
                 await browser.EnsureStartedAsync(settings);
                 page = await browser.Context.NewPageAsync();
                 var target = "https://www.google.com/search?tbm=isch&hl=en&safe=active&tbs=isz:l&q=" +
-                    Uri.EscapeDataString(term + " screenshot game");
+                    Uri.EscapeDataString(term);
                 await page.GotoAsync(target, new Microsoft.Playwright.PageGotoOptions
                 {
                     WaitUntil = Microsoft.Playwright.WaitUntilState.DOMContentLoaded,
