@@ -408,7 +408,12 @@ public sealed class OfficialGamingMediaService
             chapter.Scenes[i].MediaPath = photo.LocalPath;
             chapter.Scenes[i].MediaPaths = [];
         }
-        var label = "Source: " + downloaded[0].Source;
+        var sourceNames = downloaded.Select(x => x.Source)
+            .Select(x => x.Contains("Steam", StringComparison.OrdinalIgnoreCase)
+                ? "Steam / " + x.GameTitle : x.Source.Replace(" official article image", ""))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(3);
+        var label = "Source: " + string.Join(" / ", sourceNames);
         var manifest = Path.Combine(project.ProjectDirectory, "official-media-credits.json");
         await File.WriteAllTextAsync(manifest, JsonSerializer.Serialize(new
         {
