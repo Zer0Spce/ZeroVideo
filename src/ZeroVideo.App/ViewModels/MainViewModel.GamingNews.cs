@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using System.Windows.Input;
@@ -24,6 +25,7 @@ public sealed partial class MainViewModel
     private double _gamingNewsMusicDb = -15;
     private bool _gamingNewsMusicEnabled;
     private bool _gamingNewsUploadAutomatically = true;
+    private string _gamingNewsTestVideoPath = "";
     private int _gamingNewsGenerated;
     private int _gamingNewsScheduled;
     public int GamingNewsVideoCount { get => _gamingNewsVideoCount; set => Set(ref _gamingNewsVideoCount, Math.Clamp(value, 1, 96)); }
@@ -35,12 +37,15 @@ public sealed partial class MainViewModel
     public double GamingNewsMusicDb { get => _gamingNewsMusicDb; set => Set(ref _gamingNewsMusicDb, Math.Clamp(value, -40, 0)); }
     public bool GamingNewsMusicEnabled { get => _gamingNewsMusicEnabled; set => Set(ref _gamingNewsMusicEnabled, value); }
     public bool GamingNewsUploadAutomatically { get => _gamingNewsUploadAutomatically; set => Set(ref _gamingNewsUploadAutomatically, value); }
+    public string GamingNewsTestVideoPath { get => _gamingNewsTestVideoPath; private set => Set(ref _gamingNewsTestVideoPath, value); }
     public int GamingNewsGenerated { get => _gamingNewsGenerated; private set => Set(ref _gamingNewsGenerated, value); }
     public int GamingNewsScheduled { get => _gamingNewsScheduled; private set => Set(ref _gamingNewsScheduled, value); }
     public ObservableCollection<double> GamingNewsDbOptions { get; } = [0,-5,-10,-15,-20,-25,-30,-35,-40];
     public ObservableCollection<int> GamingNewsCounts { get; } = [1,3,5,10,12,24,48,96];
     public ICommand GamingNewsChooseMusicCommand { get; private set; } = null!;
     public ICommand GamingNewsStartBatchCommand { get; private set; } = null!;
+    public ICommand GamingNewsTestVideoCommand { get; private set; } = null!;
+    public ICommand GamingNewsOpenTestVideoCommand { get; private set; } = null!;
 
     private void InitializeGamingNewsCommands()
     {
@@ -58,7 +63,14 @@ public sealed partial class MainViewModel
             }
         });
         GamingNewsStartBatchCommand = new AsyncCommand(() =>
-            RunManagedJobAsync("Gaming News — One Click Batch", RunGamingNewsBatchAsync, publishing:true));
+            RunManagedJobAsync("Gaming News — One Click Batch", () => RunGamingNewsBatchAsync(false), publishing:true));
+        GamingNewsTestVideoCommand = new AsyncCommand(() =>
+            RunManagedJobAsync("Gaming News — Test Video", () => RunGamingNewsBatchAsync(true)));
+        GamingNewsOpenTestVideoCommand = new RelayCommand(() =>
+        {
+            if (File.Exists(GamingNewsTestVideoPath))
+                Process.Start(new ProcessStartInfo(GamingNewsTestVideoPath) { UseShellExecute = true });
+        });
     }
 
     private sealed class GamingNewsPreferences
@@ -153,10 +165,11 @@ public sealed partial class MainViewModel
                 @"\b(gta\s*(vi|6)|grand theft auto\s*(vi|6))\b");
     }
 
-    private async Task RunGamingNewsBatchAsync()
+    private async Task RunGamingNewsBatchAsync(bool testOnly)
     {
         GamingNewsGenerated = 0;
         GamingNewsScheduled = 0;
+        if (testOnly) GamingNewsTestVideoPath = "";
         SaveGamingNewsPreferences();
         if (Settings.TextToSpeechEngine != "OmniVoice (Local)" ||
             !_omniVoice.IsInstalled ||
@@ -176,20 +189,20 @@ public sealed partial class MainViewModel
             return;
         }
         DateTime firstSlot;
-        try { firstSlot = GamingNewsInitialSlot(GamingNewsScheduleStart); }
+        try { firstSlot = testOnly ? DateTime.MaxValue : GamingNewsInitialSlot(GamingNewsScheduleStart); }
         catch (Exception ex) { GamingNewsStatus = ex.Message; return; }
 
         GamingNewsStatus = "Scanning gaming news feeds once (no auto-refresh)...";
         var discovery = new GamingNewsDiscoveryService();
         var candidates = await discovery.DiscoverAsync(96, Log, _cts.Token);
         var relevant = candidates.Where(x => GamingNewsMatches(x.Title,GamingNewsFocus))
-            .Take(GamingNewsVideoCount).ToList();
+            .Take(testOnly ? 1 : GamingNewsVideoCount).ToList();
         if (relevant.Count == 0)
         {
             GamingNewsStatus = "No verified recent headlines match this topic. No videos generated.";
             return;
         }
-        if (relevant.Count < GamingNewsVideoCount)
+        if (!testOnly && relevant.Count < GamingNewsVideoCount)
             Log($"Gaming News: only {relevant.Count}/{GamingNewsVideoCount} distinct news headlines found. No invented topics.");
         var originalShortQueue = ShortQueue.ToList();
         // Suspend the regular Shorts checkpoint while this dedicated batch temporarily
@@ -249,6 +262,25 @@ public sealed partial class MainViewModel
             }
             var newItems = PublishingQueue.Where(x => !initialIds.Contains(x.Id) &&
                 File.Exists(x.VideoPath)).ToList();
+            if (testOnly)
+            {
+                // Test mode never schedules or uploads. Retain the rendered MP4
+                // and make sure it cannot be selected by a later batch publish.
+                foreach (var item in newItems)
+                {
+                    item.IsChecked = false;
+                    item.IsScheduled = false;
+                    item.ScheduledAt = null;
+                    item.ScheduleDateText = "";
+                    item.TikTokStatus = "Preview only - not scheduled";
+                }
+                SavePublishingQueue();
+                GamingNewsTestVideoPath = newItems.FirstOrDefault()?.VideoPath ?? "";
+                GamingNewsStatus = string.IsNullOrWhiteSpace(GamingNewsTestVideoPath)
+                    ? "Test render finished, but no exported MP4 was found."
+                    : "Test video ready. Select Open Test Video to preview the result. Not uploaded or scheduled.";
+                return;
+            }
             var blocked = PublishingQueue.Where(x => x.ScheduledAt.HasValue)
                 .Select(x => x.ScheduledAt!.Value.LocalDateTime).ToHashSet();
             // Auto-selected times are provisional until production is complete.
