@@ -276,8 +276,11 @@ public sealed partial class MainViewModel
                     item.ScheduleDateText = "";
                     item.TikTokStatus = "Preview only - not scheduled";
                 }
-                SavePublishingQueue();
                 GamingNewsTestVideoPath = newItems.FirstOrDefault()?.VideoPath ?? "";
+                // Preview videos belong only in the Gaming News tab; never let
+                // the normal Publish queue expose an accidental upload button.
+                foreach (var item in newItems) PublishingQueue.Remove(item);
+                SavePublishingQueue();
                 GamingNewsStatus = string.IsNullOrWhiteSpace(GamingNewsTestVideoPath)
                     ? "Test render finished, but no exported MP4 was found."
                     : "Test video ready. Select Open Test Video to preview the result. Not uploaded or scheduled.";
