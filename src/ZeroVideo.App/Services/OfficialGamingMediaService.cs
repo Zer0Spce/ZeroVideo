@@ -146,7 +146,11 @@ public sealed class OfficialGamingMediaService
     private static readonly string[] JournalismHosts =
     [
         "www.pcgamer.com", "www.ign.com", "www.gamespot.com",
-        "www.gematsu.com", "www.eurogamer.net", "www.videogameschronicle.com"
+        "www.gematsu.com", "www.eurogamer.net", "www.videogameschronicle.com",
+        "www.polygon.com", "www.theverge.com", "kotaku.com",
+        "www.destructoid.com", "www.rockpapershotgun.com",
+        "www.gamesradar.com", "www.pushsquare.com", "www.nintendolife.com",
+        "www.purexbox.com", "www.digitaltrends.com", "www.techradar.com"
     ];
 
     private static bool JournalismHost(Uri uri) => uri.Scheme == "https" &&
@@ -261,6 +265,67 @@ public sealed class OfficialGamingMediaService
             }
         }
         log?.Invoke($"Independent web search: {pages.Count} official publisher/platform pages.");
+        return pages;
+    }
+
+    // Broader public search across relevant gaming publishers and journalism
+    // sites. An RSS hit is only a candidate page: never use generic search
+    // result thumbnails or unverified third-party embeds as footage.
+    private static async Task<IReadOnlyList<Uri>> DiscoverGamingNewsMediaPagesAsync(
+        VideoProject project, string focus, Action<string>? log, CancellationToken ct)
+    {
+        var pages = new List<Uri>();
+        var subject = string.IsNullOrWhiteSpace(focus)
+            ? project.Title.Trim() : focus.Trim();
+        if (subject.Length > 110) subject = subject[..110];
+        if (subject.Length < 4) return pages;
+        var searches = new[]
+        {
+            "\"" + subject + "\" game screenshots news",
+            "\"" + subject + "\" gameplay trailer screenshots"
+        };
+        foreach (var query in searches)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                using var response = await Http.GetAsync(
+                    new Uri("https://www.bing.com/search?format=rss&q=" +
+                        Uri.EscapeDataString(query)),
+                    HttpCompletionOption.ResponseHeadersRead, ct);
+                if (!response.IsSuccessStatusCode ||
+                    response.Content.Headers.ContentLength > 400_000) continue;
+                var xml = await response.Content.ReadAsStringAsync(ct);
+                if (xml.Length > 400_000) continue;
+                var document = XDocument.Parse(xml, LoadOptions.None);
+                foreach (var item in document.Descendants()
+                    .Where(x => x.Name.LocalName == "item").Take(30))
+                {
+                    var link = item.Elements().FirstOrDefault(
+                        x => x.Name.LocalName == "link")?.Value ?? "";
+                    var title = item.Elements().FirstOrDefault(
+                        x => x.Name.LocalName == "title")?.Value ?? "";
+                    var summary = item.Elements().FirstOrDefault(
+                        x => x.Name.LocalName == "description")?.Value ?? "";
+                    if (!Uri.TryCreate(link, UriKind.Absolute, out var page) ||
+                        !JournalismHost(page) || pages.Contains(page)) continue;
+                    // Exact focused niche must be in the search snippet or
+                    // headline; reject stories merely about a similar game.
+                    if (!string.IsNullOrWhiteSpace(focus) &&
+                        !Normalize(title + " " + summary).Contains(
+                            Normalize(focus), StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    pages.Add(page);
+                    if (pages.Count >= 10) break;
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                log?.Invoke("Independent news media search unavailable: " + ex.Message);
+            }
+        }
+        log?.Invoke($"Gaming media web search: {pages.Count} additional gaming journalism pages.");
         return pages;
     }
 
@@ -469,6 +534,8 @@ public sealed class OfficialGamingMediaService
         var linkedPublishers = await LinkedOfficialPagesAsync(project, log, ct);
         var independentPublishers = await DiscoverIndependentPublisherPagesAsync(
             project, focus, log, ct);
+        var independentNewsPages = await DiscoverGamingNewsMediaPagesAsync(
+            project, focus, log, ct);
         foreach (var sourcePage in PublisherPages(project)
                      .Concat(linkedPublishers).Concat(independentPublishers)
                      .Distinct().Take(14))
@@ -569,7 +636,9 @@ public sealed class OfficialGamingMediaService
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { log?.Invoke("Gaming official-media search skipped: " + ex.Message); }
         }
-        // Priority 3: the source article's own editorial/game imagery.
+        // Priority 3: media from multiple relevant gaming journalism pages.
+        // Candidate pages are discovered independently from the news article.
+        // Keep original page attribution for every downloaded asset.
         // This is not described as a first-party official screenshot; label
         // its actual publication in the credit manifest and on-screen source.
         // Prefer this over generating an invented picture for news that does
@@ -577,10 +646,12 @@ public sealed class OfficialGamingMediaService
         var editorialImages = new List<(Uri Image, Uri Source)>();
         if (publisherImages.Count == 0 && images.Count == 0)
         {
-            foreach (var rawSource in project.Sources.Take(2))
+            foreach (var story in project.Sources
+                .Select(x => Uri.TryCreate(x, UriKind.Absolute, out var u) ? u : null)
+                .Where(x => x is not null && JournalismHost(x))
+                .Concat(independentNewsPages).Distinct().Take(12))
             {
-                if (!Uri.TryCreate(rawSource, UriKind.Absolute, out var story) ||
-                    !JournalismHost(story)) continue;
+                if (story is null) continue;
                 try
                 {
                     var html = await DownloadNewsHtmlAsync(story, ct);
