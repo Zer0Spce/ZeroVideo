@@ -210,6 +210,8 @@ public sealed partial class MainViewModel
         var wasLoadingShortsCheckpoint = _loadingShortsCheckpoint;
         _loadingShortsCheckpoint = true;
         var originalShortDuration = ShortDuration;
+        var originalProject = Project;
+        var originalProjectDirectory = ProjectDirectory;
         // A private settings snapshot ensures that the existing Create/Shorts
         // music and voice preferences are not overwritten by this batch.
         var originalSettings = Settings;
@@ -391,6 +393,12 @@ public sealed partial class MainViewModel
         finally
         {
             Settings = originalSettings;
+            // RunPipelineAsync persists settings during generation. Restore the
+            // regular user's preferences after the gaming-only audio override.
+            try { await _settingsService.SaveAsync(originalSettings); }
+            catch (Exception ex) { Log("Gaming News: regular settings restore failed: " + ex.Message); }
+            Project = originalProject;
+            ProjectDirectory = originalProjectDirectory;
             Project.Options.AddBackgroundMusic = previousMusicEnabled;
             ShortQueue.Clear();
             foreach (var entry in originalShortQueue) ShortQueue.Add(entry);
