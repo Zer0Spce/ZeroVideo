@@ -29,6 +29,8 @@ public sealed partial class MainViewModel
     private string _gamingNewsTestVideoPath = "";
     private int _gamingNewsGenerated;
     private int _gamingNewsScheduled;
+    private int _gamingNewsSubmitted;
+    private int _gamingNewsPostingIntervalMinutes = 30;
     public int GamingNewsVideoCount { get => _gamingNewsVideoCount; set => Set(ref _gamingNewsVideoCount, Math.Clamp(value, 1, 96)); }
     public string GamingNewsFocus { get => _gamingNewsFocus; set => Set(ref _gamingNewsFocus, value); }
     public string GamingNewsChannelName { get => _gamingNewsChannelName; set => Set(ref _gamingNewsChannelName, value); }
@@ -41,6 +43,13 @@ public sealed partial class MainViewModel
     public string GamingNewsTestVideoPath { get => _gamingNewsTestVideoPath; private set => Set(ref _gamingNewsTestVideoPath, value); }
     public int GamingNewsGenerated { get => _gamingNewsGenerated; private set => Set(ref _gamingNewsGenerated, value); }
     public int GamingNewsScheduled { get => _gamingNewsScheduled; private set => Set(ref _gamingNewsScheduled, value); }
+    public int GamingNewsSubmitted { get => _gamingNewsSubmitted; private set => Set(ref _gamingNewsSubmitted, value); }
+    public int GamingNewsPostingIntervalMinutes
+    {
+        get => _gamingNewsPostingIntervalMinutes;
+        set => Set(ref _gamingNewsPostingIntervalMinutes, value == 60 ? 60 : 30);
+    }
+    public ObservableCollection<int> GamingNewsPostingIntervalChoices { get; } = [30, 60];
     public ObservableCollection<double> GamingNewsDbOptions { get; } = [0,-5,-10,-15,-20,-25,-30,-35,-40];
     public ObservableCollection<int> GamingNewsCounts { get; } = [1,3,5,10,12,24,48,96];
     public ICommand GamingNewsChooseMusicCommand { get; private set; } = null!;
@@ -84,6 +93,7 @@ public sealed partial class MainViewModel
         public double MusicDb { get; set; } = -15;
         public bool MusicEnabled { get; set; }
         public bool AutoSubmit { get; set; } = true;
+        public int PostingIntervalMinutes { get; set; } = 30;
     }
 
     private static string GamingNewsPreferencesPath =>
@@ -112,6 +122,7 @@ public sealed partial class MainViewModel
             GamingNewsMusicDb = config.MusicDb;
             GamingNewsMusicEnabled = config.MusicEnabled;
             GamingNewsUploadAutomatically = config.AutoSubmit;
+            GamingNewsPostingIntervalMinutes = config.PostingIntervalMinutes == 60 ? 60 : 30;
         }
         catch (Exception ex) { Log("Gaming News settings recovery: " + ex.Message); }
     }
@@ -128,7 +139,8 @@ public sealed partial class MainViewModel
             MusicPath = GamingNewsMusicPath,
             MusicDb = GamingNewsMusicDb,
             MusicEnabled = GamingNewsMusicEnabled,
-            AutoSubmit = GamingNewsUploadAutomatically
+            AutoSubmit = GamingNewsUploadAutomatically,
+            PostingIntervalMinutes = GamingNewsPostingIntervalMinutes
         };
         var temporary = GamingNewsPreferencesPath + ".tmp";
         File.WriteAllText(temporary, JsonSerializer.Serialize(config,
@@ -274,6 +286,7 @@ public sealed partial class MainViewModel
     {
         GamingNewsGenerated = 0;
         GamingNewsScheduled = 0;
+        GamingNewsSubmitted = 0;
         if (testOnly) GamingNewsTestVideoPath = "";
         SaveGamingNewsPreferences();
         if (Settings.TextToSpeechEngine != "OmniVoice (Local)" ||
@@ -392,22 +405,34 @@ public sealed partial class MainViewModel
                     : "60-second preview ready. Open Test Video to watch; no TikTok scheduling or uploading.";
                 return;
             }
-            var blocked = PublishingQueue.Where(x => x.ScheduledAt.HasValue)
+            // Only completed TikTok submissions reserve platform slots.
+            // A queue item's local schedule is merely a plan, not confirmation.
+            var blocked = PublishingQueue.Where(x => x.ScheduledAt.HasValue &&
+                (x.TikTokStatus.Equals("Scheduled", StringComparison.OrdinalIgnoreCase) ||
+                 x.TikTokStatus.StartsWith("Submission attempted", StringComparison.OrdinalIgnoreCase)))
                 .Select(x => x.ScheduledAt!.Value.LocalDateTime).ToHashSet();
             // Auto-selected times are provisional until production is complete.
             // Rendering 48 clips may take hours, so start in the future.
             var slot = string.IsNullOrWhiteSpace(GamingNewsScheduleStart)
                 ? GamingNewsInitialSlot("")
                 : firstSlot;
-            if (slot <= DateTime.Now.AddMinutes(30))
+            if (slot <= DateTime.Now.AddMinutes(45))
             {
-                GamingNewsStatus = "The requested first posting time passed during rendering. " +
-                    "Videos remain saved; enter a later time and resume scheduling.";
-                return;
+                // 48 renders can take hours. Never silently skip auto-upload
+                // just because the originally selected first slot expired.
+                // Roll the entire batch to a safe future posting window.
+                var now = DateTime.Now.AddHours(4);
+                var aligned = new DateTime(now.Year, now.Month, now.Day, now.Hour, 0, 0);
+                slot = aligned.AddMinutes(
+                    ((now.Minute / GamingNewsPostingIntervalMinutes) + 1) *
+                    GamingNewsPostingIntervalMinutes);
+                Log("Gaming News: original first slot expired during rendering. " +
+                    "Automatically shifted TikTok posting start to " +
+                    slot.ToString("yyyy-MM-dd HH:mm") + ".");
             }
             foreach (var item in newItems)
             {
-                while (blocked.Contains(slot)) slot = slot.AddMinutes(30);
+                while (blocked.Contains(slot)) slot = slot.AddMinutes(GamingNewsPostingIntervalMinutes);
                 item.IsScheduled = true;
                 item.ScheduleDateText = slot.ToString("yyyy-MM-dd HH:mm");
                 item.ScheduledAt = new DateTimeOffset(slot);
@@ -416,11 +441,13 @@ public sealed partial class MainViewModel
                     : item.TikTokCaption;
                 item.IsChecked = true;
                 blocked.Add(slot);
-                slot = slot.AddMinutes(30);
+                slot = slot.AddMinutes(GamingNewsPostingIntervalMinutes);
             }
             SavePublishingQueue();
             GamingNewsScheduled = newItems.Count;
-            GamingNewsStatus = $"Generated {GamingNewsGenerated}, assigned {GamingNewsScheduled} half-hour TikTok slots.";
+            GamingNewsStatus = GamingNewsUploadAutomatically
+                ? $"Rendered {GamingNewsGenerated}; submitting {GamingNewsScheduled} TikTok Studio schedules automatically..."
+                : $"Rendered {GamingNewsGenerated}; {GamingNewsScheduled} planned times only. Auto-submit is disabled, so TikTok has NOT received these videos.";
             // Pressing the one-click action with the auto-submit checkbox checked
             // explicitly authorizes this batch. Use the SAME StudioUploadService
             // as the original publishing tab, without modifying that workflow.
@@ -469,6 +496,7 @@ public sealed partial class MainViewModel
                         item.TikTokStatus = "Scheduled";
                         item.IsChecked = false;
                         sent++;
+                        GamingNewsSubmitted = sent;
                     }
                     else if (outcome.StartsWith("TikTok: SUBMISSION_ATTEMPTED",
                         StringComparison.Ordinal))
@@ -476,6 +504,7 @@ public sealed partial class MainViewModel
                         item.TikTokStatus = "Submission attempted - check Studio";
                         item.IsChecked = false;
                         sent++;
+                        GamingNewsSubmitted = sent;
                         SavePublishingQueue();
                         if (!outcome.Contains("left the upload page",
                             StringComparison.OrdinalIgnoreCase))
@@ -488,15 +517,19 @@ public sealed partial class MainViewModel
                     else
                     {
                         item.TikTokStatus = "Needs review";
-                        GamingNewsStatus = "TikTok paused: " + outcome;
+                        GamingNewsStatus = "TikTok paused before confirmation: " + outcome;
                         SavePublishingQueue();
                         break;
                     }
                     SavePublishingQueue();
                 }
                 if (sent == newItems.Count)
-                    GamingNewsStatus = $"Finished: {GamingNewsGenerated} Shorts, {sent} TikTok " +
-                        "submission attempts. Check TikTok Studio for final platform status.";
+                    GamingNewsStatus = $"Finished: {GamingNewsGenerated} Shorts; {sent} TikTok " +
+                        "Studio schedule submissions completed. TikTok will publish at the selected " +
+                        "times without manual hourly clicks. Verify platform posts in Studio.";
+                else if (sent < newItems.Count)
+                    GamingNewsStatus += $" ({sent}/{newItems.Count} submissions sent; " +
+                        "remaining videos are safely kept in Publish.)";
             }
         }
         finally
