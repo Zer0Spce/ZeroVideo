@@ -1065,8 +1065,13 @@ public sealed class OfficialGamingMediaService
 
         var mediaDir = Path.Combine(project.ProjectDirectory, "media");
         Directory.CreateDirectory(mediaDir);
-        var downloaded = new List<OfficialAsset>();
-        var unique = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Google Images is the PRIMARY source. Search for the core game
+        // itself before publisher/news/Steam fallbacks, and retrieve ORIGINAL
+        // JPEG/PNG files from diverse underlying websites.
+        var downloaded = await SearchGoogleImagesAsync(
+            project, focus, browser, settings, mediaDir, log, ct);
+        var unique = downloaded.Select(x => x.Url)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var publisherCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var (imageUri, sourcePage) in publisherImages)
         {
@@ -1512,6 +1517,165 @@ public sealed class OfficialGamingMediaService
             }
         }
         return found;
+    }
+
+    private sealed record GoogleImageCandidate(
+        string ImageUrl, string PageUrl, string Description);
+
+    private static async Task<List<OfficialAsset>> SearchGoogleImagesAsync(
+        VideoProject project, string focus, BrowserSession browser,
+        ZeroVideoSettings settings, string mediaDir, Action<string>? log,
+        CancellationToken ct)
+    {
+        var collected = new List<OfficialAsset>();
+        var urlsSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var contentSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var perHost = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var searchTerms = CoreMediaQueries(project, focus).Take(5).ToList();
+        log?.Invoke("Gaming News Google Images: PRIMARY media discovery for '" +
+            CoreGameSubject(project, focus) + "'. Looking for original large images, not thumbnails.");
+        foreach (var term in searchTerms)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (collected.Count >= 36) break;
+            Microsoft.Playwright.IPage? page = null;
+            try
+            {
+                await browser.EnsureStartedAsync(settings);
+                page = await browser.Context.NewPageAsync();
+                var target = "https://www.google.com/search?tbm=isch&hl=en&safe=active&tbs=isz:l&q=" +
+                    Uri.EscapeDataString(term + " screenshot game");
+                await page.GotoAsync(target, new Microsoft.Playwright.PageGotoOptions
+                {
+                    WaitUntil = Microsoft.Playwright.WaitUntilState.DOMContentLoaded,
+                    Timeout = 25000
+                });
+                var title = await page.TitleAsync();
+                if (Regex.IsMatch(title, @"(?i)(consent|unusual traffic|captcha|verify you are human)"))
+                {
+                    log?.Invoke("Google Images requires consent/verification; moving to other media sources.");
+                    continue;
+                }
+                // Google results can expose originals in imgres links,
+                // data-iurl or in linked-image metadata. Never download the
+                // Google-hosted 200px thumbnails as source photographs.
+                var candidates = new List<GoogleImageCandidate>();
+                var html = await page.ContentAsync();
+                var anchors = await page.Locator("a[href*='imgurl='],a[href*='/imgres?']")
+                    .AllAsync();
+                foreach (var node in anchors.Take(180))
+                {
+                    var href = await node.GetAttributeAsync("href") ?? "";
+                    if (!Uri.TryCreate(new Uri("https://www.google.com"), href, out var link))
+                        continue;
+                    var query = link.Query.TrimStart('?').Split('&');
+                    static string? Param(string[] parts, string name)
+                    {
+                        foreach (var part in parts)
+                            if (part.StartsWith(name + "=", StringComparison.OrdinalIgnoreCase))
+                                return Uri.UnescapeDataString(part[(name.Length + 1)..].Replace("+", " "));
+                        return null;
+                    }
+                    var imageUrl = Param(query, "imgurl");
+                    var refUrl = Param(query, "imgrefurl");
+                    var description = (await node.GetAttributeAsync("aria-label") ?? "") + " " +
+                        (await node.GetAttributeAsync("title") ?? "");
+                    if (!string.IsNullOrWhiteSpace(imageUrl))
+                        candidates.Add(new GoogleImageCandidate(imageUrl, refUrl ?? "", description));
+                }
+                // Some Google result layouts store the original URL directly
+                // on image cards instead of classic /imgres links.
+                var cards = await page.Locator("img[data-iurl],img[data-src]")
+                    .AllAsync();
+                foreach (var img in cards.Take(160))
+                {
+                    var url = await img.GetAttributeAsync("data-iurl") ?? "";
+                    if (url.Length == 0) continue;
+                    var alt = await img.GetAttributeAsync("alt") ?? "";
+                    candidates.Add(new GoogleImageCandidate(url, "", alt));
+                }
+                // HTML fallback for Google's legacy image-result markup.
+                foreach (Match match in Regex.Matches(html,
+                    @"(?:imgurl=|[\\u0022""']ou[\\u0022""']\s*:\s*[\\u0022""'])(?<url>https?[^&\s""'<>{}]+)",
+                    RegexOptions.IgnoreCase).Cast<Match>().Take(100))
+                {
+                    var imageUrl = WebUtility.HtmlDecode(match.Groups["url"].Value);
+                    candidates.Add(new GoogleImageCandidate(imageUrl, "", ""));
+                }
+                log?.Invoke($"Google Images '{term}': {candidates.Count} original-image URL candidates.");
+                foreach (var candidate in candidates)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (collected.Count >= 36) break;
+                    if (!Uri.TryCreate(candidate.ImageUrl, UriKind.Absolute, out var image) ||
+                        !IsPublicHttps(image) ||
+                        image.Host.EndsWith("google.com", StringComparison.OrdinalIgnoreCase) ||
+                        image.Host.EndsWith("gstatic.com", StringComparison.OrdinalIgnoreCase) ||
+                        RejectGenericGraphic(image, candidate.Description) ||
+                        !urlsSeen.Add(image.ToString()))
+                        continue;
+                    Uri.TryCreate(candidate.PageUrl, UriKind.Absolute, out var referringPage);
+                    if (IsGtaSixStory(project.Title, focus))
+                    {
+                        var evidence = candidate.Description + " " + image.AbsoluteUri +
+                            " " + (referringPage?.AbsoluteUri ?? "");
+                        if (!IsGtaSix(evidence) || IsGtaFive(evidence))
+                            continue; // Never use GTA V or an unidentified image.
+                    }
+                    var actualHost = referringPage is not null &&
+                        IsPublicHttps(referringPage) ? referringPage.Host : image.Host;
+                    if (perHost.GetValueOrDefault(actualHost) >= 10)
+                        continue;
+                    try
+                    {
+                        var bytes = await DownloadPublisherImageAsync(
+                            image, referringPage ?? image, ct);
+                        if (!IsJpeg(bytes) && !IsPng(bytes)) continue;
+                        var ext = IsJpeg(bytes) ? ".jpg" : ".png";
+                        var destination = Path.Combine(mediaDir,
+                            "google-original-" + (collected.Count + 1).ToString("000") + ext);
+                        await File.WriteAllBytesAsync(destination, bytes, ct);
+                        if (!HasFullResolution(destination, log))
+                        {
+                            File.Delete(destination);
+                            continue;
+                        }
+                        var hash = MediaFingerprint(destination);
+                        if (!contentSeen.Add(hash))
+                        {
+                            File.Delete(destination);
+                            continue;
+                        }
+                        perHost[actualHost] = perHost.GetValueOrDefault(actualHost) + 1;
+                        collected.Add(new OfficialAsset(destination, image.ToString(),
+                            CoreGameSubject(project, focus),
+                            referringPage?.ToString() ?? image.GetLeftPart(UriPartial.Authority),
+                            "Google Images result / " + actualHost,
+                            "Original image from credited source website; Google Images is a discovery index, not a license."));
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        log?.Invoke("Google original image download skipped (" +
+                            actualHost + "): " + ex.Message);
+                    }
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                log?.Invoke("Google Images search skipped for '" + term + "': " + ex.Message);
+            }
+            finally
+            {
+                if (page is not null)
+                    try { await page.CloseAsync(); } catch { }
+            }
+        }
+        log?.Invoke("Google Images primary source completed: " +
+            collected.Count + " full-size, game-matched unique images from " +
+            perHost.Count + " source websites.");
+        return collected;
     }
 
     private static async Task<List<OfficialAsset>> CaptureRockstarGalleryAsync(
