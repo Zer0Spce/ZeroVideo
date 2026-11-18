@@ -69,7 +69,7 @@ public sealed class OfficialGamingMediaService
     {
         if (!PublisherHost(uri)) throw new InvalidDataException("Not an approved publisher URL.");
         using var response = await Http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct);
-        if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength > 850_000)
+        if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength > 3_000_000)
             return "";
         var type = response.Content.Headers.ContentType?.MediaType ?? "";
         if (!type.Contains("html", StringComparison.OrdinalIgnoreCase)) return "";
@@ -79,7 +79,7 @@ public sealed class OfficialGamingMediaService
         int count;
         while ((count = await stream.ReadAsync(block, ct)) > 0)
         {
-            if (memory.Length + count > 850_000) return "";
+            if (memory.Length + count > 3_000_000) return "";
             await memory.WriteAsync(block.AsMemory(0, count), ct);
         }
         return System.Text.Encoding.UTF8.GetString(memory.ToArray());
@@ -113,6 +113,24 @@ public sealed class OfficialGamingMediaService
                     @"(avatar|logo|icon|pixel|sprite|tracking|placeholder)",
                     RegexOptions.IgnoreCase))
                 yield return image;
+        }
+    }
+
+    private static IEnumerable<Uri> ExtractLinkedGalleryImages(string html, Uri page)
+    {
+        // Rockstar and other publisher galleries often put the full-res JPG
+        // in an <a href>, not in <img src>; the original extractor missed all
+        // these actual screenshots and returned only thumbnails/branding.
+        foreach (Match match in Regex.Matches(html,
+            @"<a\\b[^>]{0,1800}href\\s*=\\s*[""'](?<url>[^""']+)[""']",
+            RegexOptions.IgnoreCase).Cast<Match>().Take(400))
+        {
+            var raw = WebUtility.HtmlDecode(match.Groups["url"].Value);
+            if (!Uri.TryCreate(page, raw, out var image) ||
+                !IsPublicHttps(image) ||
+                !Regex.IsMatch(image.AbsolutePath, @"(?i)\\.(?:jpg|jpeg|png)$"))
+                continue;
+            yield return image;
         }
     }
 
@@ -211,6 +229,14 @@ public sealed class OfficialGamingMediaService
 
     private static IEnumerable<Uri> PublisherPages(VideoProject project)
     {
+        if (IsGtaSixStory(project.Title, ""))
+        {
+            // Exact publisher-hosted GTA VI galleries. These already contain
+            // dozens of actual screenshots, including Jason and Lucia.
+            yield return new Uri("https://www.rockstargames.com/VI/media/screenshots");
+            yield return new Uri("https://www.rockstargames.com/VI/media");
+            yield return new Uri("https://www.rockstargames.com/VI/launch-gallery");
+        }
         var urls = project.Sources;
         foreach (var url in urls)
         {
@@ -555,11 +581,16 @@ public sealed class OfficialGamingMediaService
         // GTA 5 and GTA 6 are different games. If the asset or its media
         // label explicitly identifies GTA V, reject regardless of article.
         if (IsGtaFive(asset + " " + metadata)) return false;
-        // A GTA VI article can contain GTA V thumbnails, sidebars and
-        // unrelated ads. The ARTICLE URL alone is NOT sufficient evidence:
-        // the asset URL or its own alt/title text must identify GTA VI.
-        return IsGtaSix(asset + " " + metadata) &&
-            !RejectGenericGraphic(image, metadata);
+        if (RejectGenericGraphic(image, metadata)) return false;
+        var rockstarGallery = sourcePage.Host == "www.rockstargames.com" &&
+            sourcePage.AbsolutePath.StartsWith("/VI/media", StringComparison.OrdinalIgnoreCase) &&
+            image.Host == "www.rockstargames.com" &&
+            image.AbsolutePath.StartsWith("/VI/_next/static/media/", StringComparison.OrdinalIgnoreCase) &&
+            Regex.IsMatch(image.AbsolutePath, @"(?i)\\.(?:jpe?g|png)$");
+        // A GTA VI-scoped publisher gallery explicitly identifies the game,
+        // even when its individual filename is Jason_Duval_01.jpg.
+        // Ordinary news article pages are NOT trustworthy game identity.
+        return rockstarGallery || IsGtaSix(asset + " " + metadata);
     }
 
     private static bool MatchStoreGame(string expectedStory, string focus, string game)
@@ -729,7 +760,8 @@ public sealed class OfficialGamingMediaService
                         movies.Add((video, project.Title, sourcePage.ToString(),
                             sourcePage.Host + " official video"));
                 }
-                foreach (var img in ExtractPublisherImages(html, sourcePage).Take(24))
+                foreach (var img in ExtractLinkedGalleryImages(html, sourcePage)
+                    .Concat(ExtractPublisherImages(html, sourcePage)).Distinct().Take(90))
                 {
                     if (publisherImages.Any(x => x.Image == img)) continue;
                     if (!ExactGameEvidence(project.Title, focus, sourcePage, img, ""))
