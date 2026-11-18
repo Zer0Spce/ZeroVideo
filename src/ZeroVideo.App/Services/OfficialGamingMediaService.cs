@@ -347,7 +347,32 @@ public sealed class OfficialGamingMediaService
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { log?.Invoke("Gaming official-media search skipped: " + ex.Message); }
         }
-        if (images.Count == 0 && publisherImages.Count == 0)
+        // Priority 3: the source article's own editorial/game imagery.
+        // This is not described as a first-party official screenshot; label
+        // its actual publication in the credit manifest and on-screen source.
+        // Prefer this over generating an invented picture for news that does
+        // not have a Steam listing or a linked publisher newsroom.
+        var editorialImages = new List<(Uri Image, Uri Source)>();
+        if (publisherImages.Count == 0 && images.Count == 0)
+        {
+            foreach (var rawSource in project.Sources.Take(2))
+            {
+                if (!Uri.TryCreate(rawSource, UriKind.Absolute, out var story) ||
+                    !JournalismHost(story)) continue;
+                try
+                {
+                    var html = await DownloadNewsHtmlAsync(story, ct);
+                    foreach (var candidate in ExtractPublisherImages(html, story).Take(12))
+                    {
+                        if (editorialImages.All(x => x.Image != candidate))
+                            editorialImages.Add((candidate, story));
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { log?.Invoke("Editorial article images unavailable: " + ex.Message); }
+            }
+        }
+        if (images.Count == 0 && publisherImages.Count == 0 && editorialImages.Count == 0)
             throw new InvalidDataException(
                 "No matched first-party publisher/newsroom or Steam screenshots found. " +
                 "Gaming News will NOT generate AI pictures, use random stock, or publish an empty backdrop.");
@@ -375,6 +400,29 @@ public sealed class OfficialGamingMediaService
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { log?.Invoke("First-party image skipped: " + ex.Message); }
+        }
+        // A story's lead image is often a real publisher press screenshot.
+        // Keep its attribution exact instead of pretending it is official.
+        if (downloaded.Count == 0)
+        foreach (var (imageUri, story) in editorialImages)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (downloaded.Count >= 8) break;
+            if (!unique.Add(imageUri.ToString())) continue;
+            try
+            {
+                var bytes = await DownloadPublisherImageAsync(imageUri, story, ct);
+                if (!IsJpeg(bytes) && !IsPng(bytes)) continue;
+                var file = Path.Combine(mediaDir, "official-" +
+                    (downloaded.Count + 1).ToString("00") +
+                    (IsJpeg(bytes) ? ".jpg" : ".png"));
+                await File.WriteAllBytesAsync(file, bytes, ct);
+                downloaded.Add(new OfficialAsset(file, imageUri.ToString(), project.Title,
+                    story.ToString(), story.Host + " editorial article image",
+                    "Image sourced from credited article; license/press usage terms may apply."));
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("Editorial image skipped: " + ex.Message); }
         }
         // Steam is a fallback, and never used for a mismatched game title.
         foreach (var (uri, game, store) in images)
