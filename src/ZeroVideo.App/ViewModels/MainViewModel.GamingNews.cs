@@ -315,7 +315,7 @@ public sealed partial class MainViewModel
 
         GamingNewsStatus = "Scanning gaming news feeds once (no auto-refresh)...";
         var discovery = new GamingNewsDiscoveryService();
-        var candidates = await discovery.DiscoverAsync(96, Log, _cts.Token);
+        var candidates = await discovery.DiscoverAsync(96, Log, _cts.Token, GamingNewsFocus);
         var relevant = candidates.Where(x => GamingNewsMatches(x.Title,GamingNewsFocus))
             .Take(testOnly ? 1 : GamingNewsVideoCount).ToList();
         if (relevant.Count == 0)
