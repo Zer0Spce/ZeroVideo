@@ -365,6 +365,9 @@ public sealed class FfmpegService(ProcessRunner runner, DependencyService depend
             return chapterVisual;
         }
 
+        if (project.Options.GamingNewsSmoothOnly)
+            throw new InvalidOperationException(
+                "Gaming News crossfade failed; refusing hard-cut fallback. " + result.StdErr);
         log?.Invoke($"Chapter {chapter.Number}: advanced transition render failed; " +
             "rebuilding a cut-only scene timeline without the extra " +
             "crossfade frames, preserving audio/visual boundaries. " + result.StdErr);
