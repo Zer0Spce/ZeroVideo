@@ -638,113 +638,117 @@ public sealed class OfficialGamingMediaService
         return leads;
     }
 
-    private static string CoreGameSubject(VideoProject project, string focus)
+    // Identify the actual game, company, or person from the WHOLE article
+    // headline. Never use the first few words of an instructional headline
+    // as a Google Images query (e.g. "How to get to").
+    private static string ExtractMediaSubject(string headline, string focus)
     {
-        // Match the actual named game rather than an editorial article headline.
-        // For GTA VI Romance Guide, the stable search entity is GTA VI; Jason
-        // and Lucia are secondary search refinements, never alternate games.
-        if (IsGtaSixStory(project.Title, focus))
-            return "Grand Theft Auto VI";
-        if (!string.IsNullOrWhiteSpace(focus) &&
-            !focus.Trim().Equals("all gaming news", StringComparison.OrdinalIgnoreCase))
-            return focus.Trim();
-        var named = project.Chapters.SelectMany(x => x.Scenes)
-            .Select(x => x.VisualQuery?.Trim() ?? "")
-            .FirstOrDefault(x => x.Length is >= 4 and <= 65 &&
-                !Regex.IsMatch(x, @"(?i)\b(news|latest|screenshot|background|image|cinematic|gameplay|trailer)\b"));
-        return named ?? project.Title.Split(':', ',', '—')[0].Trim();
+        var title = Regex.Replace(WebUtility.HtmlDecode(headline ?? ""),
+            @"\s+", " ").Trim();
+        var requested = (focus ?? "").Trim();
+        var combined = title + " " + requested;
+
+        // Exact game names take priority over generic consoles/platforms.
+        // These are common news examples, not a list restricting discovery.
+        var namedGames = new (string Pattern, string Name)[]
+        {
+            (@"\b(?:disney\s+)?dreamlight\s+valley\b", "Disney Dreamlight Valley"),
+            (@"\b(?:gta\s*(?:vi|6)|grand\s+theft\s+auto\s*(?:vi|6))\b", "GTA VI"),
+            (@"\b(?:gta\s*(?:v|5)|grand\s+theft\s+auto\s*(?:v|5))\b", "GTA V"),
+            (@"\b(?:the\s+legend\s+of\s+zelda|zelda)\b", "The Legend of Zelda"),
+            (@"\b(?:call\s+of\s+duty)\b", "Call of Duty"),
+            (@"\b(?:final\s+fantasy)\b", "Final Fantasy"),
+            (@"\b(?:monster\s+hunter)\b", "Monster Hunter"),
+            (@"\b(?:resident\s+evil)\b", "Resident Evil"),
+            (@"\b(?:assassin'?s?\s+creed)\b", "Assassin's Creed"),
+            (@"\b(?:hollow\s+knight)\b", "Hollow Knight"),
+            (@"\b(?:elden\s+ring)\b", "Elden Ring"),
+            (@"\b(?:minecraft)\b", "Minecraft"),
+            (@"\b(?:fortnite)\b", "Fortnite"),
+            (@"\b(?:roblox)\b", "Roblox"),
+            (@"\b(?:spyro)\b", "Spyro"),
+            (@"\b(?:pokemon|pokémon)\b", "Pokémon")
+        };
+        foreach (var (pattern, name) in namedGames)
+            if (Regex.IsMatch(combined, pattern, RegexOptions.IgnoreCase))
+                return name;
+
+        // Niche-specific mode should honor the user-defined topic, but not
+        // generic values like "all news" or a platform when a game is named.
+        bool realFocus = requested.Length is >= 3 and <= 65 &&
+            !Regex.IsMatch(requested,
+                @"(?i)^(?:all\s+)?(?:gaming|video\s+game)(?:\s+news)?$");
+        if (realFocus && !Regex.IsMatch(requested,
+                @"(?i)^(?:playstation|ps5|xbox|switch|pc|nintendo)$"))
+            return requested;
+
+        // Guides frequently put the main game's name AFTER a preposition:
+        // "How to get to The Keepsake Sea in Disney Dreamlight Valley".
+        // Capture the last named game-like phrase, not "How to get to".
+        var inGame = Regex.Match(title,
+            @"(?i)\b(?:in|for)\s+(?<name>(?:(?:Disney|Marvel|Star\s+Wars|The\s+Legend\s+of)\s+)?[A-Z][\w'’-]*(?:\s+(?:[A-Z][\w'’-]*|of|the|and)){1,5})(?=\s*(?:[?.!:;,]|$))");
+        if (inGame.Success)
+        {
+            var name = inGame.Groups["name"].Value.Trim();
+            if (!Regex.IsMatch(name, @"(?i)^(?:the\s+)?(?:year|game|world|video|news|game\s+awards)\b"))
+                return name;
+        }
+
+        // Often the headline starts with a true named character or company.
+        // Only use the first subject when it is an identifiable proper noun,
+        // not a stopword phrase like "How to get to" / "Everything you need".
+        var company = Regex.Match(combined,
+            @"(?i)\b(?:amd|nvidia|intel|activision|ubisoft|rockstar\s+games|electronic\s+arts|epic\s+games|microsoft|sony)\b");
+        if (company.Success)
+            return company.Value.ToUpperInvariant() switch
+            {
+                "AMD" => "AMD",
+                "NVIDIA" => "NVIDIA",
+                "INTEL" => "Intel",
+                _ => company.Value
+            };
+        var person = Regex.Match(title,
+            @"\b(?<name>[A-Z][a-z]+\s+[A-Z][a-z]+)\b");
+        if (person.Success &&
+            !Regex.IsMatch(person.Groups["name"].Value,
+                @"(?i)^(?:How To|What If|The New|This New|New Game|Game Awards|Video Game)$"))
+            return person.Groups["name"].Value;
+
+        // Platform is only a fallback when no named game/subject was found.
+        if (Regex.IsMatch(combined, @"(?i)\b(?:playstation|ps5)\b"))
+            return "PlayStation";
+        if (Regex.IsMatch(combined, @"(?i)\bnintendo\b"))
+            return "Nintendo";
+
+        // Remove generic instructional/news prefixes, but never truncate
+        // the ORIGINAL headline to its first three or four words.
+        var cleaned = Regex.Replace(title,
+            @"(?i)^(?:how\s+to|where\s+to|guide\s+to|everything\s+you\s+need\s+to\s+know\s+about|here'?s?\s+how\s+to)\s+",
+            "").Trim();
+        cleaned = cleaned.Split(':', '—', '|')[0].Trim();
+        if (cleaned.Length > 80)
+            cleaned = string.Join(" ", cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries).TakeLast(7));
+        return cleaned.Length > 2 ? cleaned : "gaming news";
     }
+
+    private static string CoreGameSubject(VideoProject project, string focus)
+        => ExtractMediaSubject(project.Title + " " + project.Topic, focus);
 
     private static IReadOnlyList<string> CoreMediaQueries(VideoProject project, string focus)
     {
-        if (IsGtaSixStory(project.Title, focus))
-            return [
-                "Grand Theft Auto VI",
-                "GTA 6",
-                "GTA VI Jason Lucia",
-                "GTA 6 official screenshots",
-                "GTA VI Lucia Jason",
-                "Grand Theft Auto VI trailer"
-            ];
         var core = CoreGameSubject(project, focus);
-        return [core, core + " screenshots", core + " official gameplay",
-            core + " trailer", core + " press media"];
+        return [core, core + " screenshots", core + " gameplay",
+            core + " trailer"];
     }
 
     private static List<string> SimpleGoogleImageQueries(VideoProject project, string focus)
     {
-        // Plain Google Images searches, not source-filtered searches and not
-        // entire article headlines. "GTA VI Romance Guide" => "GTA VI
-        // screenshots"; "AMD says it loves gamers" => "AMD news".
-        var headline = project.Title + " " + project.Topic;
-        var explicitFocus = focus?.Trim() ?? "";
-        var core = "";
-        var suffix = " news";
-
-        if (IsGtaSixStory(headline, explicitFocus))
-        {
-            core = "GTA VI";
-            suffix = " screenshots";
-        }
-        else if (Regex.IsMatch(headline + " " + explicitFocus,
-                     @"(?i)\b(?:amd|advanced micro devices)\b"))
-        {
-            core = "AMD";
-        }
-        else if (Regex.IsMatch(headline + " " + explicitFocus,
-                     @"(?i)\bnvidia\b"))
-        {
-            core = "NVIDIA";
-        }
-        else if (Regex.IsMatch(headline + " " + explicitFocus,
-                     @"(?i)\bintel\b"))
-        {
-            core = "Intel";
-        }
-        else if (Regex.IsMatch(headline + " " + explicitFocus,
-                     @"(?i)\belon musk\b"))
-        {
-            core = "Elon Musk";
-        }
-        else if (Regex.IsMatch(headline + " " + explicitFocus,
-                     @"(?i)\b(?:playstation|ps5)\b"))
-        {
-            core = "PlayStation";
-        }
-        else if (Regex.IsMatch(headline + " " + explicitFocus,
-                     @"(?i)\b(?:nintendo|switch)\b"))
-        {
-            core = "Nintendo";
-        }
-        else if (!string.IsNullOrWhiteSpace(explicitFocus) &&
-                 !explicitFocus.Equals("all gaming news", StringComparison.OrdinalIgnoreCase) &&
-                 explicitFocus.Length <= 60)
-        {
-            core = explicitFocus;
-            suffix = " screenshots";
-        }
-        else
-        {
-            // A recognizable proper-name subject at the beginning is better
-            // than a full headline. Prefer an existing scene visual query
-            // when it is a concise entity and not an art-direction prompt.
-            var shortScene = project.Chapters.SelectMany(c => c.Scenes)
-                .Select(x => (x.VisualQuery ?? "").Trim())
-                .FirstOrDefault(x => x.Length is >= 3 and <= 35 &&
-                    !Regex.IsMatch(x, @"(?i)\b(shot|cinematic|closeup|background|wide|style|art|image)\b"));
-            core = shortScene ?? project.Title.Split(':', ',', '—')[0].Trim();
-            if (core.Length > 55)
-                core = string.Join(" ", core.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(4));
-        }
-
-        core = Regex.Replace(core, @"(?i)\s+site:\S+", "").Trim();
-        if (core.Length == 0) core = "gaming news";
-        var queries = new[]
-        {
-            core + suffix,
-            core
-        };
-        return queries.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var core = CoreGameSubject(project, focus);
+        var suffix = Regex.IsMatch(core,
+            @"(?i)^(?:amd|nvidia|intel|activision|ubisoft|microsoft|sony|rockstar\s+games)$")
+            ? " news" : " screenshots";
+        return new[] { core + suffix, core }
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     private static string GamingMediaSubject(VideoProject project, string focus)
