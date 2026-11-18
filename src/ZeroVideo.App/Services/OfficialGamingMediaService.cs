@@ -1556,7 +1556,7 @@ public sealed class OfficialGamingMediaService
         foreach (var term in searchTerms)
         {
             ct.ThrowIfCancellationRequested();
-            if (collected.Count >= 36 && perHost.Count >= 4) break;
+            if (collected.Count >= 48 || (collected.Count >= 36 && perHost.Count >= 4)) break;
             Microsoft.Playwright.IPage? page = null;
             try
             {
@@ -1675,7 +1675,7 @@ public sealed class OfficialGamingMediaService
                 foreach (var candidate in candidates)
                 {
                     ct.ThrowIfCancellationRequested();
-                    if (collected.Count >= 36) break;
+                    if (collected.Count >= 48 || (collected.Count >= 36 && perHost.Count >= 4)) break;
                     if (!Uri.TryCreate(candidate.ImageUrl, UriKind.Absolute, out var image) ||
                         !IsPublicHttps(image) ||
                         image.Host.EndsWith("google.com", StringComparison.OrdinalIgnoreCase) ||
