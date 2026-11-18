@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Windows.Input;
 using Microsoft.Win32;
+using ZeroVideo.App.Models;
 using ZeroVideo.App.Infrastructure;
 using ZeroVideo.App.Services;
 
@@ -165,6 +166,99 @@ public sealed partial class MainViewModel
                 @"\b(gta\s*(vi|6)|grand theft auto\s*(vi|6))\b");
     }
 
+    private async Task<VideoProject> CreateGamingNewsShortProjectAsync(GamingNewsTopic article, int index)
+    {
+        const int sceneCount = 8;
+        var channelName = GamingNewsChannelName.Trim();
+        var opening = string.IsNullOrWhiteSpace(channelName)
+            ? "Hey guys! Here's the latest gaming news! "
+            : "Hey guys! Welcome to " + channelName + "! Here's the latest gaming news! ";
+        var project = new VideoProject
+        {
+            Id = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff") + "-" + index.ToString("00"),
+            Title = article.Title,
+            Topic = article.Title,
+            AspectRatio = "9:16",
+            TargetMinutes = 1,
+            Language = "English",
+            Style = Style,
+            Voice = Project.Voice,
+            Sources = [article.Url],
+            Options = new ProjectOptions
+            {
+                HowManyChapters = 1,
+                ImagesPerChapter = sceneCount,
+                GenerateCaptions = true,
+                BurnInBoldCaptions = true,
+                GenerateMissingVisuals = true,
+                AddBackgroundMusic = GamingNewsMusicEnabled,
+                BackgroundMusicPath = GamingNewsMusicEnabled ? GamingNewsMusicPath : null,
+                BackgroundMusicVolume = Math.Pow(10, GamingNewsMusicDb / 20)
+            }
+        };
+        var metadata = new ProjectChapter
+        {
+            Number = 1,
+            Title = "One-minute gaming news",
+            Purpose = "One continuous 60-second gaming news report, not a documentary chapter.",
+            TargetSeconds = 60
+        };
+        project.Chapters.Add(metadata);
+        var prompt = "Write a SINGLE standalone 60-second vertical TikTok GAMING NEWS script. " +
+            "This is NOT a long-form documentary. DO NOT create a master outline, seven chapters, " +
+            "a multi-part series, or 10 scenes per chapter. " +
+            "The entire video is ONE continuous narration with EXACTLY 8 visual beats. " +
+            "Aim for 115-145 spoken words TOTAL, including the opening and closing, at a natural voiceover pace. " +
+            "The first spoken words MUST be EXACTLY: " + opening +
+            "Then report the news in an engaging, concise, accurate way. " +
+            "End with ONE relevant viewer question, without invented claims or false cliffhangers. " +
+            "Use the article title, source and summary strictly as evidence; do not make up facts " +
+            "that are not supported by them. Be clear if evidence is thin. " +
+            "Article headline: " + article.Title + "\nPublisher: " + article.Publisher +
+            "\nPublished: " + article.PublishedAt.ToString("yyyy-MM-dd") +
+            "\nOriginal source: " + article.Url +
+            "\nRSS summary: " + article.Summary +
+            "\nReturn ONE valid fenced JSON object for one ProjectChapter with keys " +
+            "number (1), title, purpose, targetSeconds (60), scenes. " +
+            "Exactly 8 scenes numbered 1-8; each scene has number, role, narration, " +
+            "visualType, visualQuery, imagePrompt, shotDirection, targetSeconds (~7.5). " +
+            "Each scene narration is a short continuous segment of the SAME news story. " +
+            "For each imagePrompt, show the specific game/topic actually narrated, " +
+            "not generic gaming stock or unrelated people. Choose visuals usable with appropriate rights. " +
+            "Keep 9:16, English, topic-specific visuals and burnt-in Shorts captions in the project. " +
+            "No chapter-level narration field is needed.";
+        for (var attempt = 1; attempt <= 2; attempt++)
+        {
+            _cts.Token.ThrowIfCancellationRequested();
+            var result = await _chat.GenerateChapterAsync(project, metadata, Settings, prompt, Log, _cts.Token);
+            var narration = result.Narration.Trim();
+            var words = narration.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+            var firstScene = result.Scenes.FirstOrDefault()?.Narration.TrimStart() ?? "";
+            var lastScene = result.Scenes.LastOrDefault()?.Narration.TrimEnd() ?? "";
+            if (result.Scenes.Count == sceneCount && words is >= 105 and <= 155 &&
+                firstScene.StartsWith(opening.Trim(), StringComparison.OrdinalIgnoreCase) &&
+                lastScene.EndsWith("?", StringComparison.Ordinal))
+            {
+                result.TargetSeconds = 60;
+                result.Number = 1;
+                result.Narration = narration;
+                for (var i = 0; i < result.Scenes.Count; i++)
+                {
+                    result.Scenes[i].Number = i + 1;
+                    result.Scenes[i].TargetSeconds = 60.0 / sceneCount;
+                }
+                project.Chapters[0] = result;
+                return project;
+            }
+            Log($"Gaming News script invalid: {result.Scenes.Count} scenes, {words} words, " +
+                "opening/outro mismatch. Retrying short-form format.");
+            prompt += "\nCORRECTION: Exactly EIGHT scenes, 105-155 words in total, " +
+                "first spoken line verbatim as supplied, last scene must end with a question mark. " +
+                "Never return a long-form outline or seven chapters.";
+        }
+        throw new InvalidDataException("Gaming News script failed the 60-second structure checks.");
+    }
+
     private async Task RunGamingNewsBatchAsync(bool testOnly)
     {
         GamingNewsGenerated = 0;
@@ -204,86 +298,73 @@ public sealed partial class MainViewModel
         }
         if (!testOnly && relevant.Count < GamingNewsVideoCount)
             Log($"Gaming News: only {relevant.Count}/{GamingNewsVideoCount} distinct news headlines found. No invented topics.");
-        var originalShortQueue = ShortQueue.ToList();
-        // Suspend the regular Shorts checkpoint while this dedicated batch temporarily
-        // uses the rendering queue. The original persisted Shorts data is untouched.
-        var wasLoadingShortsCheckpoint = _loadingShortsCheckpoint;
-        _loadingShortsCheckpoint = true;
-        var originalShortDuration = ShortDuration;
+        // Gaming News is a genuine 60-second format: NEVER call the legacy
+        // Shorts queue (it still uses long-form outline/chapter prompts).
         var originalProject = Project;
         var originalProjectDirectory = ProjectDirectory;
-        // A private settings snapshot ensures that the existing Create/Shorts
-        // music and voice preferences are not overwritten by this batch.
         var originalSettings = Settings;
-        Settings = JsonSerializer.Deserialize<ZeroVideo.App.Models.ZeroVideoSettings>(
+        Settings = JsonSerializer.Deserialize<ZeroVideoSettings>(
             JsonSerializer.Serialize(originalSettings))
-            ?? throw new InvalidDataException("Could not isolate gaming settings.");
-        var previousMusicEnabled = Project.Options.AddBackgroundMusic;
+            ?? throw new InvalidDataException("Could not isolate Gaming News settings.");
         var initialIds = PublishingQueue.Select(x => x.Id).ToHashSet();
         try
         {
-            GamingNewsStatus = $"Creating {relevant.Count} vertical Shorts with existing voice and captions...";
-            ShortQueue.Clear();
-            foreach (var topic in relevant)
-            {
-                var channelName = GamingNewsChannelName.Trim();
-                var opening = string.IsNullOrWhiteSpace(channelName)
-                    ? "Hey guys! Here is the latest gaming news about " + topic.Title + "."
-                    : "Hey guys! Welcome to " + channelName + "! Here is the latest news about " + topic.Title + ".";
-                var detail = "Gaming news report: " + topic.Title +
-                    ". Original report: " + topic.Url +
-                    ". Publisher: " + topic.Publisher +
-                    ". Publication date: " + topic.PublishedAt.ToString("yyyy-MM-dd") +
-                    ". RSS article summary for fact grounding: " + topic.Summary +
-                    ". Verify claims from the cited source, do not fabricate details, " +
-                    "use only topic-relevant visuals with appropriate rights. " +
-                    "Make an original 9:16 English news explainer with burned-in Shorts captions. " +
-                    "IMPORTANT SCRIPT FORMAT for this Gaming News video only: " +
-                    "The very first spoken words of chapter 1 MUST be this natural channel greeting, " +
-                    "verbatim (without quotation marks): " + opening + " " +
-                    "After this introduction, immediately report the verified facts with smooth " +
-                    "conversational transitions. Do not repeat the greeting in later chapters. " +
-                    "The very last spoken sentence of the final chapter MUST be a short, engaging " +
-                    "on-topic audience question or a factually justified cliffhanger, inviting comments. " +
-                    "Do not fabricate upcoming announcements, teasers or unresolved stories for suspense. " +
-                    "The greeting and ending MUST be part of spoken narration rather than captions, " +
-                    "stage directions or a separate unspoken prompt.";
-                ShortQueue.Add(new ShortQueueEntry { Idea = detail });
-            }
-            ShortDuration = 1;
             Settings.BackgroundMusicPath = GamingNewsMusicEnabled ? GamingNewsMusicPath : "";
             Settings.BackgroundMusicDb = GamingNewsMusicDb;
-            Project.Options.AddBackgroundMusic = GamingNewsMusicEnabled;
-            await RunShortsQueueAsync(); // Proven local TTS, 9:16, captions, rendering and checkpoints.
-            var completed = ShortQueue.Where(x => x.Status == "Complete").ToList();
-            GamingNewsGenerated = completed.Count;
-            if (completed.Count == 0)
+            GamingNewsStatus = $"Producing {relevant.Count} real 60-second gaming Shorts...";
+            foreach (var (topic, index) in relevant.Select((item, i) => (item, i)))
             {
-                GamingNewsStatus = "No complete videos rendered; inspect Shorts recovery logs.";
+                _cts.Token.ThrowIfCancellationRequested();
+                GamingNewsStatus = $"Writing a 60-second script {index+1}/{relevant.Count}: {topic.Title}";
+                var project = await CreateGamingNewsShortProjectAsync(topic, index);
+                Project = project;
+                ProjectDirectory = await _store.SaveAsync(project, Settings.ProjectsRoot);
+
+                GamingNewsStatus = $"Rendering gaming Short {index+1}/{relevant.Count}...";
+                try
+                {
+                    var result = await _pipeline.RunAsync(project, Settings, Log,
+                        new Progress<double>(x => Progress = x), _cts.Token);
+                    if (!File.Exists(result))
+                        throw new InvalidDataException("Render returned no MP4.");
+                    if (await _ffmpeg.ProbeDurationAsync(result, Settings, _cts.Token) is var seconds &&
+                        (seconds < 35 || seconds > 75))
+                        throw new InvalidDataException(
+                            $"Gaming Short narration is {seconds:0.0}s (expected about 60s).");
+                    if (!testOnly)
+                    {
+                        QueueCompletedVideo(result);
+                        var queued = PublishingQueue.FirstOrDefault(x =>
+                            x.VideoPath.Equals(result, StringComparison.OrdinalIgnoreCase));
+                        if (queued is not null)
+                            await TryGenerateMetadataForItemAsync(queued, force:false);
+                    }
+                    else
+                        GamingNewsTestVideoPath = result;
+                    GamingNewsGenerated++;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    Log($"Gaming News video {index+1} failed: {ex.Message}");
+                    // Never add incomplete MP4s to Publishing.
+                    if (testOnly) throw;
+                    continue;
+                }
+            }
+
+            if (GamingNewsGenerated == 0)
+            {
+                GamingNewsStatus = "No 60-second gaming videos completed. See logs.";
                 return;
             }
             var newItems = PublishingQueue.Where(x => !initialIds.Contains(x.Id) &&
                 File.Exists(x.VideoPath)).ToList();
             if (testOnly)
             {
-                // Test mode never schedules or uploads. Retain the rendered MP4
-                // and make sure it cannot be selected by a later batch publish.
-                foreach (var item in newItems)
-                {
-                    item.IsChecked = false;
-                    item.IsScheduled = false;
-                    item.ScheduledAt = null;
-                    item.ScheduleDateText = "";
-                    item.TikTokStatus = "Preview only - not scheduled";
-                }
-                GamingNewsTestVideoPath = newItems.FirstOrDefault()?.VideoPath ?? "";
-                // Preview videos belong only in the Gaming News tab; never let
-                // the normal Publish queue expose an accidental upload button.
-                foreach (var item in newItems) PublishingQueue.Remove(item);
-                SavePublishingQueue();
                 GamingNewsStatus = string.IsNullOrWhiteSpace(GamingNewsTestVideoPath)
-                    ? "Test render finished, but no exported MP4 was found."
-                    : "Test video ready. Select Open Test Video to preview the result. Not uploaded or scheduled.";
+                    ? "Test render finished but no output MP4 was found."
+                    : "60-second preview ready. Open Test Video to watch; no TikTok scheduling or uploading.";
                 return;
             }
             var blocked = PublishingQueue.Where(x => x.ScheduledAt.HasValue)
@@ -396,18 +477,8 @@ public sealed partial class MainViewModel
         finally
         {
             Settings = originalSettings;
-            // RunPipelineAsync persists settings during generation. Restore the
-            // regular user's preferences after the gaming-only audio override.
-            try { await _settingsService.SaveAsync(originalSettings); }
-            catch (Exception ex) { Log("Gaming News: regular settings restore failed: " + ex.Message); }
             Project = originalProject;
             ProjectDirectory = originalProjectDirectory;
-            Project.Options.AddBackgroundMusic = previousMusicEnabled;
-            ShortQueue.Clear();
-            foreach (var entry in originalShortQueue) ShortQueue.Add(entry);
-            ShortDuration = originalShortDuration;
-            _loadingShortsCheckpoint = wasLoadingShortsCheckpoint;
-            SaveShortsRecovery();
         }
     }
 }
