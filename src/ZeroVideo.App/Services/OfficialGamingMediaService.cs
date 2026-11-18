@@ -312,7 +312,8 @@ public sealed class OfficialGamingMediaService
     }
 
     public async Task<OfficialMediaResult> AcquireAsync(VideoProject project, string focus,
-        string articleSummary, Action<string>? log, CancellationToken ct)
+        string articleSummary, BrowserSession browser, ZeroVideoSettings settings,
+        Action<string>? log, CancellationToken ct)
     {
         var context = Normalize(project.Title + " " + project.Topic + " " +
             articleSummary + " " + focus + " " +
@@ -450,11 +451,9 @@ public sealed class OfficialGamingMediaService
                 catch (Exception ex) { log?.Invoke("Editorial article images unavailable: " + ex.Message); }
             }
         }
-        if (images.Count == 0 && publisherImages.Count == 0 &&
-            editorialImages.Count == 0 && movies.Count == 0)
-            throw new InvalidDataException(
-                "No matched first-party publisher/newsroom or Steam screenshots found. " +
-                "Gaming News will NOT generate AI pictures, use random stock, or publish an empty backdrop.");
+        log?.Invoke($"Gaming media candidates: publisher images={publisherImages.Count}, " +
+            $"article images={editorialImages.Count}, Steam screenshots={images.Count}, " +
+            $"videos={movies.Count}. Trying sources in priority order.");
 
         var mediaDir = Path.Combine(project.ProjectDirectory, "media");
         Directory.CreateDirectory(mediaDir);
@@ -546,7 +545,18 @@ public sealed class OfficialGamingMediaService
             catch (Exception ex) { log?.Invoke("Official gameplay video skipped: " + ex.Message); }
         }
         if (downloaded.Count == 0 && videos.Count == 0)
-            throw new InvalidDataException("No usable authentic game screenshot or video found.");
+        {
+            log?.Invoke("Direct downloads unavailable. Trying the original article " +
+                "in Edge for a genuine article/game screenshot (no AI).");
+            var articleScreenshot = await CaptureSourceArticleAsync(
+                project, browser, settings, mediaDir, log, ct);
+            if (articleScreenshot is not null) downloaded.Add(articleScreenshot);
+        }
+        if (downloaded.Count == 0 && videos.Count == 0)
+            throw new InvalidDataException(
+                "All official, article, Steam and Edge media options failed. " +
+                "Source article may block images or require a login. " +
+                "Skipped without any generated imagery; see source diagnostics.");
 
         // Mix across eight beats. Keep the first and final beats as screenshots
         // when available; show real footage in the middle. Never create AI
@@ -583,6 +593,103 @@ public sealed class OfficialGamingMediaService
         log?.Invoke($"Gaming News: {downloaded.Count} screenshots and " +
             $"{videos.Count} real video clip(s); no ComfyUI/AI images. Manifest: " + manifest);
         return new OfficialMediaResult(label, downloaded.Concat(videos).ToList());
+    }
+
+    private static async Task<OfficialAsset?> CaptureSourceArticleAsync(
+        VideoProject project, BrowserSession browser, ZeroVideoSettings settings,
+        string mediaDir, Action<string>? log, CancellationToken ct)
+    {
+        // The screenshot is genuinely from the cited original report, not
+        // an invented image. Prefer an actual displayed photo, then the
+        // headline/article view. Never capture login/blocked/error pages.
+        foreach (var raw in project.Sources.Take(2))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!Uri.TryCreate(raw, UriKind.Absolute, out var article) ||
+                !(JournalismHost(article) || PublisherHost(article))) continue;
+            Microsoft.Playwright.IPage? page = null;
+            try
+            {
+                await browser.EnsureStartedAsync(settings);
+                page = await browser.Context.NewPageAsync();
+                await page.GotoAsync(article.ToString(),
+                    new Microsoft.Playwright.PageGotoOptions
+                    {
+                        WaitUntil = Microsoft.Playwright.WaitUntilState.DOMContentLoaded,
+                        Timeout = 25000
+                    });
+                await page.WaitForTimeoutAsync(1100);
+                var pageTitle = await page.TitleAsync();
+                var body = await page.Locator("body").InnerTextAsync(
+                    new Microsoft.Playwright.LocatorInnerTextOptions { Timeout = 5000 });
+                if (body.Length < 150 ||
+                    System.Text.RegularExpressions.Regex.IsMatch(
+                        (pageTitle + " " + body[..Math.Min(body.Length, 1200)]),
+                        @"\b(access denied|403 forbidden|captcha|checking your browser|verify you are human|404 not found)\b",
+                        RegexOptions.IgnoreCase))
+                    continue;
+                // Prefer the genuine article photo if loaded; omit tiny icons,
+                // profile photos and decorative SVGs.
+                var candidates = page.Locator(
+                    "article img, main img, img[src*='image'], img[src*='media']");
+                var n = Math.Min(await candidates.CountAsync(), 22);
+                for (var i = 0; i < n; i++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    try
+                    {
+                        var node = candidates.Nth(i);
+                        var bounds = await node.BoundingBoxAsync();
+                        if (bounds is null || bounds.Width < 500 || bounds.Height < 220)
+                            continue;
+                        var file = Path.Combine(mediaDir, "article-real-image.png");
+                        await node.ScreenshotAsync(new Microsoft.Playwright.LocatorScreenshotOptions
+                        {
+                            Path = file,
+                            Timeout = 8000
+                        });
+                        if (File.Exists(file) && new FileInfo(file).Length > 12000)
+                        {
+                            log?.Invoke("Real news-article image captured from " + article.Host);
+                            return new OfficialAsset(file, article.ToString(), project.Title,
+                                article.ToString(), article.Host + " article photo",
+                                "Actual source article image; attribution does not establish permission.");
+                        }
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        log?.Invoke("Article image candidate failed: " + ex.Message);
+                    }
+                }
+                // A real article screenshot with the publisher's headline
+                // is better than an empty test render for coverage without
+                // a named Steam game (corporate/industry gaming stories).
+                var screenshot = Path.Combine(mediaDir, "article-page.png");
+                await page.ScreenshotAsync(new Microsoft.Playwright.PageScreenshotOptions
+                {
+                    Path = screenshot, FullPage = false, Timeout = 10000
+                });
+                if (!File.Exists(screenshot) ||
+                    new FileInfo(screenshot).Length < 15000) continue;
+                log?.Invoke("Using actual article page screenshot from " + article.Host);
+                return new OfficialAsset(screenshot, article.ToString(), project.Title,
+                    article.ToString(), article.Host + " original report",
+                    "Actual article screenshot; use according to applicable editorial rights.");
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                log?.Invoke("Edge article screenshot fallback failed for " +
+                    article.Host + ": " + ex.Message);
+            }
+            finally
+            {
+                if (page is not null)
+                    try { await page.CloseAsync(); } catch { }
+            }
+        }
+        return null;
     }
 
     public async Task BurnSmallCreditAsync(string video, string credit,
