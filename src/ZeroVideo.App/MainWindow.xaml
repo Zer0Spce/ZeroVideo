@@ -420,7 +420,7 @@
                     </StackPanel>
                     <StackPanel Grid.Column="2">
                       <Label Content="NUMBER OF VIDEOS"/>
-                      <ComboBox ItemsSource="{Binding GamingNewsCounts}" SelectedItem="{Binding GamingNewsVideoCount, Mode=TwoWay}" />
+                      <TextBox Text="{Binding GamingNewsVideoCount, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" ToolTip="Enter any count from 1 to 96, for this specific game/topic." />
                       <Label Content="VIDEO FORMAT" Margin="0,10,0,0"/>
                       <TextBlock Text="9:16 vertical (locked)" FontWeight="SemiBold"/>
                       <Label Content="CAPTIONS" Margin="0,10,0,0"/>
