@@ -16,11 +16,20 @@ namespace ZeroVideo.App.Services;
 /// </summary>
 public sealed class OfficialGamingMediaService
 {
-    private static readonly HttpClient Http = new(new HttpClientHandler
+    private static readonly HttpClient Http = CreateMediaClient();
+
+    private static HttpClient CreateMediaClient()
     {
-        AllowAutoRedirect = false,
-        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
-    }) { Timeout = TimeSpan.FromSeconds(35) };
+        var http = new HttpClient(new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+        }) { Timeout = TimeSpan.FromSeconds(35) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "ZeroVideo/0.1 (+https://github.com/Zer0Spce/ZeroVideo)");
+        http.DefaultRequestHeaders.Accept.ParseAdd("text/html, application/json, application/rss+xml, image/*");
+        return http;
+    }
 
     public sealed record OfficialAsset(string LocalPath, string Url, string GameTitle,
         string StoreUrl, string Source, string RightsNote);
@@ -314,6 +323,9 @@ public sealed class OfficialGamingMediaService
             foreach (var clip in clips.Where(x => WikimediaStrictMatch(x, term)))
             {
                 var ext = Path.GetExtension(clip.FilePath);
+                if (!ext.Equals(".webm", StringComparison.OrdinalIgnoreCase) &&
+                    !ext.Equals(".mp4", StringComparison.OrdinalIgnoreCase))
+                    continue; // Preserve compatible input formats for existing FFmpeg renderer.
                 var destination = Path.Combine(mediaDir, "commons-video-" +
                     (videos.Count + 1).ToString("00") + ext);
                 File.Copy(clip.FilePath, destination, true);
