@@ -1120,6 +1120,15 @@ public sealed class OfficialGamingMediaService
                 if (downloaded.Count < 38 && unique.Add(image.Url))
                     downloaded.Add(image);
         }
+        // Do not accept a full Rockstar pool as "diversified". Independently
+        // collect GTA VI screenshots from GameSpot and Gematsu galleries.
+        if (IsGtaSixStory(project.Title, focus))
+        {
+            var independentGalleries = await CaptureIndependentGtaMediaAsync(
+                browser, settings, mediaDir, log, ct);
+            foreach (var image in independentGalleries)
+                if (unique.Add(image.Url)) downloaded.Add(image);
+        }
         // Independent archive source (not the original PC Gamer article).
         // Reuse ZeroVideo's existing licensed Commons image/video adapters.
         // This also works when an official game's website blocks direct downloads.
@@ -1360,6 +1369,120 @@ public sealed class OfficialGamingMediaService
             });
         await SaveMediaHistoryAsync(history, log, ct);
         return new OfficialMediaResult(label, downloaded.Concat(videos).ToList());
+    }
+
+    // Known GTA VI-specific galleries on independent publishers. These are
+    // separate source websites, not mirrors counted as new artwork.
+    private static readonly (string Publisher, string Url)[] GtaSixThirdPartyGalleries =
+    [
+        ("GameSpot", "https://www.gamespot.com/gallery/gta-6-screenshots-images/2900-6525/"),
+        ("Gematsu", "https://www.gematsu.com/2026/11/grand-theft-auto-vi-launch-screenshots"),
+        ("Gematsu", "https://www.gematsu.com/gallery/grand-theft-auto-vi/november-5-2026"),
+        ("Gematsu", "https://www.gematsu.com/gallery/grand-theft-auto-vi/june-24-2026")
+    ];
+
+    private static async Task<List<OfficialAsset>> CaptureIndependentGtaMediaAsync(
+        BrowserSession browser, ZeroVideoSettings settings, string mediaDir,
+        Action<string>? log, CancellationToken ct)
+    {
+        var found = new List<OfficialAsset>();
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (publisher, url) in GtaSixThirdPartyGalleries)
+        {
+            ct.ThrowIfCancellationRequested();
+            Microsoft.Playwright.IPage? page = null;
+            var countForSite = found.Count(x => x.Source.Equals(publisher, StringComparison.OrdinalIgnoreCase));
+            if (countForSite >= 10) continue;
+            try
+            {
+                await browser.EnsureStartedAsync(settings);
+                page = await browser.Context.NewPageAsync();
+                await page.GotoAsync(url, new Microsoft.Playwright.PageGotoOptions
+                {
+                    WaitUntil = Microsoft.Playwright.WaitUntilState.DOMContentLoaded,
+                    Timeout = 25000
+                });
+                var imageNodes = page.Locator("article img, main img, figure img, .gallery img");
+                var count = Math.Min(await imageNodes.CountAsync(), 260);
+                for (var i = 0; i < count && countForSite < 10; i++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    try
+                    {
+                        var node = imageNodes.Nth(i);
+                        var alt = await node.GetAttributeAsync("alt") ?? "";
+                        var src = await node.GetAttributeAsync("src") ?? "";
+                        var lazy = await node.GetAttributeAsync("data-src") ?? "";
+                        var srcset = await node.GetAttributeAsync("srcset") ?? "";
+                        var urls = new List<string>();
+                        if (!string.IsNullOrWhiteSpace(srcset))
+                        {
+                            urls.AddRange(srcset.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                .Select(x => x.Trim().Split(' ')[0])
+                                .Reverse());
+                        }
+                        urls.Add(lazy);
+                        urls.Add(src);
+                        foreach (var value in urls)
+                        {
+                            if (string.IsNullOrWhiteSpace(value) ||
+                                !Uri.TryCreate(new Uri(url), WebUtility.HtmlDecode(value),
+                                    out var uri) || !IsPublicHttps(uri) ||
+                                RejectGenericGraphic(uri, alt) ||
+                                IsGtaFive(alt + " " + uri.AbsolutePath) ||
+                                !visited.Add(uri.ToString()))
+                                continue;
+                            // A dedicated, exact-game screenshot gallery and
+                            // an in-article image are stronger evidence than
+                            // an arbitrary search thumbnail, but never accept
+                            // tiny graphics or sidebar avatars.
+                            var fileBase = Path.Combine(mediaDir,
+                                "independent-gta6-" + (found.Count + 1).ToString("000"));
+                            try
+                            {
+                                var bytes = await DownloadPublisherImageAsync(
+                                    uri, new Uri(url), ct);
+                                if (!IsJpeg(bytes) && !IsPng(bytes)) continue;
+                                var file = fileBase + (IsJpeg(bytes) ? ".jpg" : ".png");
+                                await File.WriteAllBytesAsync(file, bytes, ct);
+                                if (!HasFullResolution(file, log))
+                                {
+                                    File.Delete(file);
+                                    continue;
+                                }
+                                found.Add(new OfficialAsset(file, uri.ToString(),
+                                    "Grand Theft Auto VI", url, publisher,
+                                    "Source gallery shows GTA VI images; provenance recorded."));
+                                countForSite++;
+                                break;
+                            }
+                            catch (OperationCanceledException) { throw; }
+                            catch (Exception ex)
+                            {
+                                log?.Invoke(publisher + " gallery image skipped: " + ex.Message);
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        log?.Invoke(publisher + " image node skipped: " + ex.Message);
+                    }
+                }
+                log?.Invoke($"Gaming News {publisher} verified gallery: {countForSite} full-resolution images.");
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                log?.Invoke(publisher + " gallery browsing unavailable: " + ex.Message);
+            }
+            finally
+            {
+                if (page is not null)
+                    try { await page.CloseAsync(); } catch { }
+            }
+        }
+        return found;
     }
 
     private static async Task<List<OfficialAsset>> CaptureRockstarGalleryAsync(
