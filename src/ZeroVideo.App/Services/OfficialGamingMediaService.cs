@@ -115,7 +115,16 @@ public sealed class OfficialGamingMediaService
         }).ToList();
         var pool = keyed.GroupBy(x => x.Fingerprint).Select(x => x.First()).ToList();
         var hosts = pool.Select(x => x.Host).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        // One real publisher does not satisfy a multi-source news workflow.
+        // Never falsely describe 24 reordered Rockstar images as diverse.
+        if (hosts.Count < 2)
+            throw new InvalidDataException(
+                "Only one usable source website (" + (hosts.Count == 1 ? hosts[0] : "none") +
+                ") supplied unique high-resolution images. Gaming News requires " +
+                "at least two genuine source sites; it will not publish another " +
+                "Rockstar-only slideshow. Check the GameSpot/Gematsu gallery diagnostics.");
         var goalHosts = Math.Min(4, hosts.Count);
+        var maximumPerHost = hosts.Count >= 3 ? 12 : 15;
         var storyKeywords = Regex.Matches(project.Title.ToLowerInvariant(), @"[a-z]{4,}")
             .Select(x => x.Value)
             .Where(x => !new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -138,6 +147,12 @@ public sealed class OfficialGamingMediaService
             var choices = pool.Where(x => !uniqueFirst || !chosenHashes.Contains(x.Fingerprint))
                 .ToList();
             if (choices.Count == 0) choices = pool.ToList();
+            if (hosts.Count >= 2)
+            {
+                var balanced = choices.Where(x =>
+                    perSource.GetValueOrDefault(x.Host) < maximumPerHost).ToList();
+                if (balanced.Count > 0) choices = balanced;
+            }
             // Video and screenshot mix when genuine footage exists; never
             // substitute unrelated videos merely to meet a quota.
             if (preferVideo && choices.Any(x => IsVideoAsset(x.Asset)))
@@ -180,6 +195,10 @@ public sealed class OfficialGamingMediaService
             if (IsVideoAsset(pick.Asset)) videoShots++;
         }
 
+        if (perSource.Count < 2)
+            throw new InvalidDataException(
+                "Diversified shot selection ended with one source. " +
+                "No new video was published; inspect the media-source diagnostics.");
         log?.Invoke("Gaming News diversified selection: " +
             chosen.Count + " shots, " + perSource.Count + " source sites (" +
             string.Join(", ", perSource.Select(x => x.Key + "=" + x.Value)) +
