@@ -187,7 +187,14 @@ public sealed partial class MainViewModel
             Options = new ProjectOptions
             {
                 HowManyChapters = 1,
-                ImagesPerChapter = sceneCount,
+                ImagesPerChapter = 24, // 8 narration beats x 3 real-media shots. Never AI-generated images.
+                SceneTransitions = true,
+                TransitionStyle = "Crossfade",
+                TransitionDurationSeconds = 0.28,
+                AddMotion = true,
+                MotionStyle = "Automatic",
+                CinematicEffects = false,
+                StyleAwareEffects = false,
                 GenerateCaptions = true,
                 BurnInBoldCaptions = true,
                 GenerateMissingVisuals = false, // Gaming News never generates AI images.
