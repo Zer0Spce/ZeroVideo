@@ -225,8 +225,7 @@ public sealed class OfficialGamingMediaService
         VideoProject project, string focus, Action<string>? log, CancellationToken ct)
     {
         var pages = new List<Uri>();
-        var subject = !string.IsNullOrWhiteSpace(focus)
-            ? focus.Trim() : project.Title.Trim();
+        var subject = CoreGameSubject(project, focus);
         if (subject.Length > 120) subject = subject[..120];
         if (subject.Length < 4) return pages;
         var searches = new[]
@@ -276,8 +275,7 @@ public sealed class OfficialGamingMediaService
         VideoProject project, string focus, Action<string>? log, CancellationToken ct)
     {
         var pages = new List<Uri>();
-        var subject = string.IsNullOrWhiteSpace(focus)
-            ? project.Title.Trim() : focus.Trim();
+        var subject = CoreGameSubject(project, focus);
         if (subject.Length > 110) subject = subject[..110];
         if (subject.Length < 4) return pages;
         var searches = new[]
@@ -350,8 +348,7 @@ public sealed class OfficialGamingMediaService
     private static async Task<IReadOnlyList<VideoLead>> DiscoverVideoChannelLeadsAsync(
         VideoProject project, string focus, Action<string>? log, CancellationToken ct)
     {
-        var subject = string.IsNullOrWhiteSpace(focus)
-            ? project.Title.Trim() : focus.Trim();
+        var subject = CoreGameSubject(project, focus);
         if (subject.Length > 115) subject = subject[..115];
         var leads = new List<VideoLead>();
         foreach (var (sourceName, channel) in VideoChannels)
@@ -403,8 +400,43 @@ public sealed class OfficialGamingMediaService
         return leads;
     }
 
+    private static string CoreGameSubject(VideoProject project, string focus)
+    {
+        // Match the actual named game rather than an editorial article headline.
+        // For GTA VI Romance Guide, the stable search entity is GTA VI; Jason
+        // and Lucia are secondary search refinements, never alternate games.
+        if (IsGtaSixStory(project.Title, focus))
+            return "Grand Theft Auto VI";
+        if (!string.IsNullOrWhiteSpace(focus) &&
+            !focus.Trim().Equals("all gaming news", StringComparison.OrdinalIgnoreCase))
+            return focus.Trim();
+        var named = project.Chapters.SelectMany(x => x.Scenes)
+            .Select(x => x.VisualQuery?.Trim() ?? "")
+            .FirstOrDefault(x => x.Length is >= 4 and <= 65 &&
+                !Regex.IsMatch(x, @"(?i)\\b(news|latest|screenshot|background|image|cinematic|gameplay|trailer)\\b"));
+        return named ?? project.Title.Split(':', ',', '—')[0].Trim();
+    }
+
+    private static IReadOnlyList<string> CoreMediaQueries(VideoProject project, string focus)
+    {
+        if (IsGtaSixStory(project.Title, focus))
+            return [
+                "Grand Theft Auto VI",
+                "GTA 6",
+                "GTA VI Jason Lucia",
+                "GTA 6 official screenshots",
+                "GTA VI Lucia Jason",
+                "Grand Theft Auto VI trailer"
+            ];
+        var core = CoreGameSubject(project, focus);
+        return [core, core + " screenshots", core + " official gameplay",
+            core + " trailer", core + " press media"];
+    }
+
     private static string GamingMediaSubject(VideoProject project, string focus)
     {
+        if (IsGtaSixStory(project.Title, focus))
+            return "Grand Theft Auto VI";
         if (!string.IsNullOrWhiteSpace(focus)) return focus.Trim();
         // Avoid searching Commons for a whole headline and mistakenly using
         // a generic gaming stock video. Query a short, exact subject only.
@@ -537,8 +569,8 @@ public sealed class OfficialGamingMediaService
     private static IEnumerable<string> Queries(VideoProject project, string focus)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (!string.IsNullOrWhiteSpace(focus) && seen.Add(focus.Trim()))
-            yield return focus.Trim();
+        foreach (var query in CoreMediaQueries(project, focus))
+            if (seen.Add(query)) yield return query;
 
         // First scene visual queries usually name the exact game. Limit query
         // size to avoid searching Steam for narrative descriptions.
