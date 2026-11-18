@@ -21,6 +21,34 @@ public sealed class GamingNewsDiscoveryService
         ("PlayStation Blog", "https://blog.playstation.com/feed/"),
         ("Xbox Wire", "https://news.xbox.com/en-us/feed/")
     ];
+    private static async Task LogUnverifiedRedditLeadsAsync(
+        Action<string>? log, CancellationToken ct)
+    {
+        // Reddit is research/rumor context only, never an automatically
+        // verified fact or source for a confidently narrated news story.
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get,
+                "https://www.reddit.com/r/GamingLeaksAndRumours/new/.rss?limit=10");
+            request.Headers.UserAgent.ParseAdd(
+                "ZeroVideo/0.1 (+https://github.com/Zer0Spce/ZeroVideo)");
+            using var response = await Http.SendAsync(request, ct);
+            if (!response.IsSuccessStatusCode) return;
+            var body = await response.Content.ReadAsStringAsync(ct);
+            if (body.Length > 500_000) return;
+            var document = XDocument.Parse(body, LoadOptions.None);
+            var count = document.Descendants()
+                .Count(x => x.Name.LocalName == "entry");
+            log?.Invoke($"GamingLeaksAndRumours: {count} unverified rumor leads seen; " +
+                "none used as confirmed news, assets or scheduled videos.");
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            log?.Invoke("Reddit rumor-lead discovery unavailable: " + ex.Message);
+        }
+    }
+
     private static string Field(XElement parent, string name) =>
         parent.Elements().FirstOrDefault(x => x.Name.LocalName == name)?.Value.Trim() ?? "";
 
@@ -80,6 +108,7 @@ public sealed class GamingNewsDiscoveryService
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { log?.Invoke($"Gaming News: {publisher} unavailable: {ex.Message}"); }
         }
+        await LogUnverifiedRedditLeadsAsync(log, ct);
         return topics.OrderByDescending(x => x.PublishedAt).Take(Math.Clamp(target, 1, 96)).ToList();
     }
 }
