@@ -971,7 +971,7 @@ public sealed class OfficialGamingMediaService
         bytes[8] == (byte)'W' && bytes[9] == (byte)'E' &&
         bytes[10] == (byte)'B' && bytes[11] == (byte)'P';
     private static bool IsAvif(byte[] bytes) =>
-        bytes.Length > 16 &&
+        bytes.Length >= 20 &&
         bytes[4] == (byte)'f' && bytes[5] == (byte)'t' &&
         bytes[6] == (byte)'y' && bytes[7] == (byte)'p' &&
         (System.Text.Encoding.ASCII.GetString(bytes, 8, 4) is "avif" or "avis" ||
