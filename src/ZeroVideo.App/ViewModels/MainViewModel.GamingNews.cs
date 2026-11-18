@@ -88,7 +88,7 @@ public sealed partial class MainViewModel
             @"[^a-z0-9]+", " ").Trim();
         if (normalized.Contains(requested, StringComparison.Ordinal)) return true;
         // Common alternative name for GTA VI.
-        return requested is "gta vi" or "gta 6" or "grand theft auto vi" &&
+        return (requested is "gta vi" or "gta 6" or "grand theft auto vi") &&
             System.Text.RegularExpressions.Regex.IsMatch(normalized,
                 @"\b(gta\s*(vi|6)|grand theft auto\s*(vi|6))\b");
     }
@@ -184,11 +184,83 @@ public sealed partial class MainViewModel
             SavePublishingQueue();
             GamingNewsScheduled = newItems.Count;
             GamingNewsStatus = $"Generated {GamingNewsGenerated}, assigned {GamingNewsScheduled} half-hour TikTok slots.";
-            // Deliberately do not call RunTikTokBatchAsync. That existing action
-            // requires separate publishing authorization/confirmation; never
-            // silently bypass its guardrails or change the working uploader.
+            // Pressing the one-click action with the auto-submit checkbox checked
+            // explicitly authorizes this batch. Use the SAME StudioUploadService
+            // as the original publishing tab, without modifying that workflow.
+            // Never retry an uncertain TikTok submission.
             if (GamingNewsUploadAutomatically && newItems.Count > 0)
-                GamingNewsStatus += " Ready in Publish tab; final TikTok submission still requires existing authorization.";
+            {
+                var uploader = new StudioUploadService(_browser);
+                var sent = 0;
+                for (var index = 0; index < newItems.Count; index++)
+                {
+                    _cts.Token.ThrowIfCancellationRequested();
+                    var item = newItems[index];
+                    // Rendering a full batch can take hours. A time slot that
+                    // has already passed cannot be submitted to TikTok Studio.
+                    if (!item.ScheduledAt.HasValue ||
+                        item.ScheduledAt.Value <= DateTimeOffset.Now.AddMinutes(25))
+                    {
+                        GamingNewsStatus = "Scheduling paused: a posting slot is no longer in the future. " +
+                            "Completed MP4s remain in the Publish queue.";
+                        break;
+                    }
+                    GamingNewsStatus = $"TikTok submission {index + 1}/{newItems.Count}: {item.Title}";
+                    item.TikTokStatus = "Uploading";
+                    SavePublishingQueue();
+                    string outcome;
+                    try
+                    {
+                        outcome = await uploader.PrepareAsync(
+                            Settings, "TikTok", item.VideoPath,
+                            item.YouTubeTitle, item.YouTubeDescription, item.TikTokCaption,
+                            item.ThumbnailPath, item.ScheduledAt, Log, _cts.Token,
+                            freshTikTokUploadPage: index > 0);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        item.TikTokStatus = "Failed - review Studio";
+                        GamingNewsStatus = "TikTok stopped: " + ex.Message +
+                            ". No automatic retry; check Studio first.";
+                        SavePublishingQueue();
+                        break;
+                    }
+                    if (outcome.StartsWith("TikTok: SUBMISSION_CONFIRMED",
+                        StringComparison.Ordinal))
+                    {
+                        item.TikTokStatus = "Scheduled";
+                        item.IsChecked = false;
+                        sent++;
+                    }
+                    else if (outcome.StartsWith("TikTok: SUBMISSION_ATTEMPTED",
+                        StringComparison.Ordinal))
+                    {
+                        item.TikTokStatus = "Submission attempted - check Studio";
+                        item.IsChecked = false;
+                        sent++;
+                        SavePublishingQueue();
+                        if (!outcome.Contains("left the upload page",
+                            StringComparison.OrdinalIgnoreCase))
+                        {
+                            GamingNewsStatus = "TikTok returned an uncertain submission. " +
+                                "Stopped to prevent duplicates. Verify in Studio.";
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        item.TikTokStatus = "Needs review";
+                        GamingNewsStatus = "TikTok paused: " + outcome;
+                        SavePublishingQueue();
+                        break;
+                    }
+                    SavePublishingQueue();
+                }
+                if (sent == newItems.Count)
+                    GamingNewsStatus = $"Finished: {GamingNewsGenerated} Shorts, {sent} TikTok " +
+                        "submission attempts. Check TikTok Studio for final platform status.";
+            }
         }
         finally
         {
