@@ -723,7 +723,7 @@ public sealed class OfficialGamingMediaService
                         continue;
                     }
                     publisherImages.Add((img, sourcePage));
-                    if (publisherImages.Count >= 12) break;
+                    if (publisherImages.Count >= 30) break;
                 }
             }
             catch (OperationCanceledException) { throw; }
@@ -755,7 +755,7 @@ public sealed class OfficialGamingMediaService
                             movies.Add((clip, project.Title, story.ToString(),
                                 story.Host + " news article video"));
                     }
-                    foreach (var candidate in ExtractPublisherImages(html, story).Take(12))
+                    foreach (var candidate in ExtractPublisherImages(html, story).Take(24))
                     {
                         if (!ExactGameEvidence(project.Title, focus, story, candidate, ""))
                         {
@@ -781,7 +781,7 @@ public sealed class OfficialGamingMediaService
         foreach (var (imageUri, sourcePage) in publisherImages)
         {
             ct.ThrowIfCancellationRequested();
-            if (downloaded.Count >= 8) break;
+            if (downloaded.Count >= 24) break;
             if (!unique.Add(imageUri.ToString())) continue;
             try
             {
@@ -800,11 +800,11 @@ public sealed class OfficialGamingMediaService
         }
         // A story's lead image is often a real publisher press screenshot.
         // Keep its attribution exact instead of pretending it is official.
-        if (downloaded.Count == 0)
+        if (downloaded.Count < 24)
         foreach (var (imageUri, story) in editorialImages)
         {
             ct.ThrowIfCancellationRequested();
-            if (downloaded.Count >= 8) break;
+            if (downloaded.Count >= 24) break;
             if (!unique.Add(imageUri.ToString())) continue;
             try
             {
@@ -826,7 +826,7 @@ public sealed class OfficialGamingMediaService
         // FFmpeg Shorts renderer. Its original audio is discarded so narration
         // and selected background music retain their levels.
         var videos = new List<OfficialAsset>();
-        foreach (var (uri, game, store, source) in movies.Take(7))
+        foreach (var (uri, game, store, source) in movies.Take(14))
         {
             ct.ThrowIfCancellationRequested();
             try
@@ -838,7 +838,7 @@ public sealed class OfficialGamingMediaService
                 await File.WriteAllBytesAsync(file, bytes, ct);
                 videos.Add(new OfficialAsset(file, uri.ToString(), game, store,
                     source, "Source attribution recorded; observe publisher/editorial use terms."));
-                if (videos.Count >= 3) break;
+                if (videos.Count >= 6) break;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { log?.Invoke("Official gameplay video skipped: " + ex.Message); }
@@ -848,9 +848,9 @@ public sealed class OfficialGamingMediaService
         // This also works when an official game's website blocks direct downloads.
         var commons = await AcquireCommonsMediaAsync(
             project, focus, mediaDir, log, ct);
-        foreach (var photo in commons.Photos.Take(Math.Max(0, 8 - downloaded.Count)))
+        foreach (var photo in commons.Photos.Take(Math.Max(0, 24 - downloaded.Count)))
             downloaded.Add(photo);
-        foreach (var clip in commons.Videos.Take(Math.Max(0, 3 - videos.Count)))
+        foreach (var clip in commons.Videos.Take(Math.Max(0, 6 - videos.Count)))
             videos.Add(clip);
         if (downloaded.Count == 0 && videos.Count == 0)
         {
@@ -946,7 +946,7 @@ public sealed class OfficialGamingMediaService
         // Steam is a fallback, and never used for a mismatched game title.
         foreach (var (uri, game, store) in images)
         {
-            if (downloaded.Count >= 8) break;
+            if (downloaded.Count >= 24) break;
             if (!unique.Add(uri.ToString())) continue;
             try
             {
@@ -990,19 +990,45 @@ public sealed class OfficialGamingMediaService
                 "Source article may block images or require a login. " +
                 "Skipped without any generated imagery; see source diagnostics.");
 
-        // Mix across eight beats. Keep the first and final beats as screenshots
-        // when available; show real footage in the middle. Never create AI
-        // frames to fill missing assets.
+        // 24 visual shots, not 24 narrated chapters: three real-media shots
+        // per each of eight spoken news beats. xfade transitions are controlled
+        // by this Gaming News project's Crossfade option only.
+        // Refuse one-image static videos; do not manufacture visual variety.
+        var uniqueAssets = downloaded.Concat(videos).DistinctBy(x => x.Url).ToList();
+        if (uniqueAssets.Count < 8)
+            throw new InvalidDataException(
+                $"Gaming News found only {uniqueAssets.Count} distinct matching assets. " +
+                "At least 8 distinct photos/clips are required for the 24-shot format. " +
+                "No unrelated visuals or repeated one-image slideshow will be published.");
+
         var chapter = project.Chapters.Single();
+        var imageCursor = 0;
+        var videoCursor = 0;
+        var shotSequence = new List<string>();
+        var shotsPerBeat = 3;
         for (var i = 0; i < chapter.Scenes.Count; i++)
         {
-            var isVideoBeat = videos.Count > 0 && (i == 1 || i == 3 || i == 5);
-            var asset = isVideoBeat ? videos[(i / 2) % videos.Count] :
-                downloaded.Count > 0 ? downloaded[i % downloaded.Count] :
-                videos[i % videos.Count];
-            chapter.Scenes[i].MediaPath = asset.LocalPath;
-            chapter.Scenes[i].MediaPaths = [];
+            var selected = new List<string>();
+            for (var v = 0; v < shotsPerBeat; v++)
+            {
+                var shotIndex = i * shotsPerBeat + v;
+                var useFootage = videos.Count > 0 && shotIndex % 4 == 2 &&
+                    !(i == 0 && v == 0) && !(i == chapter.Scenes.Count - 1 && v == 2);
+                var pool = useFootage ? videos :
+                    downloaded.Count > 0 ? downloaded : videos;
+                var cursor = useFootage ? videoCursor++ : imageCursor++;
+                var choice = pool[cursor % pool.Count].LocalPath;
+                if (selected.Count > 0 && selected[^1] == choice && pool.Count > 1)
+                    choice = pool[(cursor + 1) % pool.Count].LocalPath;
+                selected.Add(choice);
+                shotSequence.Add(choice);
+            }
+            chapter.Scenes[i].MediaPath = selected[0];
+            chapter.Scenes[i].MediaPaths = selected.Skip(1).ToList();
         }
+        log?.Invoke($"Gaming media: {shotSequence.Count} visual shots across " +
+            $"{chapter.Scenes.Count} narration beats, from {uniqueAssets.Count} " +
+            "distinct assets; short smooth crossfades only.");
         if (videos.Count > 0)
             log?.Invoke($"Gaming media mix: {downloaded.Count} real screenshots + " +
                 $"{videos.Count} real gameplay trailer clips across 8 visual beats.");
