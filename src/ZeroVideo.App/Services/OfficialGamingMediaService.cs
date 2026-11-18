@@ -1,0 +1,229 @@
+using System.Globalization;
+using System.Net;
+using System.Net.Http;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using ZeroVideo.App.Models;
+
+namespace ZeroVideo.App.Services;
+
+/// <summary>
+/// Game-specific imagery from official publisher-supplied Steam store screenshots.
+/// No AI generation, stock footage, community screenshots or unverified websites.
+/// Images retain their attribution and source URL. Official does not imply free-to-reuse:
+/// any publisher's media policy or applicable editorial exception remains relevant.
+/// </summary>
+public sealed class OfficialGamingMediaService
+{
+    private static readonly HttpClient Http = new(new HttpClientHandler
+    {
+        AllowAutoRedirect = false,
+        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+    }) { Timeout = TimeSpan.FromSeconds(35) };
+
+    public sealed record OfficialAsset(string LocalPath, string Url, string GameTitle,
+        string StoreUrl, string Source, string RightsNote);
+    public sealed record OfficialMediaResult(string Credit, IReadOnlyList<OfficialAsset> Assets);
+
+    private static bool SteamHost(Uri uri) => uri.Scheme == "https" &&
+        (uri.Host == "store.steampowered.com" ||
+         uri.Host == "shared.akamai.steamstatic.com" ||
+         uri.Host == "shared.fastly.steamstatic.com" ||
+         uri.Host.EndsWith(".steamstatic.com", StringComparison.OrdinalIgnoreCase) ||
+         uri.Host == "steamcdn-a.akamaihd.net");
+
+    private static string Normalize(string value) =>
+        Regex.Replace(WebUtility.HtmlDecode(value).ToLowerInvariant(), @"[^a-z0-9]+", " ").Trim();
+
+    private static IEnumerable<string> Queries(VideoProject project, string focus)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(focus) && seen.Add(focus.Trim()))
+            yield return focus.Trim();
+
+        // First scene visual queries usually name the exact game. Limit query
+        // size to avoid searching Steam for narrative descriptions.
+        foreach (var scene in project.Chapters.SelectMany(x => x.Scenes))
+        {
+            var words = Regex.Matches(scene.VisualQuery ?? "", @"[A-Za-z0-9]+")
+                .Select(x => x.Value)
+                .Where(x => x.Length >= 2).Take(5).ToArray();
+            for (var count = Math.Min(3, words.Length); count >= 2; count--)
+            {
+                for (var i = 0; i + count <= words.Length; i++)
+                {
+                    var q = string.Join(" ", words.Skip(i).Take(count));
+                    if (seen.Add(q)) yield return q;
+                }
+            }
+        }
+        foreach (var candidate in Regex.Split(project.Title, @"[,:—\-!?\(\)]")
+                     .Where(x => x.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length is >= 2 and <= 5))
+            if (seen.Add(candidate.Trim())) yield return candidate.Trim();
+    }
+
+    private static async Task<byte[]> GetSmallAsync(Uri uri, int maxBytes, CancellationToken ct)
+    {
+        if (!SteamHost(uri)) throw new InvalidDataException("Unexpected official-media host.");
+        using var response = await Http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct);
+        response.EnsureSuccessStatusCode(); // no redirects to arbitrary hosts
+        if (response.Content.Headers.ContentLength > maxBytes)
+            throw new InvalidDataException("Official image exceeds download size limit.");
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var buffer = new MemoryStream();
+        var chunk = new byte[64 * 1024];
+        int read;
+        while ((read = await stream.ReadAsync(chunk, ct)) > 0)
+        {
+            if (buffer.Length + read > maxBytes)
+                throw new InvalidDataException("Official image exceeds download size limit.");
+            await buffer.WriteAsync(chunk.AsMemory(0, read), ct);
+        }
+        return buffer.ToArray();
+    }
+
+    private static bool IsJpeg(byte[] bytes) =>
+        bytes.Length > 2000 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff;
+    private static bool IsPng(byte[] bytes) =>
+        bytes.Length > 2000 && bytes[0] == 137 && bytes[1] == 80 &&
+        bytes[2] == 78 && bytes[3] == 71;
+
+    public async Task<OfficialMediaResult> AcquireAsync(VideoProject project, string focus,
+        string articleSummary, Action<string>? log, CancellationToken ct)
+    {
+        var context = Normalize(project.Title + " " + project.Topic + " " +
+            articleSummary + " " + focus + " " +
+            string.Join(" ", project.Chapters.SelectMany(x => x.Scenes)
+                .Select(x => x.Narration + " " + x.VisualQuery)));
+        var candidates = Queries(project, focus).Take(15).ToList();
+        var examined = new HashSet<int>();
+        var images = new List<(Uri Uri, string Game, string Store)>();
+        foreach (var term in candidates)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (images.Count >= 8) break;
+            try
+            {
+                var searchUri = new Uri("https://store.steampowered.com/api/storesearch/?term=" +
+                    Uri.EscapeDataString(term) + "&l=english&cc=us");
+                using var search = JsonDocument.Parse(
+                    await GetSmallAsync(searchUri, 512 * 1024, ct));
+                if (!search.RootElement.TryGetProperty("items", out var list) ||
+                    list.ValueKind != JsonValueKind.Array) continue;
+
+                foreach (var item in list.EnumerateArray().Take(5))
+                {
+                    if (!item.TryGetProperty("id", out var app) ||
+                        !app.TryGetInt32(out var appid) || !examined.Add(appid))
+                        continue;
+                    var game = item.GetProperty("name").GetString() ?? "";
+                    var normalizedName = Normalize(game);
+                    if (normalizedName.Length < 5 ||
+                        !context.Contains(normalizedName, StringComparison.Ordinal))
+                        continue;
+                    var detailUri = new Uri("https://store.steampowered.com/api/appdetails?appids=" +
+                        appid.ToString(CultureInfo.InvariantCulture) + "&l=english&cc=us");
+                    using var details = JsonDocument.Parse(
+                        await GetSmallAsync(detailUri, 1024 * 1024, ct));
+                    if (!details.RootElement.TryGetProperty(appid.ToString(CultureInfo.InvariantCulture),
+                        out var record) || !record.TryGetProperty("success", out var success) ||
+                        !success.GetBoolean() || !record.TryGetProperty("data", out var data) ||
+                        !data.TryGetProperty("screenshots", out var screenshots) ||
+                        screenshots.ValueKind != JsonValueKind.Array)
+                        continue;
+                    var canonicalName = data.TryGetProperty("name", out var title)
+                        ? title.GetString() ?? game : game;
+                    // Verify that the exact store title really occurs in the
+                    // story/script, not a coincidental two-word Steam result.
+                    if (!context.Contains(Normalize(canonicalName), StringComparison.Ordinal))
+                        continue;
+                    foreach (var screenshot in screenshots.EnumerateArray().Take(10))
+                    {
+                        var url = screenshot.TryGetProperty("path_full", out var full)
+                            ? full.GetString() : null;
+                        if (!Uri.TryCreate(url, UriKind.Absolute, out var imageUri) ||
+                            !SteamHost(imageUri)) continue;
+                        images.Add((imageUri, canonicalName,
+                            "https://store.steampowered.com/app/" + appid));
+                        if (images.Count >= 8) break;
+                    }
+                    if (images.Count >= 8) break;
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("Gaming official-media search skipped: " + ex.Message); }
+        }
+        if (images.Count == 0)
+            throw new InvalidDataException(
+                "No verified game-matched publisher-supplied official screenshots found. " +
+                "Gaming News will NOT generate AI pictures, use random stock, or publish an empty backdrop.");
+
+        var mediaDir = Path.Combine(project.ProjectDirectory, "media");
+        Directory.CreateDirectory(mediaDir);
+        var downloaded = new List<OfficialAsset>();
+        var unique = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (uri, game, store) in images)
+        {
+            if (!unique.Add(uri.ToString())) continue;
+            try
+            {
+                var bytes = await GetSmallAsync(uri, 12 * 1024 * 1024, ct);
+                if (!IsJpeg(bytes) && !IsPng(bytes)) continue;
+                var extension = IsJpeg(bytes) ? ".jpg" : ".png";
+                var file = Path.Combine(mediaDir, "official-" + (downloaded.Count + 1).ToString("00") + extension);
+                await File.WriteAllBytesAsync(file, bytes, ct);
+                downloaded.Add(new OfficialAsset(file, uri.ToString(), game, store,
+                    "Publisher-supplied Steam store screenshot",
+                    "Publisher owns or controls media. Source credit does not grant permission; " +
+                    "republication depends on relevant publisher permissions or applicable editorial use."));
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("Official screenshot download skipped: " + ex.Message); }
+        }
+        if (downloaded.Count == 0)
+            throw new InvalidDataException("No valid original official media could be downloaded.");
+
+        var chapter = project.Chapters.Single();
+        for (var i = 0; i < chapter.Scenes.Count; i++)
+        {
+            // Prefer distinct real game screenshots, then cycle only if the
+            // official publisher exposes fewer than eight images.
+            var photo = downloaded[i % downloaded.Count];
+            chapter.Scenes[i].MediaPath = photo.LocalPath;
+            chapter.Scenes[i].MediaPaths = [];
+        }
+        var label = "Official screenshots: " + downloaded[0].GameTitle + " / Steam";
+        var manifest = Path.Combine(project.ProjectDirectory, "official-media-credits.json");
+        await File.WriteAllTextAsync(manifest, JsonSerializer.Serialize(new
+        {
+            project = project.Title, credit = label,
+            legalNote = "Attribution is not a license. Confirm publisher's use rules or applicable news/editorial exception.",
+            assets = downloaded
+        }, new JsonSerializerOptions { WriteIndented = true }), ct);
+        log?.Invoke($"Gaming News: {downloaded.Count} publisher-supplied official screenshots. " +
+            "No ComfyUI/AI images will run. Manifest: " + manifest);
+        return new OfficialMediaResult(label, downloaded);
+    }
+
+    public async Task BurnSmallCreditAsync(string video, string credit,
+        ZeroVideoSettings settings, ProcessRunner runner, Action<string>? log, CancellationToken ct)
+    {
+        var text = Regex.Replace(credit, @"[^A-Za-z0-9 ./_-]", "").Trim();
+        if (text.Length > 68) text = text[..68];
+        if (text.Length == 0) throw new InvalidDataException("Official image credit missing.");
+        var tmp = Path.Combine(Path.GetDirectoryName(video)!, "official-credit-render.mp4");
+        var font = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "arial.ttf")
+            .Replace('\\', '/').Replace(":", "\\:");
+        var filter = "drawtext=fontfile='" + font + "':text='" + text +
+                     "':fontsize=24:fontcolor=white@0.88:box=1:boxcolor=black@0.48:" +
+                     "boxborderw=8:x=24:y=32";
+        var args = "-hide_banner -loglevel error -y -i \"" + video +
+            "\" -vf \"" + filter + "\" -map 0:v:0 -map 0:a:0 " +
+            "-c:v libx264 -preset veryfast -crf 20 -c:a copy -movflags +faststart \"" + tmp + "\"";
+        var result = await runner.RunAsync(settings.FfmpegPath, args, ct: ct);
+        if (result.ExitCode != 0 || !File.Exists(tmp) || new FileInfo(tmp).Length < 8192)
+            throw new InvalidOperationException("Could not burn official media credit: " + result.StdErr);
+        File.Move(tmp, video, true);
+        log?.Invoke("Small on-screen official source credit burned into MP4.");
+    }
+}
