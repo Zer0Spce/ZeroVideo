@@ -56,6 +56,9 @@ public sealed class ProjectOptions
     public bool SceneTransitions { get; set; } = true;
     // Only Gaming News: never silently substitute hard cuts if smooth xfade fails.
     public bool GamingNewsSmoothOnly { get; set; } = false;
+    // Render full game screenshots sharply over a blurred fill, never upscale
+    // a narrow crop of landscape art to a full portrait frame.
+    public bool GamingNewsPreserveImageDetail { get; set; } = false;
     public string TransitionStyle { get; set; } = "Automatic";
     public double TransitionDurationSeconds { get; set; } = 0.35;
     public bool CinematicEffects { get; set; } = true;
