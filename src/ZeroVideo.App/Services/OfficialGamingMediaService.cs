@@ -796,7 +796,7 @@ public sealed class OfficialGamingMediaService
                         continue;
                     }
                     publisherImages.Add((img, sourcePage));
-                    if (publisherImages.Count >= 30) break;
+                    if (publisherImages.Count >= 32) break;
                 }
             }
             catch (OperationCanceledException) { throw; }
@@ -810,7 +810,9 @@ public sealed class OfficialGamingMediaService
         // Prefer this over generating an invented picture for news that does
         // not have a Steam listing or a linked publisher newsroom.
         var editorialImages = new List<(Uri Image, Uri Source)>();
-        if (publisherImages.Count < 8)
+        // Always inspect independent journalism sources, even when Rockstar
+        // already supplied enough images. The original early-exit caused
+        // entire GTA VI batches to look like the same Rockstar slideshow.
         {
             foreach (var story in project.Sources
                 .Select(x => Uri.TryCreate(x, UriKind.Absolute, out var u) ? u : null)
@@ -851,10 +853,13 @@ public sealed class OfficialGamingMediaService
         Directory.CreateDirectory(mediaDir);
         var downloaded = new List<OfficialAsset>();
         var unique = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var publisherCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var (imageUri, sourcePage) in publisherImages)
         {
             ct.ThrowIfCancellationRequested();
-            if (downloaded.Count >= 24) break;
+            if (downloaded.Count >= 16) break;
+            var publisherKey = sourcePage.Host;
+            if (publisherCounts.GetValueOrDefault(publisherKey) >= 9) continue;
             if (!unique.Add(imageUri.ToString())) continue;
             try
             {
@@ -867,17 +872,19 @@ public sealed class OfficialGamingMediaService
                 downloaded.Add(new OfficialAsset(file, imageUri.ToString(), project.Title,
                     sourcePage.ToString(), sourcePage.Host + " official article image",
                     "Platform or publisher owns or controls media; credit is not a license."));
+                publisherCounts[publisherKey] = publisherCounts.GetValueOrDefault(publisherKey) + 1;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { log?.Invoke("First-party image skipped: " + ex.Message); }
         }
         // A story's lead image is often a real publisher press screenshot.
         // Keep its attribution exact instead of pretending it is official.
-        if (downloaded.Count < 24)
+        var journalismCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var (imageUri, story) in editorialImages)
         {
             ct.ThrowIfCancellationRequested();
-            if (downloaded.Count >= 24) break;
+            if (downloaded.Count >= 34) break;
+            if (journalismCounts.GetValueOrDefault(story.Host) >= 7) continue;
             if (!unique.Add(imageUri.ToString())) continue;
             try
             {
@@ -890,6 +897,7 @@ public sealed class OfficialGamingMediaService
                 downloaded.Add(new OfficialAsset(file, imageUri.ToString(), project.Title,
                     story.ToString(), story.Host + " editorial article image",
                     "Image sourced from credited article; license/press usage terms may apply."));
+                journalismCounts[story.Host] = journalismCounts.GetValueOrDefault(story.Host) + 1;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { log?.Invoke("Editorial image skipped: " + ex.Message); }
@@ -919,12 +927,12 @@ public sealed class OfficialGamingMediaService
         // If the official gallery relies on client-side rendering, do not
         // fall back to a single PC Gamer photo. Read genuine GTA VI gallery
         // images through ZeroVideo's existing Edge browser instead.
-        if (IsGtaSixStory(project.Title, focus) && downloaded.Count < 20)
+        if (IsGtaSixStory(project.Title, focus) && downloaded.Count < 32)
         {
             var gallery = await CaptureRockstarGalleryAsync(
                 browser, settings, mediaDir, log, ct);
             foreach (var image in gallery)
-                if (downloaded.Count < 24 && unique.Add(image.Url))
+                if (downloaded.Count < 38 && unique.Add(image.Url))
                     downloaded.Add(image);
         }
         // Independent archive source (not the original PC Gamer article).
@@ -932,7 +940,7 @@ public sealed class OfficialGamingMediaService
         // This also works when an official game's website blocks direct downloads.
         var commons = await AcquireCommonsMediaAsync(
             project, focus, mediaDir, log, ct);
-        foreach (var photo in commons.Photos.Take(Math.Max(0, 24 - downloaded.Count)))
+        foreach (var photo in commons.Photos.Take(Math.Max(0, 40 - downloaded.Count)))
             downloaded.Add(photo);
         foreach (var clip in commons.Videos.Take(Math.Max(0, 6 - videos.Count)))
             videos.Add(clip);
@@ -947,7 +955,7 @@ public sealed class OfficialGamingMediaService
         // LAST RESORT: only query Steam after publisher websites, gaming
         // news sites, Wikimedia Commons and the original article have been
         // tried. Never let Steam crowd out more relevant primary media.
-        if (downloaded.Count + videos.Count < 4)
+        if (downloaded.Count + videos.Count < 12)
         {
             log?.Invoke("Gaming media: primary sources insufficient; trying Steam LAST.");
             // Exact-game Steam search is the final fallback.
@@ -1030,7 +1038,7 @@ public sealed class OfficialGamingMediaService
         // Steam is a fallback, and never used for a mismatched game title.
         foreach (var (uri, game, store) in images)
         {
-            if (downloaded.Count >= 24) break;
+            if (downloaded.Count >= 40) break;
             if (!unique.Add(uri.ToString())) continue;
             try
             {
