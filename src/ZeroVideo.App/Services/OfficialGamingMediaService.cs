@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
@@ -624,6 +625,14 @@ public sealed class OfficialGamingMediaService
     private static bool IsPng(byte[] bytes) =>
         bytes.Length > 2000 && bytes[0] == 137 && bytes[1] == 80 &&
         bytes[2] == 78 && bytes[3] == 71;
+    private static string MediaFingerprint(string file)
+    {
+        // Compare file contents, not just URLs: multiple news websites often
+        // serve the same picture under different CDN links and filenames.
+        using var stream = File.OpenRead(file);
+        return Convert.ToHexString(SHA256.HashData(stream));
+    }
+
     private static bool IsMp4(byte[] bytes) =>
         bytes.Length > 4096 && bytes[4] == (byte)'f' &&
         bytes[5] == (byte)'t' && bytes[6] == (byte)'y' && bytes[7] == (byte)'p';
@@ -1000,7 +1009,18 @@ public sealed class OfficialGamingMediaService
         // per each of eight spoken news beats. xfade transitions are controlled
         // by this Gaming News project's Crossfade option only.
         // Refuse one-image static videos; do not manufacture visual variety.
-        var uniqueAssets = downloaded.Concat(videos).DistinctBy(x => x.Url).ToList();
+        var seenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var uniqueAssets = downloaded.Concat(videos)
+            .Where(x => seenFiles.Add(MediaFingerprint(x.LocalPath)))
+            .ToList();
+        downloaded = uniqueAssets.Where(x =>
+            !new[] { ".mp4", ".webm", ".mov", ".mkv", ".avi" }
+                .Contains(Path.GetExtension(x.LocalPath), StringComparer.OrdinalIgnoreCase))
+            .ToList();
+        videos = uniqueAssets.Where(x =>
+            new[] { ".mp4", ".webm", ".mov", ".mkv", ".avi" }
+                .Contains(Path.GetExtension(x.LocalPath), StringComparer.OrdinalIgnoreCase))
+            .ToList();
         if (uniqueAssets.Count < 8)
             throw new InvalidDataException(
                 $"Gaming News found only {uniqueAssets.Count} distinct matching assets. " +
