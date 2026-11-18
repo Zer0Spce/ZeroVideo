@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using ZeroVideo.App.Models;
 
 namespace ZeroVideo.App.Services;
@@ -203,6 +204,132 @@ public sealed class OfficialGamingMediaService
         }
     }
 
+    // Search outside the original article. Bing's public RSS results are
+    // discovery only; selected pages MUST be from an allowlisted first-party
+    // publisher/platform host and are still checked for real media.
+    private static async Task<IReadOnlyList<Uri>> DiscoverIndependentPublisherPagesAsync(
+        VideoProject project, string focus, Action<string>? log, CancellationToken ct)
+    {
+        var pages = new List<Uri>();
+        var subject = !string.IsNullOrWhiteSpace(focus)
+            ? focus.Trim() : project.Title.Trim();
+        if (subject.Length > 120) subject = subject[..120];
+        if (subject.Length < 4) return pages;
+        var searches = new[]
+        {
+            "\"" + subject + "\" official screenshots game publisher",
+            "\"" + subject + "\" gameplay trailer press kit official"
+        };
+        foreach (var query in searches)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var uri = new Uri("https://www.bing.com/search?format=rss&q=" +
+                    Uri.EscapeDataString(query));
+                using var response = await Http.GetAsync(
+                    uri, HttpCompletionOption.ResponseHeadersRead, ct);
+                if (!response.IsSuccessStatusCode ||
+                    response.Content.Headers.ContentLength > 400_000) continue;
+                var xml = await response.Content.ReadAsStringAsync(ct);
+                if (xml.Length > 400_000) continue;
+                var document = XDocument.Parse(xml, LoadOptions.None);
+                foreach (var item in document.Descendants()
+                             .Where(x => x.Name.LocalName == "item").Take(20))
+                {
+                    var link = item.Elements().FirstOrDefault(
+                        x => x.Name.LocalName == "link")?.Value ?? "";
+                    if (!Uri.TryCreate(link, UriKind.Absolute, out var page) ||
+                        !PublisherHost(page)) continue;
+                    if (pages.All(x => x != page)) pages.Add(page);
+                    if (pages.Count >= 8) break;
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                log?.Invoke("Independent publisher search unavailable: " + ex.Message);
+            }
+        }
+        log?.Invoke($"Independent web search: {pages.Count} official publisher/platform pages.");
+        return pages;
+    }
+
+    private static string GamingMediaSubject(VideoProject project, string focus)
+    {
+        if (!string.IsNullOrWhiteSpace(focus)) return focus.Trim();
+        // Avoid searching Commons for a whole headline and mistakenly using
+        // a generic gaming stock video. Query a short, exact subject only.
+        foreach (var scene in project.Chapters.SelectMany(x => x.Scenes))
+        {
+            var term = (scene.VisualQuery ?? "").Trim();
+            var pieces = term.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (pieces.Length is >= 2 and <= 4 &&
+                !Regex.IsMatch(term, @"\b(gaming|news|breaking|video|background|footage|trailer)\b",
+                    RegexOptions.IgnoreCase))
+                return term;
+        }
+        return "";
+    }
+
+    private static bool WikimediaStrictMatch(PixabayFlowClip file, string term)
+    {
+        var normalized = Normalize(term);
+        if (normalized.Length < 5) return false;
+        var indexed = Normalize(file.Tags + " " + file.SourcePage);
+        return indexed.Contains(normalized, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<(List<OfficialAsset> Photos, List<OfficialAsset> Videos)>
+        AcquireCommonsMediaAsync(VideoProject project, string focus,
+            string mediaDir, Action<string>? log, CancellationToken ct)
+    {
+        var photos = new List<OfficialAsset>();
+        var videos = new List<OfficialAsset>();
+        var term = GamingMediaSubject(project, focus);
+        if (term.Length < 5) return (photos, videos);
+        var scene = new PixabayFootageScene(1, term, term, "neutral");
+        try
+        {
+            var images = await new WikimediaCommonsImageService()
+                .FindImagesAsync(scene, 3, log, ct);
+            foreach (var image in images.Where(x => WikimediaStrictMatch(x, term)))
+            {
+                var ext = Path.GetExtension(image.FilePath);
+                var destination = Path.Combine(mediaDir, "commons-photo-" +
+                    (photos.Count + 1).ToString("00") + ext);
+                File.Copy(image.FilePath, destination, true);
+                photos.Add(new OfficialAsset(destination, image.SourcePage, term,
+                    image.SourcePage, "Wikimedia Commons / " + image.Attribution,
+                    image.License + " " + image.LicenseUrl));
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { log?.Invoke("Wikimedia image source skipped: " + ex.Message); }
+
+        try
+        {
+            var clips = await new WikimediaCommonsVideoService()
+                .FindVideosAsync(scene, 2, null, log, ct);
+            foreach (var clip in clips.Where(x => WikimediaStrictMatch(x, term)))
+            {
+                var ext = Path.GetExtension(clip.FilePath);
+                var destination = Path.Combine(mediaDir, "commons-video-" +
+                    (videos.Count + 1).ToString("00") + ext);
+                File.Copy(clip.FilePath, destination, true);
+                videos.Add(new OfficialAsset(destination, clip.SourcePage, term,
+                    clip.SourcePage, "Wikimedia Commons / " + clip.Attribution,
+                    clip.License + " " + clip.LicenseUrl));
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { log?.Invoke("Wikimedia video source skipped: " + ex.Message); }
+
+        log?.Invoke($"Independent Wikimedia Commons for '{term}': " +
+            $"{photos.Count} relevant photos, {videos.Count} video clips.");
+        return (photos, videos);
+    }
+
     private static string Normalize(string value) =>
         Regex.Replace(WebUtility.HtmlDecode(value).ToLowerInvariant(), @"[^a-z0-9]+", " ").Trim();
 
@@ -328,7 +455,11 @@ public sealed class OfficialGamingMediaService
         // or platform article, when the news report itself comes from one.
         var publisherImages = new List<(Uri Image, Uri Source)>();
         var linkedPublishers = await LinkedOfficialPagesAsync(project, log, ct);
-        foreach (var sourcePage in PublisherPages(project).Concat(linkedPublishers).Distinct().Take(8))
+        var independentPublishers = await DiscoverIndependentPublisherPagesAsync(
+            project, focus, log, ct);
+        foreach (var sourcePage in PublisherPages(project)
+                     .Concat(linkedPublishers).Concat(independentPublishers)
+                     .Distinct().Take(14))
         {
             ct.ThrowIfCancellationRequested();
             try
@@ -544,6 +675,15 @@ public sealed class OfficialGamingMediaService
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { log?.Invoke("Official gameplay video skipped: " + ex.Message); }
         }
+        // Independent archive source (not the original PC Gamer article).
+        // Reuse ZeroVideo's existing licensed Commons image/video adapters.
+        // This also works when an official game's website blocks direct downloads.
+        var commons = await AcquireCommonsMediaAsync(
+            project, focus, mediaDir, log, ct);
+        foreach (var photo in commons.Photos.Take(Math.Max(0, 8 - downloaded.Count)))
+            downloaded.Add(photo);
+        foreach (var clip in commons.Videos.Take(Math.Max(0, 3 - videos.Count)))
+            videos.Add(clip);
         if (downloaded.Count == 0 && videos.Count == 0)
         {
             log?.Invoke("Direct downloads unavailable. Trying the original article " +
