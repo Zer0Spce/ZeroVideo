@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
+using System.Windows.Media.Imaging;
 using ZeroVideo.App.Models;
 
 namespace ZeroVideo.App.Services;
@@ -651,6 +652,31 @@ public sealed class OfficialGamingMediaService
         return buffer.ToArray();
     }
 
+    // Browser element screenshots can be only 180-400px wide even if the
+    // publisher hosts a true 1920px image. Never call them full-resolution.
+    // Validate the decoded original raster before selecting it for 1080p output.
+    private static bool HasFullResolution(string path, Action<string>? log)
+    {
+        try
+        {
+            using var stream = File.OpenRead(path);
+            var decoder = BitmapDecoder.Create(stream,
+                BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+            var frame = decoder.Frames[0];
+            var longest = Math.Max(frame.PixelWidth, frame.PixelHeight);
+            var shortest = Math.Min(frame.PixelWidth, frame.PixelHeight);
+            if (longest >= 1400 && shortest >= 700) return true;
+            log?.Invoke($"Gaming quality: skipping {Path.GetFileName(path)} " +
+                $"({frame.PixelWidth}x{frame.PixelHeight}); too small for sharp 1080p.");
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke("Gaming quality: unreadable image " +
+                Path.GetFileName(path) + ": " + ex.Message);
+        }
+        return false;
+    }
+
     private static bool IsJpeg(byte[] bytes) =>
         bytes.Length > 2000 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff;
     private static bool IsPng(byte[] bytes) =>
@@ -1052,6 +1078,7 @@ public sealed class OfficialGamingMediaService
         // per each of eight spoken news beats. xfade transitions are controlled
         // by this Gaming News project's Crossfade option only.
         // Refuse one-image static videos; do not manufacture visual variety.
+        downloaded = downloaded.Where(x => HasFullResolution(x.LocalPath, log)).ToList();
         var seenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var uniqueAssets = downloaded.Concat(videos)
             .Where(x => seenFiles.Add(MediaFingerprint(x.LocalPath)))
@@ -1178,18 +1205,37 @@ public sealed class OfficialGamingMediaService
                     if (box is null || box.Width < 180 || box.Height < 110) continue;
                     var filename = Path.Combine(mediaDir,
                         "rockstar-gallery-" + (result.Count + 1).ToString("00") + ".png");
-                    await image.ScreenshotAsync(new Microsoft.Playwright.LocatorScreenshotOptions
+                    var imageUrl = Uri.TryCreate(new Uri(source), path, out var resolved)
+                        ? resolved.ToString() : source;
+                    var saved = false;
+                    if (resolved is not null && IsPublicHttps(resolved))
                     {
-                        Path = filename,
-                        Timeout = 12000
-                    });
-                    if (!File.Exists(filename) || new FileInfo(filename).Length < 10000)
+                        try
+                        {
+                            var fullImage = await DownloadPublisherImageAsync(
+                                resolved, new Uri(source), ct);
+                            if (IsPng(fullImage) || IsJpeg(fullImage))
+                            {
+                                filename = Path.ChangeExtension(filename,
+                                    IsJpeg(fullImage) ? ".jpg" : ".png");
+                                await File.WriteAllBytesAsync(filename, fullImage, ct);
+                                saved = HasFullResolution(filename, log);
+                            }
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception ex)
+                        {
+                            log?.Invoke("Rockstar original-res download unavailable: " +
+                                ex.Message);
+                        }
+                    }
+                    if (!saved)
                     {
+                        // Never replace the original with a tiny on-screen
+                        // thumbnail: this caused the user's pixelated video.
                         if (File.Exists(filename)) File.Delete(filename);
                         continue;
                     }
-                    var imageUrl = Uri.TryCreate(new Uri(source), path, out var resolved)
-                        ? resolved.ToString() : source;
                     result.Add(new OfficialAsset(filename, imageUrl,
                         "Grand Theft Auto VI", source, "Rockstar Games / GTA VI official gallery",
                         "Official game screenshot captured from publisher's public media page."));
