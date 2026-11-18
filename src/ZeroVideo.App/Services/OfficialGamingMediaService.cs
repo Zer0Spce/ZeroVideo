@@ -1382,7 +1382,8 @@ public sealed class OfficialGamingMediaService
                      "boxborderw=8:x=24:y=32";
         var args = "-hide_banner -loglevel error -y -i \"" + video +
             "\" -vf \"" + filter + "\" -map 0:v:0 -map 0:a:0 " +
-            "-c:v libx264 -preset veryfast -crf 20 -c:a copy -movflags +faststart \"" + tmp + "\"";
+            "-c:v libx264 -preset medium -crf 16 -pix_fmt yuv420p " +
+            "-c:a copy -movflags +faststart \"" + tmp + "\"";
         var result = await runner.RunAsync(settings.FfmpegPath, args, ct: ct);
         if (result.ExitCode != 0 || !File.Exists(tmp) || new FileInfo(tmp).Length < 8192)
             throw new InvalidOperationException("Could not burn official media credit: " + result.StdErr);
@@ -1409,7 +1410,7 @@ public sealed class OfficialGamingMediaService
             "\" -filter_complex \"[0:v]tpad=start_mode=clone:stop_mode=clone:" +
             "start_duration=1.5:stop_duration=1.5,format=yuv420p[v];" +
             "[0:a]adelay=1500:all=1,apad=pad_dur=1.5[a]\"" +
-            " -map \"[v]\" -map \"[a]\" -c:v libx264 -preset veryfast -crf 20" +
+            " -map \"[v]\" -map \"[a]\" -c:v libx264 -preset medium -crf 16" +
             " -c:a aac -b:a 192k -movflags +faststart -shortest \"" + output + "\"";
         try
         {
