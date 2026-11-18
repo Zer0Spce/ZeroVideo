@@ -394,6 +394,74 @@
       </TabItem>
 
 
+      <!-- Separate manual Gaming News mode. Existing tabs and publishing controls remain unchanged. -->
+      <TabItem Header="Gaming News Batch">
+        <DockPanel Margin="4,8,4,4">
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,10">
+            <Button Style="{StaticResource SecondaryButton}" Content="Stop" Command="{Binding StopJobCommand}" IsEnabled="{Binding JobRunning}"/>
+            <Button Style="{StaticResource SecondaryButton}" Content="Force Stop" Command="{Binding ForceStopJobCommand}" IsEnabled="{Binding JobRunning}"/>
+            <TextBlock Text="{Binding GamingNewsStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" VerticalAlignment="Center" MaxWidth="870" Margin="14,0,0,0"/>
+          </StackPanel>
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+              <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+                <StackPanel>
+                  <TextBlock Text="Gaming News — One-Click Batch" FontSize="23" FontWeight="Bold" Margin="0,0,0,7"/>
+                  <TextBlock Text="Collect distinct current gaming stories once, create vertical Shorts using the existing offline voice and bold captions, then assign TikTok slots every 30 minutes. No automatic news refresh." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,15"/>
+                  <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <StackPanel>
+                      <Label Content="ONLY THIS GAME / TOPIC (blank = all gaming news)"/>
+                      <TextBox Text="{Binding GamingNewsFocus, UpdateSourceTrigger=PropertyChanged}" ToolTip="Example: GTA VI, PlayStation 5, Nintendo Switch 2. Blank for all gaming news."/>
+                      <TextBlock Text="For example GTA VI: only matching headlines will qualify. Fewer news articles may mean fewer videos." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,12"/>
+                      <Label Content="FIRST POSTING DATE AND TIME (LOCAL YYYY-MM-DD HH:MM)"/>
+                      <TextBox Text="{Binding GamingNewsScheduleStart, UpdateSourceTrigger=PropertyChanged}" ToolTip="Leave blank to choose the next safe slot. Use HH:00 or HH:30."/>
+                      <TextBlock Text="Every following video is placed 30 minutes later. Blank means automatically select a future start time." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,12"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="2">
+                      <Label Content="NUMBER OF VIDEOS"/>
+                      <ComboBox ItemsSource="{Binding GamingNewsCounts}" SelectedItem="{Binding GamingNewsVideoCount, Mode=TwoWay}" />
+                      <Label Content="VIDEO FORMAT" Margin="0,10,0,0"/>
+                      <TextBlock Text="9:16 vertical (locked)" FontWeight="SemiBold"/>
+                      <Label Content="CAPTIONS" Margin="0,10,0,0"/>
+                      <TextBlock Text="Existing Shorts burned-in bold captions" TextWrapping="Wrap"/>
+                      <Label Content="VOICEOVER" Margin="0,10,0,0"/>
+                      <TextBlock Text="Current local OmniVoice profile from Voice Studio" TextWrapping="Wrap"/>
+                    </StackPanel>
+                  </Grid>
+                </StackPanel>
+              </Border>
+              <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+                <StackPanel>
+                  <TextBlock Text="Background Music (Batch Only)" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                  <CheckBox Content="Use background music" IsChecked="{Binding GamingNewsMusicEnabled, Mode=TwoWay}" Margin="0,0,0,9"/>
+                  <StackPanel Orientation="Horizontal">
+                    <TextBox Width="560" Text="{Binding GamingNewsMusicPath, UpdateSourceTrigger=PropertyChanged}"/>
+                    <Button Style="{StaticResource SecondaryButton}" Content="Choose MP3 / WAV" Command="{Binding GamingNewsChooseMusicCommand}" Margin="10,0,0,0"/>
+                  </StackPanel>
+                  <Label Content="MUSIC GAIN (dB)" Margin="0,11,0,0"/>
+                  <ComboBox ItemsSource="{Binding GamingNewsDbOptions}" SelectedItem="{Binding GamingNewsMusicDb, Mode=TwoWay}" Width="160" HorizontalAlignment="Left"/>
+                  <TextBlock Text="Example: -5 dB louder, -15 dB recommended, -30 dB quieter. Narration volume is unchanged." Foreground="{StaticResource Muted}" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                </StackPanel>
+              </Border>
+              <Border Style="{StaticResource CardBorder}">
+                <StackPanel>
+                  <CheckBox Content="Submit completed videos using the existing TikTok uploader (one-click authorization)" IsChecked="{Binding GamingNewsUploadAutomatically, Mode=TwoWay}" Margin="0,0,0,12"/>
+                  <Button Style="{StaticResource PrimaryButton}" Content="GENERATE VIDEOS &amp; SCHEDULE TIKTOK" Command="{Binding GamingNewsStartBatchCommand}" Height="48"/>
+                  <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                    <TextBlock Text="Videos finished: " Foreground="{StaticResource Muted}"/>
+                    <TextBlock Text="{Binding GamingNewsGenerated}" FontWeight="Bold" Margin="0,0,22,0"/>
+                    <TextBlock Text="TikTok queue slots: " Foreground="{StaticResource Muted}"/>
+                    <TextBlock Text="{Binding GamingNewsScheduled}" FontWeight="Bold"/>
+                  </StackPanel>
+                  <TextBlock Text="No hourly polling. If fewer distinct relevant stories are available, ZeroVideo reports the shortage instead of repeating or inventing headlines. Assets without suitable rights must not be auto-posted." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </ScrollViewer>
+        </DockPanel>
+      </TabItem>
+
       <!-- Isolated Pixabay stock-footage workflow; existing creation tabs are unchanged. -->
       <TabItem Header="Youtube Flow">
         <DockPanel>
