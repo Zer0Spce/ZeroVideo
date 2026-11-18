@@ -72,6 +72,8 @@ public sealed class PublishQueueItem : ObservableObject
     public string SeoDescription => string.IsNullOrWhiteSpace(YouTubeDescription) ? Description : YouTubeDescription;
     public string SeoHashtags => !string.IsNullOrWhiteSpace(Hashtags) ? Hashtags : string.Join(" ", TikTokCaption.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(tag => tag.StartsWith("#")));
     public DateTimeOffset? ScheduledAt { get; set; }
+    // Explicit origin marker: only Gaming News may auto-submit these items.
+    public bool IsGamingNews { get; set; }
     public string YouTubeCheckpoint { get; set; } = "Not started";
     public string TikTokCheckpoint { get; set; } = "Not started";
     public string YouTubeCheckpointNote { get; set; } = "";
