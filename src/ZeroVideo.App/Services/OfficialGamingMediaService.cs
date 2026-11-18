@@ -890,6 +890,17 @@ public sealed class OfficialGamingMediaService
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { log?.Invoke("Official gameplay video skipped: " + ex.Message); }
         }
+        // If the official gallery relies on client-side rendering, do not
+        // fall back to a single PC Gamer photo. Read genuine GTA VI gallery
+        // images through ZeroVideo's existing Edge browser instead.
+        if (IsGtaSixStory(project.Title, focus) && downloaded.Count < 20)
+        {
+            var gallery = await CaptureRockstarGalleryAsync(
+                browser, settings, mediaDir, log, ct);
+            foreach (var image in gallery)
+                if (downloaded.Count < 24 && unique.Add(image.Url))
+                    downloaded.Add(image);
+        }
         // Independent archive source (not the original PC Gamer article).
         // Reuse ZeroVideo's existing licensed Commons image/video adapters.
         // This also works when an official game's website blocks direct downloads.
@@ -1127,6 +1138,81 @@ public sealed class OfficialGamingMediaService
         log?.Invoke($"Gaming News: {downloaded.Count} screenshots and " +
             $"{videos.Count} real video clip(s); no ComfyUI/AI images. Manifest: " + manifest);
         return new OfficialMediaResult(label, downloaded.Concat(videos).ToList());
+    }
+
+    private static async Task<List<OfficialAsset>> CaptureRockstarGalleryAsync(
+        BrowserSession browser, ZeroVideoSettings settings, string mediaDir,
+        Action<string>? log, CancellationToken ct)
+    {
+        var result = new List<OfficialAsset>();
+        Microsoft.Playwright.IPage? page = null;
+        const string source = "https://www.rockstargames.com/VI/media/screenshots";
+        try
+        {
+            await browser.EnsureStartedAsync(settings);
+            page = await browser.Context.NewPageAsync();
+            await page.GotoAsync(source, new Microsoft.Playwright.PageGotoOptions
+            {
+                WaitUntil = Microsoft.Playwright.WaitUntilState.DOMContentLoaded,
+                Timeout = 30000
+            });
+            var gallery = page.Locator("img");
+            var count = Math.Min(await gallery.CountAsync(), 200);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < count && result.Count < 24; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    var image = gallery.Nth(i);
+                    var path = await image.GetAttributeAsync("src") ?? "";
+                    var alt = await image.GetAttributeAsync("alt") ?? "";
+                    var combined = path + " " + alt;
+                    if (!path.Contains("/VI/", StringComparison.OrdinalIgnoreCase) ||
+                        !(path.Contains("media", StringComparison.OrdinalIgnoreCase) ||
+                          IsGtaSix(combined)) ||
+                        IsGtaFive(combined) ||
+                        !seen.Add(path))
+                        continue;
+                    var box = await image.BoundingBoxAsync();
+                    if (box is null || box.Width < 180 || box.Height < 110) continue;
+                    var filename = Path.Combine(mediaDir,
+                        "rockstar-gallery-" + (result.Count + 1).ToString("00") + ".png");
+                    await image.ScreenshotAsync(new Microsoft.Playwright.LocatorScreenshotOptions
+                    {
+                        Path = filename,
+                        Timeout = 12000
+                    });
+                    if (!File.Exists(filename) || new FileInfo(filename).Length < 10000)
+                    {
+                        if (File.Exists(filename)) File.Delete(filename);
+                        continue;
+                    }
+                    var imageUrl = Uri.TryCreate(new Uri(source), path, out var resolved)
+                        ? resolved.ToString() : source;
+                    result.Add(new OfficialAsset(filename, imageUrl,
+                        "Grand Theft Auto VI", source, "Rockstar Games / GTA VI official gallery",
+                        "Official game screenshot captured from publisher's public media page."));
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    log?.Invoke("Rockstar gallery photo skipped: " + ex.Message);
+                }
+            }
+            log?.Invoke($"Rockstar browser gallery recovered {result.Count} genuine GTA VI screenshots.");
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            log?.Invoke("Rockstar browser gallery unavailable: " + ex.Message);
+        }
+        finally
+        {
+            if (page is not null)
+                try { await page.CloseAsync(); } catch { }
+        }
+        return result;
     }
 
     private static async Task<OfficialAsset?> CaptureSourceArticleAsync(
