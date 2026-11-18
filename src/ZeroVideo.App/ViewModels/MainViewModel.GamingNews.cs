@@ -56,6 +56,7 @@ public sealed partial class MainViewModel
     public ICommand GamingNewsStartBatchCommand { get; private set; } = null!;
     public ICommand GamingNewsTestVideoCommand { get; private set; } = null!;
     public ICommand GamingNewsOpenTestVideoCommand { get; private set; } = null!;
+    public ICommand GamingNewsSubmitPendingCommand { get; private set; } = null!;
 
     private void InitializeGamingNewsCommands()
     {
@@ -74,6 +75,8 @@ public sealed partial class MainViewModel
         });
         GamingNewsStartBatchCommand = new AsyncCommand(() =>
             RunManagedJobAsync("Gaming News — One Click Batch", () => RunGamingNewsBatchAsync(false), publishing:true));
+        GamingNewsSubmitPendingCommand = new AsyncCommand(() =>
+            RunManagedJobAsync("Gaming News — Submit Pending TikTok", SubmitPendingGamingNewsAsync, publishing:true));
         GamingNewsTestVideoCommand = new AsyncCommand(() =>
             RunManagedJobAsync("Gaming News — Test Video", () => RunGamingNewsBatchAsync(true)));
         GamingNewsOpenTestVideoCommand = new RelayCommand(() =>
@@ -375,7 +378,11 @@ public sealed partial class MainViewModel
                         var queued = PublishingQueue.FirstOrDefault(x =>
                             x.VideoPath.Equals(result, StringComparison.OrdinalIgnoreCase));
                         if (queued is not null)
+                        {
+                            queued.IsGamingNews = true;
+                            SavePublishingQueue();
                             await TryGenerateMetadataForItemAsync(queued, force:false);
+                        }
                     }
                     else
                         GamingNewsTestVideoPath = result;
@@ -407,9 +414,8 @@ public sealed partial class MainViewModel
             }
             // Only completed TikTok submissions reserve platform slots.
             // A queue item's local schedule is merely a plan, not confirmation.
-            var blocked = PublishingQueue.Where(x => x.ScheduledAt.HasValue &&
-                (x.TikTokStatus.Equals("Scheduled", StringComparison.OrdinalIgnoreCase) ||
-                 x.TikTokStatus.StartsWith("Submission attempted", StringComparison.OrdinalIgnoreCase)))
+            var blocked = PublishingQueue.Where(x => !newItems.Contains(x) &&
+                x.ScheduledAt.HasValue && x.IsScheduled)
                 .Select(x => x.ScheduledAt!.Value.LocalDateTime).ToHashSet();
             // Auto-selected times are provisional until production is complete.
             // Rendering 48 clips may take hours, so start in the future.
