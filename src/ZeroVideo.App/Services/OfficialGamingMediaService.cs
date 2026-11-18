@@ -925,6 +925,7 @@ public sealed class OfficialGamingMediaService
         // Priority 1: images genuinely hosted/linked by the official publisher
         // or platform article, when the news report itself comes from one.
         var publisherImages = new List<(Uri Image, Uri Source)>();
+        var discoveredPerPublisher = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var linkedPublishers = await LinkedOfficialPagesAsync(project, log, ct);
         var independentPublishers = await DiscoverIndependentPublisherPagesAsync(
             project, focus, log, ct);
@@ -961,8 +962,12 @@ public sealed class OfficialGamingMediaService
                         log?.Invoke("Rejected publisher image without exact game evidence: " + img);
                         continue;
                     }
+                    if (discoveredPerPublisher.GetValueOrDefault(sourcePage.Host) >= 14)
+                        break;
                     publisherImages.Add((img, sourcePage));
-                    if (publisherImages.Count >= 32) break;
+                    discoveredPerPublisher[sourcePage.Host] =
+                        discoveredPerPublisher.GetValueOrDefault(sourcePage.Host) + 1;
+                    if (publisherImages.Count >= 80) break;
                 }
             }
             catch (OperationCanceledException) { throw; }
