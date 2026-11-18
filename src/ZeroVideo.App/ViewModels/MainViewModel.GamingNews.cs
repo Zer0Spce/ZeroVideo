@@ -133,6 +133,10 @@ public sealed partial class MainViewModel
         if (relevant.Count < GamingNewsVideoCount)
             Log($"Gaming News: only {relevant.Count}/{GamingNewsVideoCount} distinct news headlines found. No invented topics.");
         var originalShortQueue = ShortQueue.ToList();
+        // Suspend the regular Shorts checkpoint while this dedicated batch temporarily
+        // uses the rendering queue. The original persisted Shorts data is untouched.
+        var wasLoadingShortsCheckpoint = _loadingShortsCheckpoint;
+        _loadingShortsCheckpoint = true;
         var originalShortDuration = ShortDuration;
         var previousMusicPath = Settings.BackgroundMusicPath;
         var previousMusicDb = Settings.BackgroundMusicDb;
@@ -183,7 +187,17 @@ public sealed partial class MainViewModel
                 File.Exists(x.VideoPath)).ToList();
             var blocked = PublishingQueue.Where(x => x.ScheduledAt.HasValue)
                 .Select(x => x.ScheduledAt!.Value.LocalDateTime).ToHashSet();
-            var slot = firstSlot;
+            // Auto-selected times are provisional until production is complete.
+            // Rendering 48 clips may take hours, so start in the future.
+            var slot = string.IsNullOrWhiteSpace(GamingNewsScheduleStart)
+                ? GamingNewsInitialSlot("")
+                : firstSlot;
+            if (slot <= DateTime.Now.AddMinutes(30))
+            {
+                GamingNewsStatus = "The requested first posting time passed during rendering. " +
+                    "Videos remain saved; enter a later time and resume scheduling.";
+                return;
+            }
             foreach (var item in newItems)
             {
                 while (blocked.Contains(slot)) slot = slot.AddMinutes(30);
@@ -286,6 +300,8 @@ public sealed partial class MainViewModel
             ShortQueue.Clear();
             foreach (var entry in originalShortQueue) ShortQueue.Add(entry);
             ShortDuration = originalShortDuration;
+            _loadingShortsCheckpoint = wasLoadingShortsCheckpoint;
+            SaveShortsRecovery();
         }
     }
 }
