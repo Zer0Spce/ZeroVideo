@@ -37,6 +37,147 @@ public sealed class OfficialGamingMediaService
         string StoreUrl, string Source, string RightsNote);
     public sealed record OfficialMediaResult(string Credit, IReadOnlyList<OfficialAsset> Assets);
 
+    private sealed class MediaUse
+    {
+        public string Fingerprint { get; set; } = "";
+        public string Url { get; set; } = "";
+        public DateTime UsedUtc { get; set; }
+        public string VideoId { get; set; } = "";
+    }
+
+    private static string MediaHistoryPath =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ZeroVideo", "gaming-news-media-history.json");
+
+    private static List<MediaUse> ReadMediaHistory(Action<string>? log)
+    {
+        try
+        {
+            if (!File.Exists(MediaHistoryPath)) return [];
+            return JsonSerializer.Deserialize<List<MediaUse>>(
+                File.ReadAllText(MediaHistoryPath)) ?? [];
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke("Gaming News media history could not be read: " + ex.Message);
+            return [];
+        }
+    }
+
+    private static async Task SaveMediaHistoryAsync(
+        List<MediaUse> entries, Action<string>? log, CancellationToken ct)
+    {
+        try
+        {
+            var path = MediaHistoryPath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var now = DateTime.UtcNow;
+            var recent = entries.Where(x => x.UsedUtc > now.AddDays(-14))
+                .TakeLast(2500).ToList();
+            var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            await File.WriteAllTextAsync(temp, JsonSerializer.Serialize(recent), ct);
+            File.Move(temp, path, true);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            log?.Invoke("Gaming News media use history unavailable: " + ex.Message);
+        }
+    }
+
+    private static string MediaSourceHost(OfficialAsset asset)
+    {
+        if (Uri.TryCreate(asset.StoreUrl, UriKind.Absolute, out var src))
+            return src.Host.Replace("www.", "", StringComparison.OrdinalIgnoreCase);
+        return asset.Source;
+    }
+
+    private static bool IsVideoAsset(OfficialAsset asset) =>
+        new[] { ".mp4", ".webm", ".mov", ".mkv", ".avi" }.Contains(
+            Path.GetExtension(asset.LocalPath), StringComparer.OrdinalIgnoreCase);
+
+    private static List<OfficialAsset> SelectDiverseShots(
+        VideoProject project, IReadOnlyList<OfficialAsset> assets,
+        IReadOnlyList<MediaUse> history, Action<string>? log)
+    {
+        const int target = 24;
+        var seedBytes = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            project.Id + "|" + project.Title + "|" + string.Join("|", project.Sources)));
+        var rng = new Random(BitConverter.ToInt32(seedBytes, 0));
+        var recentlyUsed = history.TakeLast(300)
+            .GroupBy(x => x.Fingerprint)
+            .ToDictionary(x => x.Key, x => x.Count(), StringComparer.OrdinalIgnoreCase);
+        var keyed = assets.Select(a => new
+        {
+            Asset = a,
+            Fingerprint = MediaFingerprint(a.LocalPath),
+            Host = MediaSourceHost(a)
+        }).ToList();
+        var pool = keyed.GroupBy(x => x.Fingerprint).Select(x => x.First()).ToList();
+        var hosts = pool.Select(x => x.Host).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var goalHosts = Math.Min(4, hosts.Count);
+        var chosen = new List<OfficialAsset>();
+        var chosenHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var perSource = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var shotHosts = new List<string>();
+        int videoShots = 0;
+
+        for (var index = 0; index < target; index++)
+        {
+            var preferVideo = index % 5 == 2 || index % 7 == 4;
+            var uniqueFirst = chosenHashes.Count < pool.Count;
+            var choices = pool.Where(x => !uniqueFirst || !chosenHashes.Contains(x.Fingerprint))
+                .ToList();
+            if (choices.Count == 0) choices = pool.ToList();
+            // Video and screenshot mix when genuine footage exists; never
+            // substitute unrelated videos merely to meet a quota.
+            if (preferVideo && choices.Any(x => IsVideoAsset(x.Asset)))
+                choices = choices.Where(x => IsVideoAsset(x.Asset)).ToList();
+            else if (!preferVideo && choices.Any(x => !IsVideoAsset(x.Asset)))
+                choices = choices.Where(x => !IsVideoAsset(x.Asset)).ToList();
+
+            var missingHosts = hosts.Count >= 2 ? hosts
+                .Where(h => !perSource.ContainsKey(h)).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var scored = choices.Select(x =>
+            {
+                var used = perSource.GetValueOrDefault(x.Host);
+                var consecutive = shotHosts.Count > 0 &&
+                    shotHosts[^1].Equals(x.Host, StringComparison.OrdinalIgnoreCase);
+                var repeatedTwice = shotHosts.Count >= 2 && consecutive &&
+                    shotHosts[^2].Equals(x.Host, StringComparison.OrdinalIgnoreCase);
+                var recent = recentlyUsed.GetValueOrDefault(x.Fingerprint);
+                var share = (used + 1.0) / (index + 1.0);
+                var score = rng.NextDouble() * 2.4
+                    + (missingHosts.Contains(x.Host) ? 5.0 : 0.0)
+                    + (chosenHashes.Contains(x.Fingerprint) ? -4.0 : 3.0)
+                    - recent * 2.8
+                    - used * 0.85
+                    - (share > .35 && hosts.Count >= 3 ? 7.0 : 0.0)
+                    - (consecutive ? 5.0 : 0.0)
+                    - (repeatedTwice ? 40.0 : 0.0);
+                return new { Candidate = x, Score = score };
+            }).OrderByDescending(x => x.Score).ToList();
+            if (scored.Count == 0) break;
+            var pick = scored[0].Candidate;
+            chosen.Add(pick.Asset);
+            chosenHashes.Add(pick.Fingerprint);
+            perSource[pick.Host] = perSource.GetValueOrDefault(pick.Host) + 1;
+            shotHosts.Add(pick.Host);
+            if (IsVideoAsset(pick.Asset)) videoShots++;
+        }
+
+        log?.Invoke("Gaming News diversified selection: " +
+            chosen.Count + " shots, " + perSource.Count + " source sites (" +
+            string.Join(", ", perSource.Select(x => x.Key + "=" + x.Value)) +
+            "), " + videoShots + " video beats; " +
+            "recent assets deprioritized across batches.");
+        if (perSource.Count < goalHosts)
+            log?.Invoke("Gaming News: some source sites had no usable unique assets; " +
+                "did not fabricate sources to meet diversity target.");
+        return chosen;
+    }
+
     private static bool SteamHost(Uri uri) => uri.Scheme == "https" &&
         (uri.Host == "store.steampowered.com" ||
          uri.Host == "shared.akamai.steamstatic.com" ||
@@ -1107,34 +1248,22 @@ public sealed class OfficialGamingMediaService
                 "Try again when the official gallery or news media is accessible; " +
                 "no GTA V or unrelated visual replacements will be published.");
 
+        var history = ReadMediaHistory(log);
+        var selectedShots = SelectDiverseShots(project, uniqueAssets, history, log);
+        if (selectedShots.Count != 24)
+            throw new InvalidDataException("Gaming News could not select 24 authentic shots.");
         var chapter = project.Chapters.Single();
-        var imageCursor = 0;
-        var videoCursor = 0;
-        var shotSequence = new List<string>();
-        var shotsPerBeat = 3;
         for (var i = 0; i < chapter.Scenes.Count; i++)
         {
-            var selected = new List<string>();
-            for (var v = 0; v < shotsPerBeat; v++)
-            {
-                var shotIndex = i * shotsPerBeat + v;
-                var useFootage = videos.Count > 0 && shotIndex % 4 == 2 &&
-                    !(i == 0 && v == 0) && !(i == chapter.Scenes.Count - 1 && v == 2);
-                var pool = useFootage ? videos :
-                    downloaded.Count > 0 ? downloaded : videos;
-                var cursor = useFootage ? videoCursor++ : imageCursor++;
-                var choice = pool[cursor % pool.Count].LocalPath;
-                if (selected.Count > 0 && selected[^1] == choice && pool.Count > 1)
-                    choice = pool[(cursor + 1) % pool.Count].LocalPath;
-                selected.Add(choice);
-                shotSequence.Add(choice);
-            }
-            chapter.Scenes[i].MediaPath = selected[0];
-            chapter.Scenes[i].MediaPaths = selected.Skip(1).ToList();
+            var photos = selectedShots.Skip(i * 3).Take(3).ToList();
+            chapter.Scenes[i].MediaPath = photos[0].LocalPath;
+            chapter.Scenes[i].MediaPaths = photos.Skip(1)
+                .Select(x => x.LocalPath).ToList();
         }
-        log?.Invoke($"Gaming media: {shotSequence.Count} visual shots across " +
-            $"{chapter.Scenes.Count} narration beats, from {uniqueAssets.Count} " +
-            "distinct assets; short smooth crossfades only.");
+        var shotSequence = selectedShots.Select(x => x.LocalPath).ToList();
+        log?.Invoke("Gaming News: 24 shuffled visual shots from multiple " +
+            "sites where available, with smooth crossfades.");
+
         if (videos.Count > 0)
             log?.Invoke($"Gaming media mix: {downloaded.Count} real screenshots + " +
                 $"{videos.Count} real gameplay trailer clips across 8 visual beats.");
@@ -1153,6 +1282,11 @@ public sealed class OfficialGamingMediaService
             project = project.Title, credit = label,
             legalNote = "Attribution is not a license. Confirm publisher's use rules or applicable news/editorial exception.",
             assets = downloaded.Concat(videos).ToList(),
+            selectedShotOrder = selectedShots.Select(x => new
+            {
+                x.Url, x.Source, sourceHost = MediaSourceHost(x),
+                fingerprint = MediaFingerprint(x.LocalPath)
+            }).ToList(),
             youtubeReferenceLeads = youtubeLeads,
             providerPriority = new[]
             {
@@ -1172,6 +1306,17 @@ public sealed class OfficialGamingMediaService
         }, new JsonSerializerOptions { WriteIndented = true }), ct);
         log?.Invoke($"Gaming News: {downloaded.Count} screenshots and " +
             $"{videos.Count} real video clip(s); no ComfyUI/AI images. Manifest: " + manifest);
+        // Persist the selected visuals across batch videos so the next video
+        // prefers fresh photos, even when the article covers the same game.
+        foreach (var used in selectedShots.DistinctBy(x => MediaFingerprint(x.LocalPath)))
+            history.Add(new MediaUse
+            {
+                Fingerprint = MediaFingerprint(used.LocalPath),
+                Url = used.Url,
+                VideoId = project.Id,
+                UsedUtc = DateTime.UtcNow
+            });
+        await SaveMediaHistoryAsync(history, log, ct);
         return new OfficialMediaResult(label, downloaded.Concat(videos).ToList());
     }
 
