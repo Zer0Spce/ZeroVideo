@@ -321,6 +321,10 @@ public sealed partial class MainViewModel
         {
             Settings.BackgroundMusicPath = GamingNewsMusicEnabled ? GamingNewsMusicPath : "";
             Settings.BackgroundMusicDb = GamingNewsMusicDb;
+            // Gaming News uses only the retrieved genuine photos/videos.
+            // Disable LivePortrait/AI animation in this private settings copy
+            // without changing the user's ordinary Shorts/Longform settings.
+            Settings.AiImageAnimationEngine = "Off";
             GamingNewsStatus = $"Producing {relevant.Count} real 60-second gaming Shorts...";
             foreach (var (topic, index) in relevant.Select((item, i) => (item, i)))
             {
