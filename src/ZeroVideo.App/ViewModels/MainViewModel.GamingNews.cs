@@ -333,12 +333,16 @@ public sealed partial class MainViewModel
                         new Progress<double>(x => Progress = x), _cts.Token);
                     if (!File.Exists(result))
                         throw new InvalidDataException("Render returned no MP4.");
-                    await new OfficialGamingMediaService().BurnSmallCreditAsync(
+                    var mediaFinishing = new OfficialGamingMediaService();
+                    await mediaFinishing.BurnSmallCreditAsync(
                         result, official.Credit, Settings, _runner, Log, _cts.Token);
+                    await mediaFinishing.AddNarrationBreathingRoomAsync(
+                        result, Settings, _runner, Log, _cts.Token);
                     if (await _ffmpeg.ProbeDurationAsync(result, Settings, _cts.Token) is var seconds &&
-                        (seconds < 35 || seconds > 75))
+                        (seconds < 38 || seconds > 78))
                         throw new InvalidDataException(
-                            $"Gaming Short narration is {seconds:0.0}s (expected about 60s).");
+                            $"Gaming Short is {seconds:0.0}s including 3 seconds of breathing room " +
+                            "(expected roughly 60 seconds plus lead-in/outro).");
                     if (!testOnly)
                     {
                         QueueCompletedVideo(result);
