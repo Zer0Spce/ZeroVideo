@@ -1301,12 +1301,10 @@ public sealed class OfficialGamingMediaService
         else
             log?.Invoke("No downloadable official MP4 clips were available; " +
                 "rendering authentic screenshots only (never AI imagery).");
-        var sourceNames = downloaded.Concat(videos)
-            .Select(x => x.Source.Contains("Steam", StringComparison.OrdinalIgnoreCase)
-                ? "Steam / " + x.GameTitle : x.Source.Replace(" official article image", ""))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(3);
-        var label = "Source: " + string.Join(" / ", sourceNames);
+        var sourceNames = selectedShots.Select(MediaSourceHost)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var label = "Media: " + string.Join(" / ", sourceNames.Take(3)) +
+            (sourceNames.Count > 3 ? " +" + (sourceNames.Count - 3) : "");
         var manifest = Path.Combine(project.ProjectDirectory, "official-media-credits.json");
         await File.WriteAllTextAsync(manifest, JsonSerializer.Serialize(new
         {
