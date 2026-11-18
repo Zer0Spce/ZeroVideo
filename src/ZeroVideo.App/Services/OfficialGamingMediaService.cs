@@ -116,6 +116,15 @@ public sealed class OfficialGamingMediaService
         var pool = keyed.GroupBy(x => x.Fingerprint).Select(x => x.First()).ToList();
         var hosts = pool.Select(x => x.Host).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var goalHosts = Math.Min(4, hosts.Count);
+        var storyKeywords = Regex.Matches(project.Title.ToLowerInvariant(), @"[a-z]{4,}")
+            .Select(x => x.Value)
+            .Where(x => !new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "grand", "theft", "auto", "game", "gaming", "news",
+                "guide", "every", "about", "with", "from", "your",
+                "what", "this", "that", "actually", "works", "latest"
+            }.Contains(x))
+            .Distinct().Take(8).ToArray();
         var chosen = new List<OfficialAsset>();
         var chosenHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var perSource = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -147,8 +156,12 @@ public sealed class OfficialGamingMediaService
                 var repeatedTwice = shotHosts.Count >= 2 && consecutive &&
                     shotHosts[^2].Equals(x.Host, StringComparison.OrdinalIgnoreCase);
                 var recent = recentlyUsed.GetValueOrDefault(x.Fingerprint);
+                var metadata = (x.Asset.Url + " " + x.Asset.StoreUrl).ToLowerInvariant();
+                var topicBonus = Math.Min(3.0,
+                    storyKeywords.Count(t => metadata.Contains(t, StringComparison.Ordinal)) * 1.2);
                 var share = (used + 1.0) / (index + 1.0);
                 var score = rng.NextDouble() * 2.4
+                    + topicBonus
                     + (missingHosts.Contains(x.Host) ? 5.0 : 0.0)
                     + (chosenHashes.Contains(x.Fingerprint) ? -4.0 : 3.0)
                     - recent * 2.8
