@@ -655,6 +655,12 @@ public sealed class OfficialGamingMediaService
                 try
                 {
                     var html = await DownloadNewsHtmlAsync(story, ct);
+                    foreach (var clip in ExtractOfficialVideoUrls(html, story).Take(3))
+                    {
+                        if (movieSeen.Add(clip.ToString()))
+                            movies.Add((clip, project.Title, story.ToString(),
+                                story.Host + " news article video"));
+                    }
                     foreach (var candidate in ExtractPublisherImages(html, story).Take(12))
                     {
                         if (editorialImages.All(x => x.Image != candidate))
