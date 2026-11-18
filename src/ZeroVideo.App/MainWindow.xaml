@@ -450,6 +450,11 @@
               <Border Style="{StaticResource CardBorder}">
                 <StackPanel>
                   <CheckBox Content="Submit completed videos using the existing TikTok uploader (one-click authorization)" IsChecked="{Binding GamingNewsUploadAutomatically, Mode=TwoWay}" Margin="0,0,0,12"/>
+                  <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                    <Button Style="{StaticResource SecondaryButton}" Content="MAKE A TEST VIDEO" Command="{Binding GamingNewsTestVideoCommand}" Height="40" MinWidth="210" ToolTip="Generate one news video using your current gaming settings. Never schedule or upload it."/>
+                    <Button Style="{StaticResource SecondaryButton}" Content="Open Test Video" Command="{Binding GamingNewsOpenTestVideoCommand}" Height="40" Margin="10,0,0,0" ToolTip="Open the latest rendered test MP4."/>
+                  </StackPanel>
+                  <TextBlock Text="{Binding GamingNewsTestVideoPath}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,10" FontSize="11"/>
                   <Button Style="{StaticResource PrimaryButton}" Content="GENERATE VIDEOS &amp; SCHEDULE TIKTOK" Command="{Binding GamingNewsStartBatchCommand}" Height="48"/>
                   <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
                     <TextBlock Text="Videos finished: " Foreground="{StaticResource Muted}"/>
