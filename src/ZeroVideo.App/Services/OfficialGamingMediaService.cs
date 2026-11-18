@@ -1053,11 +1053,13 @@ public sealed class OfficialGamingMediaService
             new[] { ".mp4", ".webm", ".mov", ".mkv", ".avi" }
                 .Contains(Path.GetExtension(x.LocalPath), StringComparer.OrdinalIgnoreCase))
             .ToList();
-        if (uniqueAssets.Count < 8)
+        var requiredDistinct = IsGtaSixStory(project.Title, focus) ? 20 : 12;
+        if (uniqueAssets.Count < requiredDistinct)
             throw new InvalidDataException(
-                $"Gaming News found only {uniqueAssets.Count} distinct matching assets. " +
-                "At least 8 distinct photos/clips are required for the 24-shot format. " +
-                "No unrelated visuals or repeated one-image slideshow will be published.");
+                $"Gaming News found only {uniqueAssets.Count}/{requiredDistinct} distinct matching game assets. " +
+                "A 24-shot video needs enough real screenshots/clips, not repeats of one image. " +
+                "Try again when the official gallery or news media is accessible; " +
+                "no GTA V or unrelated visual replacements will be published.");
 
         var chapter = project.Chapters.Single();
         var imageCursor = 0;
