@@ -516,9 +516,10 @@ public sealed class OfficialGamingMediaService
         // GTA 5 and GTA 6 are different games. If the asset or its media
         // label explicitly identifies GTA V, reject regardless of article.
         if (IsGtaFive(asset + " " + metadata)) return false;
-        // A genuinely GTA VI-specific Rockstar/PlayStation/article URL,
-        // or explicit GTA VI media metadata, is required.
-        return IsGtaSix(evidence) &&
+        // A GTA VI article can contain GTA V thumbnails, sidebars and
+        // unrelated ads. The ARTICLE URL alone is NOT sufficient evidence:
+        // the asset URL or its own alt/title text must identify GTA VI.
+        return IsGtaSix(asset + " " + metadata) &&
             !RejectGenericGraphic(image, metadata);
     }
 
@@ -1054,6 +1055,15 @@ public sealed class OfficialGamingMediaService
                     try
                     {
                         var node = candidates.Nth(i);
+                        if (IsGtaSixStory(project.Title, ""))
+                        {
+                            var src = await node.GetAttributeAsync("src") ?? "";
+                            var alt = await node.GetAttributeAsync("alt") ?? "";
+                            var title = await node.GetAttributeAsync("title") ?? "";
+                            if (!IsGtaSix(src + " " + alt + " " + title) ||
+                                IsGtaFive(src + " " + alt + " " + title))
+                                continue;
+                        }
                         var bounds = await node.BoundingBoxAsync();
                         if (bounds is null || bounds.Width < 500 || bounds.Height < 220)
                             continue;
@@ -1077,9 +1087,10 @@ public sealed class OfficialGamingMediaService
                         log?.Invoke("Article image candidate failed: " + ex.Message);
                     }
                 }
-                // A real article screenshot with the publisher's headline
-                // is better than an empty test render for coverage without
-                // a named Steam game (corporate/industry gaming stories).
+                // An article-page capture is allowed for general industry
+                // news. For GTA VI, a full-page screenshot can contain GTA V
+                // artwork or unrelated thumbnails, so skip that fallback.
+                if (IsGtaSixStory(project.Title, "")) continue;
                 var screenshot = Path.Combine(mediaDir, "article-page.png");
                 await page.ScreenshotAsync(new Microsoft.Playwright.PageScreenshotOptions
                 {
