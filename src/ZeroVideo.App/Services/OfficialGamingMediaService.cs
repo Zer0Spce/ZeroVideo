@@ -620,8 +620,144 @@ public sealed class OfficialGamingMediaService
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { log?.Invoke("Official publisher imagery unavailable: " + ex.Message); }
         }
-        // Priority 2: the publisher's game screenshots on Steam. This
-        // fallback only matches actual game titles mentioned in the narration.
+        // Priority 2: media from multiple relevant gaming journalism pages.
+        // Candidate pages are discovered independently from the news article.
+        // Keep original page attribution for every downloaded asset.
+        // This is not described as a first-party official screenshot; label
+        // its actual publication in the credit manifest and on-screen source.
+        // Prefer this over generating an invented picture for news that does
+        // not have a Steam listing or a linked publisher newsroom.
+        var editorialImages = new List<(Uri Image, Uri Source)>();
+        if (publisherImages.Count < 8)
+        {
+            foreach (var story in project.Sources
+                .Select(x => Uri.TryCreate(x, UriKind.Absolute, out var u) ? u : null)
+                .Where(x => x is not null && JournalismHost(x))
+                .Concat(independentNewsPages).Distinct().Take(12))
+            {
+                if (story is null) continue;
+                try
+                {
+                    var html = await DownloadNewsHtmlAsync(story, ct);
+                    foreach (var clip in ExtractOfficialVideoUrls(html, story).Take(3))
+                    {
+                        if (!ExactGameEvidence(project.Title, focus, story, clip, "")) continue;
+                        if (movieSeen.Add(clip.ToString()))
+                            movies.Add((clip, project.Title, story.ToString(),
+                                story.Host + " news article video"));
+                    }
+                    foreach (var candidate in ExtractPublisherImages(html, story).Take(12))
+                    {
+                        if (!ExactGameEvidence(project.Title, focus, story, candidate, ""))
+                        {
+                            log?.Invoke("Rejected unrelated or generic article image: " + candidate);
+                            continue;
+                        }
+                        if (editorialImages.All(x => x.Image != candidate))
+                            editorialImages.Add((candidate, story));
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { log?.Invoke("Editorial article images unavailable: " + ex.Message); }
+            }
+        }
+        log?.Invoke($"Gaming media candidates: publisher images={publisherImages.Count}, " +
+            $"independent article images={editorialImages.Count}, " +
+            $"non-Steam videos={movies.Count}. Steam reserved for LAST fallback.");
+
+        var mediaDir = Path.Combine(project.ProjectDirectory, "media");
+        Directory.CreateDirectory(mediaDir);
+        var downloaded = new List<OfficialAsset>();
+        var unique = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (imageUri, sourcePage) in publisherImages)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (downloaded.Count >= 8) break;
+            if (!unique.Add(imageUri.ToString())) continue;
+            try
+            {
+                var bytes = await DownloadPublisherImageAsync(imageUri, sourcePage, ct);
+                if (!IsJpeg(bytes) && !IsPng(bytes)) continue;
+                var ext = IsJpeg(bytes) ? ".jpg" : ".png";
+                var file = Path.Combine(mediaDir, "official-" +
+                    (downloaded.Count + 1).ToString("00") + ext);
+                await File.WriteAllBytesAsync(file, bytes, ct);
+                downloaded.Add(new OfficialAsset(file, imageUri.ToString(), project.Title,
+                    sourcePage.ToString(), sourcePage.Host + " official article image",
+                    "Platform or publisher owns or controls media; credit is not a license."));
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("First-party image skipped: " + ex.Message); }
+        }
+        // A story's lead image is often a real publisher press screenshot.
+        // Keep its attribution exact instead of pretending it is official.
+        if (downloaded.Count == 0)
+        foreach (var (imageUri, story) in editorialImages)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (downloaded.Count >= 8) break;
+            if (!unique.Add(imageUri.ToString())) continue;
+            try
+            {
+                var bytes = await DownloadPublisherImageAsync(imageUri, story, ct);
+                if (!IsJpeg(bytes) && !IsPng(bytes)) continue;
+                var file = Path.Combine(mediaDir, "official-" +
+                    (downloaded.Count + 1).ToString("00") +
+                    (IsJpeg(bytes) ? ".jpg" : ".png"));
+                await File.WriteAllBytesAsync(file, bytes, ct);
+                downloaded.Add(new OfficialAsset(file, imageUri.ToString(), project.Title,
+                    story.ToString(), story.Host + " editorial article image",
+                    "Image sourced from credited article; license/press usage terms may apply."));
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("Editorial image skipped: " + ex.Message); }
+        }
+        // Save actual playable clips, not synthetic motion or AI animation.
+        // A publisher gameplay trailer is trimmed and reframed by the existing
+        // FFmpeg Shorts renderer. Its original audio is discarded so narration
+        // and selected background music retain their levels.
+        var videos = new List<OfficialAsset>();
+        foreach (var (uri, game, store, source) in movies.Take(7))
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var bytes = await GetVideoAsync(uri, ct);
+                if (!IsMp4(bytes)) continue;
+                var file = Path.Combine(mediaDir, "official-video-" +
+                    (videos.Count + 1).ToString("00") + ".mp4");
+                await File.WriteAllBytesAsync(file, bytes, ct);
+                videos.Add(new OfficialAsset(file, uri.ToString(), game, store,
+                    source, "Source attribution recorded; observe publisher/editorial use terms."));
+                if (videos.Count >= 3) break;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("Official gameplay video skipped: " + ex.Message); }
+        }
+        // Independent archive source (not the original PC Gamer article).
+        // Reuse ZeroVideo's existing licensed Commons image/video adapters.
+        // This also works when an official game's website blocks direct downloads.
+        var commons = await AcquireCommonsMediaAsync(
+            project, focus, mediaDir, log, ct);
+        foreach (var photo in commons.Photos.Take(Math.Max(0, 8 - downloaded.Count)))
+            downloaded.Add(photo);
+        foreach (var clip in commons.Videos.Take(Math.Max(0, 3 - videos.Count)))
+            videos.Add(clip);
+        if (downloaded.Count == 0 && videos.Count == 0)
+        {
+            log?.Invoke("Direct downloads unavailable. Trying the original article " +
+                "in Edge for a genuine article/game screenshot (no AI).");
+            var articleScreenshot = await CaptureSourceArticleAsync(
+                project, browser, settings, mediaDir, log, ct);
+            if (articleScreenshot is not null) downloaded.Add(articleScreenshot);
+        }
+        // LAST RESORT: only query Steam after publisher websites, gaming
+        // news sites, Wikimedia Commons and the original article have been
+        // tried. Never let Steam crowd out more relevant primary media.
+        if (downloaded.Count + videos.Count < 4)
+        {
+            log?.Invoke("Gaming media: primary sources insufficient; trying Steam LAST.");
+            // Exact-game Steam search is the final fallback.
         foreach (var term in candidates)
         {
             ct.ThrowIfCancellationRequested();
@@ -698,98 +834,6 @@ public sealed class OfficialGamingMediaService
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { log?.Invoke("Gaming official-media search skipped: " + ex.Message); }
         }
-        // Priority 3: media from multiple relevant gaming journalism pages.
-        // Candidate pages are discovered independently from the news article.
-        // Keep original page attribution for every downloaded asset.
-        // This is not described as a first-party official screenshot; label
-        // its actual publication in the credit manifest and on-screen source.
-        // Prefer this over generating an invented picture for news that does
-        // not have a Steam listing or a linked publisher newsroom.
-        var editorialImages = new List<(Uri Image, Uri Source)>();
-        if (publisherImages.Count == 0 && images.Count == 0)
-        {
-            foreach (var story in project.Sources
-                .Select(x => Uri.TryCreate(x, UriKind.Absolute, out var u) ? u : null)
-                .Where(x => x is not null && JournalismHost(x))
-                .Concat(independentNewsPages).Distinct().Take(12))
-            {
-                if (story is null) continue;
-                try
-                {
-                    var html = await DownloadNewsHtmlAsync(story, ct);
-                    foreach (var clip in ExtractOfficialVideoUrls(html, story).Take(3))
-                    {
-                        if (!ExactGameEvidence(project.Title, focus, story, clip, "")) continue;
-                        if (movieSeen.Add(clip.ToString()))
-                            movies.Add((clip, project.Title, story.ToString(),
-                                story.Host + " news article video"));
-                    }
-                    foreach (var candidate in ExtractPublisherImages(html, story).Take(12))
-                    {
-                        if (!ExactGameEvidence(project.Title, focus, story, candidate, ""))
-                        {
-                            log?.Invoke("Rejected unrelated or generic article image: " + candidate);
-                            continue;
-                        }
-                        if (editorialImages.All(x => x.Image != candidate))
-                            editorialImages.Add((candidate, story));
-                    }
-                }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex) { log?.Invoke("Editorial article images unavailable: " + ex.Message); }
-            }
-        }
-        log?.Invoke($"Gaming media candidates: publisher images={publisherImages.Count}, " +
-            $"article images={editorialImages.Count}, Steam screenshots={images.Count}, " +
-            $"videos={movies.Count}. Trying sources in priority order.");
-
-        var mediaDir = Path.Combine(project.ProjectDirectory, "media");
-        Directory.CreateDirectory(mediaDir);
-        var downloaded = new List<OfficialAsset>();
-        var unique = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (imageUri, sourcePage) in publisherImages)
-        {
-            ct.ThrowIfCancellationRequested();
-            if (downloaded.Count >= 8) break;
-            if (!unique.Add(imageUri.ToString())) continue;
-            try
-            {
-                var bytes = await DownloadPublisherImageAsync(imageUri, sourcePage, ct);
-                if (!IsJpeg(bytes) && !IsPng(bytes)) continue;
-                var ext = IsJpeg(bytes) ? ".jpg" : ".png";
-                var file = Path.Combine(mediaDir, "official-" +
-                    (downloaded.Count + 1).ToString("00") + ext);
-                await File.WriteAllBytesAsync(file, bytes, ct);
-                downloaded.Add(new OfficialAsset(file, imageUri.ToString(), project.Title,
-                    sourcePage.ToString(), sourcePage.Host + " official article image",
-                    "Platform or publisher owns or controls media; credit is not a license."));
-            }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex) { log?.Invoke("First-party image skipped: " + ex.Message); }
-        }
-        // A story's lead image is often a real publisher press screenshot.
-        // Keep its attribution exact instead of pretending it is official.
-        if (downloaded.Count == 0)
-        foreach (var (imageUri, story) in editorialImages)
-        {
-            ct.ThrowIfCancellationRequested();
-            if (downloaded.Count >= 8) break;
-            if (!unique.Add(imageUri.ToString())) continue;
-            try
-            {
-                var bytes = await DownloadPublisherImageAsync(imageUri, story, ct);
-                if (!IsJpeg(bytes) && !IsPng(bytes)) continue;
-                var file = Path.Combine(mediaDir, "official-" +
-                    (downloaded.Count + 1).ToString("00") +
-                    (IsJpeg(bytes) ? ".jpg" : ".png"));
-                await File.WriteAllBytesAsync(file, bytes, ct);
-                downloaded.Add(new OfficialAsset(file, imageUri.ToString(), project.Title,
-                    story.ToString(), story.Host + " editorial article image",
-                    "Image sourced from credited article; license/press usage terms may apply."));
-            }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex) { log?.Invoke("Editorial image skipped: " + ex.Message); }
-        }
         // Steam is a fallback, and never used for a mismatched game title.
         foreach (var (uri, game, store) in images)
         {
@@ -810,44 +854,26 @@ public sealed class OfficialGamingMediaService
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { log?.Invoke("Official screenshot download skipped: " + ex.Message); }
         }
-        // Save actual playable clips, not synthetic motion or AI animation.
-        // A publisher gameplay trailer is trimmed and reframed by the existing
-        // FFmpeg Shorts renderer. Its original audio is discarded so narration
-        // and selected background music retain their levels.
-        var videos = new List<OfficialAsset>();
-        foreach (var (uri, game, store, source) in movies.Take(7))
-        {
-            ct.ThrowIfCancellationRequested();
-            try
+            // Trailer assets are retrieved only when non-Steam sources
+            // supplied fewer than four usable media items.
+            foreach (var (uri, game, store, source) in movies
+                .Where(x => x.Source.Contains("Steam", StringComparison.OrdinalIgnoreCase))
+                .Take(3 - Math.Min(3, videos.Count)))
             {
-                var bytes = await GetVideoAsync(uri, ct);
-                if (!IsMp4(bytes)) continue;
-                var file = Path.Combine(mediaDir, "official-video-" +
-                    (videos.Count + 1).ToString("00") + ".mp4");
-                await File.WriteAllBytesAsync(file, bytes, ct);
-                videos.Add(new OfficialAsset(file, uri.ToString(), game, store,
-                    source, "Source attribution recorded; observe publisher/editorial use terms."));
-                if (videos.Count >= 3) break;
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    var bytes = await GetVideoAsync(uri, ct);
+                    if (!IsMp4(bytes)) continue;
+                    var file = Path.Combine(mediaDir, "official-video-" +
+                        (videos.Count + 1).ToString("00") + ".mp4");
+                    await File.WriteAllBytesAsync(file, bytes, ct);
+                    videos.Add(new OfficialAsset(file, uri.ToString(), game, store,
+                        source, "Publisher gameplay video from Steam; source recorded."));
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { log?.Invoke("Last-resort Steam trailer unavailable: " + ex.Message); }
             }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex) { log?.Invoke("Official gameplay video skipped: " + ex.Message); }
-        }
-        // Independent archive source (not the original PC Gamer article).
-        // Reuse ZeroVideo's existing licensed Commons image/video adapters.
-        // This also works when an official game's website blocks direct downloads.
-        var commons = await AcquireCommonsMediaAsync(
-            project, focus, mediaDir, log, ct);
-        foreach (var photo in commons.Photos.Take(Math.Max(0, 8 - downloaded.Count)))
-            downloaded.Add(photo);
-        foreach (var clip in commons.Videos.Take(Math.Max(0, 3 - videos.Count)))
-            videos.Add(clip);
-        if (downloaded.Count == 0 && videos.Count == 0)
-        {
-            log?.Invoke("Direct downloads unavailable. Trying the original article " +
-                "in Edge for a genuine article/game screenshot (no AI).");
-            var articleScreenshot = await CaptureSourceArticleAsync(
-                project, browser, settings, mediaDir, log, ct);
-            if (articleScreenshot is not null) downloaded.Add(articleScreenshot);
         }
         if (downloaded.Count == 0 && videos.Count == 0)
             throw new InvalidDataException(
