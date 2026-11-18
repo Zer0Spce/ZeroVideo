@@ -190,7 +190,8 @@ public sealed partial class MainViewModel
                 ImagesPerChapter = sceneCount,
                 GenerateCaptions = true,
                 BurnInBoldCaptions = true,
-                GenerateMissingVisuals = true,
+                GenerateMissingVisuals = false, // Gaming News never generates AI images.
+                AutoRealPersonIdentity = false,
                 AddBackgroundMusic = GamingNewsMusicEnabled,
                 BackgroundMusicPath = GamingNewsMusicEnabled ? GamingNewsMusicPath : null,
                 BackgroundMusicVolume = Math.Pow(10, GamingNewsMusicDb / 20)
@@ -223,8 +224,9 @@ public sealed partial class MainViewModel
             "Exactly 8 scenes numbered 1-8; each scene has number, role, narration, " +
             "visualType, visualQuery, imagePrompt, shotDirection, targetSeconds (~7.5). " +
             "Each scene narration is a short continuous segment of the SAME news story. " +
-            "For each imagePrompt, show the specific game/topic actually narrated, " +
-            "not generic gaming stock or unrelated people. Choose visuals usable with appropriate rights. " +
+            "Visual directions must identify the specific REAL game and subject named in the report. " +
+            "Do not invent game imagery or request AI-generated artwork. Visuals will be sourced " +
+            "from official publisher-supplied screenshots, not synthesized. " +
             "Keep 9:16, English, topic-specific visuals and burnt-in Shorts captions in the project. " +
             "No chapter-level narration field is needed.";
         for (var attempt = 1; attempt <= 2; attempt++)
@@ -320,13 +322,19 @@ public sealed partial class MainViewModel
                 Project = project;
                 ProjectDirectory = await _store.SaveAsync(project, Settings.ProjectsRoot);
 
-                GamingNewsStatus = $"Rendering gaming Short {index+1}/{relevant.Count}...";
+                GamingNewsStatus = $"Finding official game screenshots {index+1}/{relevant.Count}...";
                 try
                 {
+                    var official = await new OfficialGamingMediaService().AcquireAsync(
+                        project, GamingNewsFocus, topic.Summary, Log, _cts.Token);
+                    await _store.SaveAsync(project, Settings.ProjectsRoot);
+                    GamingNewsStatus = $"Rendering real game media {index+1}/{relevant.Count}...";
                     var result = await _pipeline.RunAsync(project, Settings, Log,
                         new Progress<double>(x => Progress = x), _cts.Token);
                     if (!File.Exists(result))
                         throw new InvalidDataException("Render returned no MP4.");
+                    await new OfficialGamingMediaService().BurnSmallCreditAsync(
+                        result, official.Credit, Settings, _runner, Log, _cts.Token);
                     if (await _ffmpeg.ProbeDurationAsync(result, Settings, _cts.Token) is var seconds &&
                         (seconds < 35 || seconds > 75))
                         throw new InvalidDataException(
