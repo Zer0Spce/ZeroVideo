@@ -133,6 +133,66 @@ public sealed class OfficialGamingMediaService
         return memory.ToArray();
     }
 
+    private static readonly string[] JournalismHosts =
+    [
+        "www.pcgamer.com", "www.ign.com", "www.gamespot.com",
+        "www.gematsu.com", "www.eurogamer.net", "www.videogameschronicle.com"
+    ];
+
+    private static bool JournalismHost(Uri uri) => uri.Scheme == "https" &&
+        JournalismHosts.Any(host => uri.Host.Equals(host, StringComparison.OrdinalIgnoreCase));
+
+    private static async Task<string> DownloadNewsHtmlAsync(Uri uri, CancellationToken ct)
+    {
+        if (!JournalismHost(uri)) return "";
+        using var response = await Http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength > 1_000_000)
+            return "";
+        var type = response.Content.Headers.ContentType?.MediaType ?? "";
+        if (!type.Contains("html", StringComparison.OrdinalIgnoreCase)) return "";
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var memory = new MemoryStream();
+        var block = new byte[32768];
+        int n;
+        while ((n = await stream.ReadAsync(block, ct)) > 0)
+        {
+            if (memory.Length + n > 1_000_000) return "";
+            await memory.WriteAsync(block.AsMemory(0, n), ct);
+        }
+        return System.Text.Encoding.UTF8.GetString(memory.ToArray());
+    }
+
+    // Follow only directly attributed official URLs quoted in the original
+    // gaming-news article. Never use arbitrary search images.
+    private static async Task<List<Uri>> LinkedOfficialPagesAsync(
+        VideoProject project, Action<string>? log, CancellationToken ct)
+    {
+        var results = new List<Uri>();
+        foreach (var source in project.Sources.Take(2))
+        {
+            if (!Uri.TryCreate(source, UriKind.Absolute, out var article) ||
+                !JournalismHost(article)) continue;
+            try
+            {
+                var html = await DownloadNewsHtmlAsync(article, ct);
+                foreach (Match match in Regex.Matches(html,
+                             @"<a\b[^>]{0,1500}href\s*=\s*[""'](?<u>[^""']+)[""']",
+                             RegexOptions.IgnoreCase).Cast<Match>().Take(350))
+                {
+                    var link = WebUtility.HtmlDecode(match.Groups["u"].Value);
+                    if (!Uri.TryCreate(article, link, out var target) || !PublisherHost(target))
+                        continue;
+                    if (results.All(x => x != target)) results.Add(target);
+                    if (results.Count >= 8) break;
+                }
+                log?.Invoke($"Gaming official source discovery: {results.Count} publisher links from {article.Host}.");
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("Original article source links unavailable: " + ex.Message); }
+        }
+        return results;
+    }
+
     private static IEnumerable<Uri> PublisherPages(VideoProject project)
     {
         var urls = project.Sources;
@@ -212,7 +272,8 @@ public sealed class OfficialGamingMediaService
         // Priority 1: images genuinely hosted/linked by the official publisher
         // or platform article, when the news report itself comes from one.
         var publisherImages = new List<(Uri Image, Uri Source)>();
-        foreach (var sourcePage in PublisherPages(project).Take(4))
+        var linkedPublishers = await LinkedOfficialPagesAsync(project, log, ct);
+        foreach (var sourcePage in PublisherPages(project).Concat(linkedPublishers).Distinct().Take(8))
         {
             ct.ThrowIfCancellationRequested();
             try
