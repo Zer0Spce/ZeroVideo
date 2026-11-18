@@ -1531,13 +1531,32 @@ public sealed class OfficialGamingMediaService
         var urlsSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var contentSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var perHost = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        var searchTerms = CoreMediaQueries(project, focus).Take(5).ToList();
+        var searchTerms = CoreMediaQueries(project, focus).Take(3).ToList();
+        // Diverse Google Images discovery: supplement broad game queries
+        // with site-specific searches so one Rockstar gallery does not
+        // monopolize all 24 visual beats.
+        if (IsGtaSixStory(project.Title, focus))
+            searchTerms.AddRange([
+                "GTA VI screenshots site:ign.com",
+                "GTA VI screenshots site:gamespot.com",
+                "GTA VI screenshots site:gematsu.com",
+                "GTA VI media site:gamespress.com"
+            ]);
+        else
+        {
+            var core = CoreGameSubject(project, focus);
+            searchTerms.AddRange([
+                core + " gameplay site:ign.com",
+                core + " screenshots site:gamespot.com",
+                core + " game gallery site:gematsu.com"
+            ]);
+        }
         log?.Invoke("Gaming News Google Images: PRIMARY media discovery for '" +
             CoreGameSubject(project, focus) + "'. Looking for original large images, not thumbnails.");
         foreach (var term in searchTerms)
         {
             ct.ThrowIfCancellationRequested();
-            if (collected.Count >= 36) break;
+            if (collected.Count >= 36 && perHost.Count >= 4) break;
             Microsoft.Playwright.IPage? page = null;
             try
             {
