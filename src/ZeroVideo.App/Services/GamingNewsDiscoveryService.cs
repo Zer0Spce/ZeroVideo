@@ -6,7 +6,7 @@ using System.Xml.Linq;
 
 namespace ZeroVideo.App.Services;
 
-public sealed record GamingNewsTopic(string Title, string Url, string Publisher, DateTimeOffset PublishedAt);
+public sealed record GamingNewsTopic(string Title, string Url, string Publisher, DateTimeOffset PublishedAt, string Summary);
 
 /// <summary>Manual, one-shot RSS discovery. No timer or recurring background worker.</summary>
 public sealed class GamingNewsDiscoveryService
@@ -63,7 +63,16 @@ public sealed class GamingNewsDiscoveryService
                     // Do not present archival news as breaking news.
                     if (when > DateTimeOffset.UtcNow.AddHours(2) ||
                         when < DateTimeOffset.UtcNow.AddDays(-7)) continue;
-                    topics.Add(new GamingNewsTopic(title, uri.ToString(), publisher, when));
+                    // RSS description is supporting context, not permission to copy
+                    // the article. Strip markup, cap length, and retain the source URL.
+                    var description = Field(item, "description");
+                    if (description.Length == 0) description = Field(item, "summary");
+                    if (description.Length == 0) description = Field(item, "encoded");
+                    description = Regex.Replace(description, "<[^>]+>", " ");
+                    description = System.Net.WebUtility.HtmlDecode(description);
+                    description = Regex.Replace(description, @"\s+", " ").Trim();
+                    if (description.Length > 750) description = description[..750];
+                    topics.Add(new GamingNewsTopic(title, uri.ToString(), publisher, when, description));
                     accepted++;
                 }
                 log?.Invoke($"Gaming News: {publisher}: {accepted} recent stories.");
