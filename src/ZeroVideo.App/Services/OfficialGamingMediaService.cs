@@ -258,6 +258,31 @@ public sealed class OfficialGamingMediaService
         }
     }
 
+    private static IEnumerable<(Uri Url, string Alt)> ExtractDescribedArticleImages(
+        string html, Uri article)
+    {
+        // Journalism sites often use CDN hashes, so GTA VI does not occur in
+        // the URL. Accept first-party article <img> whose own alt/title
+        // identifies GTA VI, but never infer identity merely from page URL.
+        foreach (Match match in Regex.Matches(html,
+                     @"<img\b[^>]{0,2500}>", RegexOptions.IgnoreCase).Cast<Match>().Take(150))
+        {
+            var tag = match.Value;
+            var alt = Regex.Match(tag,
+                @"(?:alt|title)\s*=\s*[""'](?<v>[^""']+)[""']",
+                RegexOptions.IgnoreCase).Groups["v"].Value;
+            alt = WebUtility.HtmlDecode(alt);
+            if (alt.Length < 4) continue;
+            var src = Regex.Match(tag,
+                @"(?:data-src|src)\s*=\s*[""'](?<v>[^""']+)[""']",
+                RegexOptions.IgnoreCase).Groups["v"].Value;
+            if (!Uri.TryCreate(article, WebUtility.HtmlDecode(src), out var image) ||
+                !IsPublicHttps(image) || RejectGenericGraphic(image, alt))
+                continue;
+            yield return (image, alt);
+        }
+    }
+
     private static IEnumerable<Uri> ExtractLinkedGalleryImages(string html, Uri page)
     {
         // Rockstar and other publisher galleries often put the full-res JPG
@@ -971,13 +996,14 @@ public sealed class OfficialGamingMediaService
                             movies.Add((clip, project.Title, story.ToString(),
                                 story.Host + " news article video"));
                     }
-                    foreach (var candidate in ExtractPublisherImages(html, story).Take(24))
+                    var described = ExtractDescribedArticleImages(html, story)
+                        .Where(x => ExactGameEvidence(project.Title, focus, story,
+                            x.Url, x.Alt)).Select(x => x.Url);
+                    foreach (var candidate in described.Concat(
+                        ExtractPublisherImages(html, story).Where(x =>
+                            ExactGameEvidence(project.Title, focus, story, x, "")))
+                        .Distinct().Take(32))
                     {
-                        if (!ExactGameEvidence(project.Title, focus, story, candidate, ""))
-                        {
-                            log?.Invoke("Rejected unrelated or generic article image: " + candidate);
-                            continue;
-                        }
                         if (editorialImages.All(x => x.Image != candidate))
                             editorialImages.Add((candidate, story));
                     }
