@@ -1216,11 +1216,11 @@ public sealed class OfficialGamingMediaService
             try
             {
                 var bytes = await DownloadPublisherImageAsync(imageUri, sourcePage, ct);
-                if (!IsJpeg(bytes) && !IsPng(bytes)) continue;
-                var ext = IsJpeg(bytes) ? ".jpg" : ".png";
-                var file = Path.Combine(mediaDir, "official-" +
-                    (downloaded.Count + 1).ToString("00") + ext);
-                await File.WriteAllBytesAsync(file, bytes, ct);
+                var basePath = Path.Combine(mediaDir, "official-" +
+                    (downloaded.Count + 1).ToString("00"));
+                var file = await SaveGamingPhotoAsync(
+                    bytes, basePath, settings.FfmpegPath, log, ct);
+                if (file is null) continue;
                 downloaded.Add(new OfficialAsset(file, imageUri.ToString(), project.Title,
                     sourcePage.ToString(), sourcePage.Host + " official article image",
                     "Platform or publisher owns or controls media; credit is not a license."));
@@ -1241,11 +1241,11 @@ public sealed class OfficialGamingMediaService
             try
             {
                 var bytes = await DownloadPublisherImageAsync(imageUri, story, ct);
-                if (!IsJpeg(bytes) && !IsPng(bytes)) continue;
-                var file = Path.Combine(mediaDir, "official-" +
-                    (downloaded.Count + 1).ToString("00") +
-                    (IsJpeg(bytes) ? ".jpg" : ".png"));
-                await File.WriteAllBytesAsync(file, bytes, ct);
+                var file = await SaveGamingPhotoAsync(bytes,
+                    Path.Combine(mediaDir, "official-" +
+                    (downloaded.Count + 1).ToString("00")),
+                    settings.FfmpegPath, log, ct);
+                if (file is null) continue;
                 downloaded.Add(new OfficialAsset(file, imageUri.ToString(), project.Title,
                     story.ToString(), story.Host + " editorial article image",
                     "Image sourced from credited article; license/press usage terms may apply."));
@@ -1404,10 +1404,11 @@ public sealed class OfficialGamingMediaService
             try
             {
                 var bytes = await GetSmallAsync(uri, 12 * 1024 * 1024, ct);
-                if (!IsJpeg(bytes) && !IsPng(bytes)) continue;
-                var extension = IsJpeg(bytes) ? ".jpg" : ".png";
-                var file = Path.Combine(mediaDir, "official-" + (downloaded.Count + 1).ToString("00") + extension);
-                await File.WriteAllBytesAsync(file, bytes, ct);
+                var file = await SaveGamingPhotoAsync(bytes,
+                    Path.Combine(mediaDir, "official-" +
+                    (downloaded.Count + 1).ToString("00")),
+                    settings.FfmpegPath, log, ct);
+                if (file is null) continue;
                 downloaded.Add(new OfficialAsset(file, uri.ToString(), game, store,
                     "Publisher-supplied Steam store screenshot",
                     "Publisher owns or controls media. Source credit does not grant permission; " +
@@ -1613,9 +1614,9 @@ public sealed class OfficialGamingMediaService
                             {
                                 var bytes = await DownloadPublisherImageAsync(
                                     uri, new Uri(url), ct);
-                                if (!IsJpeg(bytes) && !IsPng(bytes)) continue;
-                                var file = fileBase + (IsJpeg(bytes) ? ".jpg" : ".png");
-                                await File.WriteAllBytesAsync(file, bytes, ct);
+                                var file = await SaveGamingPhotoAsync(
+                                    bytes, fileBase, settings.FfmpegPath, log, ct);
+                                if (file is null) continue;
                                 if (!HasFullResolution(file, log))
                                 {
                                     File.Delete(file);
@@ -1827,11 +1828,11 @@ public sealed class OfficialGamingMediaService
                     {
                         var bytes = await DownloadPublisherImageAsync(
                             image, referringPage ?? image, ct);
-                        if (!IsJpeg(bytes) && !IsPng(bytes)) continue;
-                        var ext = IsJpeg(bytes) ? ".jpg" : ".png";
-                        var destination = Path.Combine(mediaDir,
-                            "google-original-" + (collected.Count + 1).ToString("000") + ext);
-                        await File.WriteAllBytesAsync(destination, bytes, ct);
+                        var destination = await SaveGamingPhotoAsync(bytes,
+                            Path.Combine(mediaDir, "google-original-" +
+                                (collected.Count + 1).ToString("000")),
+                            settings.FfmpegPath, log, ct);
+                        if (destination is null) continue;
                         if (!HasFullResolution(destination, log))
                         {
                             File.Delete(destination);
@@ -1922,11 +1923,13 @@ public sealed class OfficialGamingMediaService
                         {
                             var fullImage = await DownloadPublisherImageAsync(
                                 resolved, new Uri(source), ct);
-                            if (IsPng(fullImage) || IsJpeg(fullImage))
+                            var basePath = Path.Combine(mediaDir,
+                                "rockstar-gallery-" + (result.Count + 1).ToString("00"));
+                            var converted = await SaveGamingPhotoAsync(
+                                fullImage, basePath, settings.FfmpegPath, log, ct);
+                            if (converted is not null)
                             {
-                                filename = Path.ChangeExtension(filename,
-                                    IsJpeg(fullImage) ? ".jpg" : ".png");
-                                await File.WriteAllBytesAsync(filename, fullImage, ct);
+                                filename = converted;
                                 saved = HasFullResolution(filename, log);
                             }
                         }
