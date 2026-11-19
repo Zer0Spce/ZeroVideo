@@ -118,6 +118,19 @@ public sealed partial class MainViewModel
     private int _publishIntervalHours = 6;
     private string _publishFirstSlot = DateTime.Now.Date.AddDays(1).AddHours(12).ToString("yyyy-MM-dd HH:mm");
     public ObservableCollection<int> PublishIntervals { get; } = [1, 2, 3, 6, 12, 24, 48];
+    // Preserve the legacy hour property while offering a new 30-minute choice in the UI.
+    private string _publishIntervalChoice = "6 hours";
+    public ObservableCollection<string> PublishIntervalChoices { get; } =
+        ["30 minutes", "1 hour", "2 hours", "3 hours", "6 hours", "12 hours", "24 hours", "48 hours"];
+    public string PublishIntervalChoice
+    {
+        get => _publishIntervalChoice;
+        set => Set(ref _publishIntervalChoice, value);
+    }
+    private int SelectedPublishIntervalMinutes =>
+        PublishIntervalChoice == "30 minutes" ? 30 :
+        int.TryParse((PublishIntervalChoice ?? "").Split(' ')[0], out var hours) &&
+        PublishIntervals.Contains(hours) ? hours * 60 : 360;
     public ObservableCollection<int> SmartPostsPerDayOptions { get; } = [1,2,3,4,5,6,7,8,9,10];
     private int _smartPostsPerDay = 3;
     public int SmartPostsPerDay
@@ -387,19 +400,20 @@ public sealed partial class MainViewModel
         { PublishStatus = "Enter a future local start date: YYYY-MM-DD HH:MM."; return; }
         if (first.Minute % 5 != 0)
         { PublishStatus = "TikTok schedules in 5-minute increments. Choose minutes 00, 05, 10, etc."; return; }
-        var interval = PublishIntervalHours;
-        if (!PublishIntervals.Contains(interval)) { PublishStatus = "Choose a valid interval."; return; }
+        var intervalMinutes = SelectedPublishIntervalMinutes;
+        if (intervalMinutes is not (30 or 60 or 120 or 180 or 360 or 720 or 1440 or 2880))
+        { PublishStatus = "Choose a valid interval."; return; }
         var chosen = PublishingQueue.Where(x => x.IsChecked).ToList();
         if (chosen.Count == 0) { PublishStatus = "Check the videos you want to schedule first."; return; }
         for (var i = 0; i < chosen.Count; i++)
         {
-            var localSlot = first.AddHours((double)i * interval);
+            var localSlot = first.AddMinutes((double)i * intervalMinutes);
             chosen[i].IsScheduled = true;
             chosen[i].ScheduleDateText = localSlot.ToString("yyyy-MM-dd HH:mm");
             chosen[i].ScheduledAt = new DateTimeOffset(localSlot);
         }
         SavePublishingQueue();
-        PublishStatus = $"Assigned {chosen.Count} TikTok schedule slots at {interval}-hour intervals in queue order.";
+        PublishStatus = $"Assigned {chosen.Count} TikTok schedule slots at {PublishIntervalChoice} intervals in queue order.";
     }
 
     private async Task SmartSchedulePublishingQueueAsync()
