@@ -1092,6 +1092,119 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         }
     }
 
+    // A navigation to /tiktokstudio/content is NOT enough to confirm a post.
+    // Reconcile against the actual Studio Posts row: title + exact scheduled
+    // local date + local clock time. No Submit/Post action occurs here.
+    public async Task<bool> VerifyExistingTikTokScheduledPostAsync(
+        ZeroVideoSettings settings, string expectedTitle, DateTimeOffset slot,
+        Action<string>? log = null, CancellationToken ct = default)
+    {
+        await browser.EnsureStartedAsync(settings);
+        var page=await browser.GetOrCreatePageAsync("tiktok.com");
+        return await VerifyTikTokPostInStudioAsync(page,expectedTitle,slot,log,ct);
+    }
+
+    private static async Task<bool> VerifyTikTokPostInStudioAsync(
+        IPage origin, string expectedTitle, DateTimeOffset? slot,
+        Action<string>? log, CancellationToken ct)
+    {
+        // Never infer success from URL, a filename, or a row from another slot.
+        if(!slot.HasValue || string.IsNullOrWhiteSpace(expectedTitle))
+            return false;
+        var name=System.Text.RegularExpressions.Regex.Replace(expectedTitle,
+            @"\s+"," ").Trim();
+        var prefix=name[..Math.Min(34,name.Length)];
+        var local=slot.Value.LocalDateTime;
+        var monthDay=local.ToString("MMM d",System.Globalization.CultureInfo.InvariantCulture);
+        var clock=local.ToString("h:mmtt",System.Globalization.CultureInfo.InvariantCulture);
+        var alreadyOnPosts=origin.Url.Contains("/tiktokstudio/content",
+            StringComparison.OrdinalIgnoreCase);
+        var audit=alreadyOnPosts ? origin : await origin.Context.NewPageAsync();
+        try
+        {
+            if(!alreadyOnPosts)
+                await audit.GotoAsync("https://www.tiktok.com/tiktokstudio/content",
+                    new(){WaitUntil=WaitUntilState.DOMContentLoaded,Timeout=45000});
+            for(var retry=0;retry<14;retry++)
+            {
+                ct.ThrowIfCancellationRequested();
+                // Find a small individual row, not the entire Posts list:
+                // matching a title in one row and a date from a different row
+                // would otherwise incorrectly mark a video as scheduled.
+                var found=await audit.EvaluateAsync<System.Text.Json.JsonElement>(
+                    """
+                    arg => {
+                      const norm=s=>(s||'').replace(/\s+/g,' ').trim().toLowerCase();
+                      const tight=s=>norm(s).replace(/\s/g,'');
+                      const visible=e=>{
+                        const r=e.getBoundingClientRect();
+                        const css=getComputedStyle(e);
+                        return r.height>1&&r.width>1&&
+                          css.display!=='none'&&css.visibility!=='hidden';
+                      };
+                      const nodes=[...document.querySelectorAll('a,span,p,div,strong')];
+                      const prefix=norm(arg.prefix);
+                      const leaves=nodes.filter(e=>{
+                        if(!visible(e))return false;
+                        const t=norm(e.innerText||e.textContent);
+                        if(t.length>260||!t.startsWith(prefix))return false;
+                        return ![...e.children].some(c=>
+                          norm(c.innerText||c.textContent).startsWith(prefix));
+                      });
+                      const matches=[];
+                      for(const leaf of leaves) {
+                        for(let e=leaf,depth=0;e&&depth<8;e=e.parentElement,depth++) {
+                          const r=e.getBoundingClientRect();
+                          if(r.height>270||r.width<110)break;
+                          const text=tight(e.innerText||e.textContent);
+                          if(text.includes(tight(arg.monthDay)) &&
+                            text.includes(tight(arg.clock))) {
+                            matches.push({title:norm(leaf.innerText||leaf.textContent)
+                              .slice(0,85),rowHeight:Math.round(r.height)});
+                            break;
+                          }
+                        }
+                      }
+                      return {matches:matches.length,examples:matches.slice(0,2),
+                        location:location.pathname};
+                    }
+                    """,new{prefix,monthDay,clock});
+                var matches=found.GetProperty("matches").GetInt32();
+                if(matches==1)
+                {
+                    log?.Invoke("TikTok: VERIFIED in Studio Posts: '"+prefix+
+                        "' at "+monthDay+" "+clock+
+                        ". Queue may advance without another submit.");
+                    return true;
+                }
+                if(matches>1)
+                {
+                    log?.Invoke("TikTok: Posts listing has ambiguous matching rows. "+
+                        "Refusing automatic confirmation.");
+                    return false;
+                }
+                await Task.Delay(750,ct);
+            }
+            log?.Invoke("TikTok: no confirmed Posts row for '"+prefix+"' at "+
+                monthDay+" "+clock+". Pausing batch to avoid duplicate posts.");
+            return false;
+        }
+        catch(OperationCanceledException){throw;}
+        catch(Exception ex)
+        {
+            log?.Invoke("TikTok: read-only Posts reconciliation unavailable: "+
+                ex.Message.Split('\n')[0]);
+            return false;
+        }
+        finally
+        {
+            if(!alreadyOnPosts)
+            {
+                try{await audit.CloseAsync();}catch(PlaywrightException){}
+            }
+        }
+    }
+
     // A single final action: NEVER retry a clicked Schedule/Post button.
     // If TikTok doesn't clearly confirm receipt, flag an ambiguous submission
     // and require the user to inspect TikTok Studio before attempting again.
@@ -1168,7 +1281,8 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     }
 
     private static async Task<string> SubmitTikTokOnceAsync(
-        IPage page, bool scheduled, Action<string>? log, CancellationToken ct)
+        IPage page, bool scheduled, string expectedTitle,
+        DateTimeOffset? expectedSlot, Action<string>? log, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         if (!Uri.TryCreate(page.Url, UriKind.Absolute, out var address) ||
@@ -1306,6 +1420,8 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                 ex.Message.Split((char)10)[0]);
             await SaveDiagnosticAsync(page, "TikTok-Submit-Outcome-Uncertain", log);
             await SaveTikTokFinalSubmitEvidenceAsync(page,"Submit-Outcome-Uncertain",log);
+            if(await VerifyTikTokPostInStudioAsync(page,expectedTitle,expectedSlot,log,ct))
+                return "TikTok: SUBMISSION_CONFIRMED; matched title and scheduled time in Studio Posts.";
             return "TikTok: SUBMISSION_ATTEMPTED; result uncertain. Check TikTok Studio Posts before retrying.";
         }
 
@@ -1347,9 +1463,11 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                     now.AbsolutePath.TrimEnd('/') != originalUrl &&
                     !now.AbsolutePath.Contains("/upload", StringComparison.OrdinalIgnoreCase))
                 {
-                    log?.Invoke("TikTok: navigated away from the upload form after submission, " +
-                        "but post status has not been independently confirmed.");
-                    return "TikTok: SUBMISSION_ATTEMPTED; TikTok left the upload page. Verify the post in Studio.";
+                    if(await VerifyTikTokPostInStudioAsync(
+                        page,expectedTitle,expectedSlot,log,ct))
+                        return "TikTok: SUBMISSION_CONFIRMED; matched title and scheduled time in Studio Posts.";
+                    log?.Invoke("TikTok: navigated away from the upload form, but no matching Posts row was verified.");
+                    return "TikTok: SUBMISSION_ATTEMPTED; Studio Posts did not confirm this title and slot.";
                 }
             }
             catch (PlaywrightException)
@@ -1359,6 +1477,8 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             }
             await Task.Delay(900, ct);
         }
+        if(await VerifyTikTokPostInStudioAsync(page,expectedTitle,expectedSlot,log,ct))
+            return "TikTok: SUBMISSION_CONFIRMED; matched title and scheduled time in Studio Posts.";
         log?.Invoke("TikTok: final button was clicked once; no definitive receipt " +
             "was detected. Check TikTok Studio Posts before retrying.");
         await SaveDiagnosticAsync(page, "TikTok-Submit-Confirmation-Unknown", log);
@@ -1680,7 +1800,8 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                     return "TikTok: submission NOT attempted; schedule is now less than " +
                         "20 minutes away. Choose a later slot.";
                 }
-                return await SubmitTikTokOnceAsync(page, scheduledAt.HasValue, log, ct);
+                return await SubmitTikTokOnceAsync(page, scheduledAt.HasValue,
+                    finalCaption.Split('\n')[0].Trim(),scheduledAt,log,ct);
             }
             catch (Exception ex) when (ex is PlaywrightException or TimeoutException or InvalidOperationException)
             {
