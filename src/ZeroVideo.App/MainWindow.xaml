@@ -718,6 +718,63 @@
         </DockPanel>
       </TabItem>
 
+      <TabItem Header="MovieClipper">
+        <Grid Margin="0,12,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="390"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Border Style="{StaticResource CardBorder}">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel>
+                <TextBlock Text="MovieClipper — 30 Second TikToks" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="One-click movie idea discovery, TMDB artwork, 9:16 trailer edits and the existing TikTok scheduler." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,12"/>
+                <Label Content="MOVIE NICHE"/>
+                <TextBox Text="{Binding MovieNiche, UpdateSourceTrigger=PropertyChanged}"/>
+                <Label Content="NUMBER OF MOVIES" Margin="0,7,0,0"/>
+                <TextBox Text="{Binding MovieCount, UpdateSourceTrigger=LostFocus}"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Generate Niche Movie List with ChatGPT" Command="{Binding MovieGenerateCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Trailer source folder" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Put authorized trailer files here. MovieClipper matches filenames to ChatGPT ideas verified by TMDB. Missing sources are skipped, not replaced with unrelated footage." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose trailer folder..." Command="{Binding MovieBrowseSourceCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding MovieSourceFolder}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Find First Checked Movie Trailer in Browser" Command="{Binding MovieFindTrailerCommand}" HorizontalAlignment="Left"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Your background music / sound" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="The title image plays for 2 seconds. Your audio plays over the next 28 seconds; the finished video is exactly 30 seconds." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose my audio..." Command="{Binding MovieBrowseSoundCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding MovieSoundFile}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,8"/>
+                <Label Content="CUSTOM MUSIC VOLUME"/>
+                <Slider Minimum="0" Maximum="1" Value="{Binding MovieMusicLevel, Mode=TwoWay}"/>
+                <CheckBox Content="Mix quiet trailer dialogue with music" IsChecked="{Binding MovieKeepDialogue}" Margin="0,8,0,0"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Publishing" FontSize="16" FontWeight="SemiBold"/>
+                <CheckBox Content="Auto-submit via ZeroVideo's existing TikTok publisher" IsChecked="{Binding MoviePublish}" Margin="0,8,0,0"/>
+                <TextBlock Text="FIRST POST (LOCAL YYYY-MM-DD HH:mm)" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
+                <TextBox Text="{Binding MovieFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Text="Hourly schedule: 1 video every 60 minutes. TikTok account sign-in, publishing authorization and final batch confirmation use the existing working publisher." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
+                <Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK MOVIECLIPPER" Command="{Binding MovieStartCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding MovieStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+              </StackPanel>
+            </ScrollViewer>
+          </Border>
+          <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                <TextBlock Text="ChatGPT Movie Idea Generator" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="Checked movies are processed sequentially. Only verified TMDB scores are published; no invented plot or acting ratings." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+              </StackPanel>
+              <DataGrid ItemsSource="{Binding MovieClipperIdeas}" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Single">
+                <DataGrid.Columns>
+                  <DataGridCheckBoxColumn Header="✓" Binding="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="44"/>
+                  <DataGridTextColumn Header="Movie" Binding="{Binding Label}" IsReadOnly="True" Width="2*"/>
+                  <DataGridTextColumn Header="TMDB" Binding="{Binding Rating}" IsReadOnly="True" Width="95"/>
+                  <DataGridTextColumn Header="Status" Binding="{Binding Status}" IsReadOnly="True" Width="2*"/>
+                </DataGrid.Columns>
+              </DataGrid>
+            </DockPanel>
+          </Border>
+        </Grid>
+      </TabItem>
+
       <TabItem Header="Idea Generation">
         <DockPanel>
           <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
