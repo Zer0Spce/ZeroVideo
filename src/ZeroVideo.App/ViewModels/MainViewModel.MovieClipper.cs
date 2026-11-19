@@ -42,6 +42,10 @@ public sealed partial class MainViewModel
     private bool _movieKeepDialogue;
     private bool _movieAutoDownload = true;
     private bool _movieProcessing;
+    private bool _movieNewChat;
+    private bool _movieRetryFailedOnly;
+    private VideoProject _movieChatProject = new() { Title = "MovieClipper batch", Topic = "Movie reviews" };
+    private MovieCheckpoint _movieCheckpoint = new();
     private double _movieMusicLevel = 0.85;
     private string _movieToken = "";
     // Duration is read from the selected soundtrack at render time.
@@ -62,8 +66,13 @@ public sealed partial class MainViewModel
     public bool MovieKeepDialogue { get => _movieKeepDialogue; set => Set(ref _movieKeepDialogue, value); }
     public bool MovieAutoDownload { get => _movieAutoDownload; set => Set(ref _movieAutoDownload, value); }
     public bool MovieProcessing { get => _movieProcessing; private set => Set(ref _movieProcessing, value); }
+    public bool MovieNewChat { get => _movieNewChat; set => Set(ref _movieNewChat, value); }
+    public string MovieCheckpointStatus => _movieCheckpoint.Items.Count + " checkpointed movies; saved at " + MovieCheckpointPath;
     public double MovieMusicLevel { get => _movieMusicLevel; set => Set(ref _movieMusicLevel, Math.Clamp(value, 0, 1)); }
     public ICommand MovieGenerateCommand { get; private set; } = null!;
+    public ICommand MovieResumeCommand { get; private set; } = null!;
+    public ICommand MovieRetryFailedCommand { get; private set; } = null!;
+    public ICommand MovieForceStopCommand => ForceStopJobCommand;
     public ICommand MovieStartCommand { get; private set; } = null!;
     public ICommand MovieBrowseSourceCommand { get; private set; } = null!;
     public ICommand MovieBrowseSoundCommand { get; private set; } = null!;
@@ -76,6 +85,19 @@ public sealed partial class MainViewModel
         MovieOpenOutputCommand = new RelayCommand(() => { Directory.CreateDirectory(MovieExportFolder); Process.Start(new ProcessStartInfo("explorer.exe", "\"" + MovieExportFolder + "\"") { UseShellExecute = true }); });
         MovieGenerateCommand = new AsyncCommand(() => RunManagedJobAsync("MovieClipper: ChatGPT ideas", MovieGenerateAsync));
         MovieStartCommand = new AsyncCommand(() => RunManagedJobAsync("MovieClipper: music-length batch", MovieStartAsync));
+        MovieResumeCommand = new AsyncCommand(() => RunManagedJobAsync("MovieClipper: resume checkpoint", async () =>
+        {
+            MovieRestoreCheckpoint();
+            _movieRetryFailedOnly = false;
+            await MovieStartAsync();
+        }));
+        MovieRetryFailedCommand = new AsyncCommand(() => RunManagedJobAsync("MovieClipper: retry failed", async () =>
+        {
+            MovieRestoreCheckpoint();
+            _movieRetryFailedOnly = true;
+            try { await MovieStartAsync(); }
+            finally { _movieRetryFailedOnly = false; }
+        }));
         MovieBrowseSourceCommand = new RelayCommand(() =>
         {
             var picker = new OpenFolderDialog { Title = "Trailer download/cache folder" };
@@ -133,6 +155,7 @@ public sealed partial class MainViewModel
         catch (Exception ex) { MovieStatus = "MovieClipper media preferences: " + ex.Message; }
         if (string.IsNullOrWhiteSpace(_movieToken))
             _movieToken = Environment.GetEnvironmentVariable("ZEROVIDEO_TMDB_READ_TOKEN") ?? "";
+        MovieRestoreCheckpoint();
     }
 
     private static string MovieClean(string name)
@@ -167,8 +190,10 @@ public sealed partial class MainViewModel
                 "Make a diverse list of confirmed titles (no invented films), with release years. Do not include TV shows, duplicates or generic ideas. " +
                 "Return ONLY a valid JSON object in a fenced json code block: " +
                 "{\"response_type\":\"movieclipper_ideas_v1\",\"movies\":[{\"title\":\"Movie name\",\"year\":\"2024\"}]}";
+            MoviePrepareChat();
             var raw = await _chat.GenerateTextAsync(
-                new VideoProject { Title = "MovieClipper niche movie ideas", Topic = MovieNiche }, Settings, prompt, Log, _cts.Token);
+                _movieChatProject, Settings, prompt, Log, _cts.Token);
+            MovieSaveCheckpoint();
             var open = raw.IndexOf('{');
             var close = raw.LastIndexOf('}');
             if (open < 0 || close <= open) throw new InvalidDataException("ChatGPT did not produce a JSON object.");
@@ -202,6 +227,7 @@ public sealed partial class MainViewModel
                 });
                 if (MovieClipperIdeas.Count >= MovieCount) break;
             }
+            MovieCheckpointIdeas();
             MovieStatus = MovieClipperIdeas.Count + " movies verified in TMDB and ready for soundtrack-length rendering.";
         }
         catch (Exception ex) { MovieStatus = "Movie ideas failed: " + ex.Message; Log(MovieStatus); }
@@ -332,10 +358,12 @@ public sealed partial class MainViewModel
     {
         if (MovieProcessing) return;
         MovieProcessing = true;
+        MoviePrepareChat();
         try
         {
             if (MovieClipperIdeas.Count == 0) await MovieGenerateAsync(); // One click from niche to queue.
-            var selected = MovieClipperIdeas.Where(x => x.IsChecked).ToList();
+            var selected = MovieClipperIdeas.Where(x => x.IsChecked &&
+                (!_movieRetryFailedOnly || MovieCheckpointItem(x).Stage == "Failed")).ToList();
             if (selected.Count == 0) { MovieStatus = "No verified movies selected."; return; }
             if (!DateTime.TryParseExact(MovieFirstSlot, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture,
                     DateTimeStyles.AssumeLocal, out var first) ||
@@ -351,18 +379,30 @@ public sealed partial class MainViewModel
             foreach (var movie in selected)
             {
                 _cts.Token.ThrowIfCancellationRequested();
-                if (string.IsNullOrWhiteSpace(movie.PosterPath)) { movie.Status = "No TMDB poster"; continue; }
+                if (string.IsNullOrWhiteSpace(movie.PosterPath)) { MovieCheckpointStage(movie, "Failed", "No TMDB poster"); continue; }
                 try
                 {
-                    var trailer = MovieFindFile(MovieSourceFolder, movie);
+                    var saved = MovieCheckpointItem(movie);
+                    if (!string.IsNullOrWhiteSpace(saved.OutputPath) && File.Exists(saved.OutputPath) &&
+                        PublishingQueue.Any(x => x.VideoPath.Equals(saved.OutputPath, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        movie.Status = "Already queued (resumed safely)";
+                        continue;
+                    }
+                    var trailer = File.Exists(saved.TrailerPath) ? saved.TrailerPath : MovieFindFile(MovieSourceFolder, movie);
                     if (trailer is null && MovieAutoDownload)
                     {
                         movie.Status = "Searching and downloading YouTube official trailer";
                         trailer = await MovieDownloadTrailerAsync(movie);
                     }
-                    if (trailer is null) { movie.Status = "Trailer not available"; continue; }
+                    if (trailer is null) { MovieCheckpointStage(movie, "Failed", "Trailer not available"); continue; }
+                    saved.TrailerPath = trailer;
+                    MovieCheckpointStage(movie, "TrailerReady");
                     movie.Status = "Rendering";
-                    var output = await MovieRenderAsync(movie, trailer);
+                    var output = !string.IsNullOrWhiteSpace(saved.OutputPath) && File.Exists(saved.OutputPath)
+                        ? MovieQueuedItemFromCheckpoint(movie, saved) : await MovieRenderAsync(movie, trailer);
+                    saved.OutputPath = output.VideoPath;
+                    MovieCheckpointStage(movie, "Rendered");
                     if (PublishingQueue.Any(x => x.VideoPath.Equals(output.VideoPath, StringComparison.OrdinalIgnoreCase)))
                         continue;
                     var next = first.AddMinutes(SelectedPublishIntervalMinutes * finished.Count);
@@ -374,10 +414,12 @@ public sealed partial class MainViewModel
                     TrackPublishingItem(output);
                     PublishingQueue.Add(output);
                     finished.Add(output);
+                    MovieCheckpointStage(movie, "Queued");
                     movie.Status = "Queued " + output.ScheduleDateText;
                     SavePublishingQueue();
                 }
-                catch (Exception ex) { movie.Status = "Failed: " + ex.Message; Log("MovieClipper: " + movie.Label + ": " + ex.Message); }
+                catch (OperationCanceledException) { MovieCheckpointStage(movie, "Stopped"); throw; }
+                catch (Exception ex) { MovieCheckpointStage(movie, "Failed", ex.Message); Log("MovieClipper: " + movie.Label + ": " + ex.Message); }
             }
             Raise(nameof(AllPublishItemsChecked));
             RefreshPublishingCalendar();
@@ -396,8 +438,9 @@ public sealed partial class MainViewModel
             try { await RunTikTokBatchAsync(); }
             finally { foreach (var item in original) item.IsChecked = true; }
         }
+        catch (OperationCanceledException) { MovieStatus = "Stopped. Resume from saved checkpoints."; MovieSaveCheckpoint(); throw; }
         catch (Exception ex) { MovieStatus = "MovieClipper: " + ex.Message; Log(MovieStatus); }
-        finally { MovieProcessing = false; }
+        finally { MovieProcessing = false; MovieSaveCheckpoint(); }
     }
 
 
@@ -438,8 +481,8 @@ public sealed partial class MainViewModel
                 "Schema: {\"plot\":8.0,\"acting\":8.0,\"pacing\":8.0," +
                 "\"cinematography\":8.0,\"writing\":8.0,\"ending\":8.0}.";
             var raw = await _chat.GenerateTextAsync(
-                new VideoProject { Title = "MovieClipper scores: " + movie.Label, Topic = movie.Label },
-                Settings, prompt, Log, _cts.Token);
+                _movieChatProject, Settings, prompt, Log, _cts.Token);
+            MovieSaveCheckpoint();
             var open = raw.IndexOf('{');
             var close = raw.LastIndexOf('}');
             if (open < 0 || close <= open) throw new InvalidDataException("No scoring JSON.");
