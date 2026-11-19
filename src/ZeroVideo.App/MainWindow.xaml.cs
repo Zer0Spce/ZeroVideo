@@ -1,4 +1,8 @@
 using System.ComponentModel;
+using System.Collections.Generic;
+using System.Linq;
+using System.Windows.Controls;
+using ZeroVideo.App.Services;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
@@ -11,6 +15,8 @@ namespace ZeroVideo.App;
 public partial class MainWindow : Window
 {
     private readonly MainViewModel _vm = new();
+    private List<TabItem>? _allTabs;
+    private readonly Dictionary<string, CheckBox> _tabVisibilityChecks = new();
 
     public MainWindow()
     {
@@ -26,6 +32,7 @@ public partial class MainWindow : Window
         {
             AnimateShellIn();
             await _vm.InitializeAsync();
+            SetupTabVisibility();
             PixabayKeyInput.Password = _vm.Settings.PixabayApiKey ?? "";
 
             // CI tests the exact published EXE, not only a successful build.
@@ -63,6 +70,68 @@ public partial class MainWindow : Window
             }
             Application.Current.Shutdown(1);
         }
+    }
+
+    private void SetupTabVisibility()
+    {
+        _allTabs ??= MainTabs.Items.OfType<TabItem>().ToList();
+        var preferences = _vm.Settings.TabVisibility ??= new Dictionary<string, bool>(StringComparer.Ordinal);
+        TabVisibilityOptions.Children.Clear();
+        _tabVisibilityChecks.Clear();
+        foreach (var tab in _allTabs)
+        {
+            var name = tab.Header?.ToString() ?? "";
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            var alwaysVisible = name == "Settings";
+            var check = new CheckBox
+            {
+                Content = name,
+                IsChecked = alwaysVisible || !preferences.TryGetValue(name, out var enabled) || enabled,
+                IsEnabled = !alwaysVisible,
+                MinWidth = 175,
+                Margin = new Thickness(0, 5, 8, 5),
+                ToolTip = alwaysVisible ? "Settings cannot be hidden." : "Show or hide " + name
+            };
+            if (!alwaysVisible)
+            {
+                check.Checked += TabVisibilityChanged;
+                check.Unchecked += TabVisibilityChanged;
+            }
+            _tabVisibilityChecks[name] = check;
+            TabVisibilityOptions.Children.Add(check);
+        }
+        ApplyTabVisibility();
+    }
+
+    private void ApplyTabVisibility()
+    {
+        if (_allTabs is null) return;
+        foreach (var tab in _allTabs)
+        {
+            var name = tab.Header?.ToString() ?? "";
+            var isVisible = name == "Settings" ||
+                !_tabVisibilityChecks.TryGetValue(name, out var check) || check.IsChecked == true;
+            tab.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
+        }
+        // If the current tab was hidden, select Settings so the controls remain accessible.
+        if (MainTabs.SelectedItem is TabItem selected && selected.Visibility != Visibility.Visible)
+            MainTabs.SelectedItem = _allTabs.First(x => (x.Header?.ToString() ?? "") == "Settings");
+    }
+
+    private async void TabVisibilityChanged(object sender, RoutedEventArgs e)
+    {
+        if (_allTabs is null) return;
+        foreach (var (name, check) in _tabVisibilityChecks)
+            if (name != "Settings") _vm.Settings.TabVisibility[name] = check.IsChecked == true;
+        ApplyTabVisibility();
+        try { await new SettingsService().SaveAsync(_vm.Settings); }
+        catch (Exception ex) { MessageBox.Show("Could not save tab visibility: " + ex.Message); }
+    }
+
+    private void ShowAllTabs_OnClick(object sender, RoutedEventArgs e)
+    {
+        foreach (var check in _tabVisibilityChecks.Values)
+            if (check.IsEnabled) check.IsChecked = true;
     }
 
     private void OnPixabayKeyChanged(object sender, RoutedEventArgs e)

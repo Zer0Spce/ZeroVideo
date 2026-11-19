@@ -75,6 +75,14 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         InitializeOmniVoiceCommands();
         InitializeYouTubeFlowCommands();
         InitializeGamingNewsCommands();
+        InitializeMovieClipperCommands();
+        InitializeNbaClipperCommands();
+        InitializeStreamerClipperCommands();
+        InitializeFootballClipperCommands();
+        InitializeUfcClipperCommands();
+        InitializeF1ClipperCommands();
+        InitializeAnimeClipperCommands();
+        InitializeGamingCharactersClipperCommands();
         BrowseMusicCommand = new RelayCommand(BrowseMusic);
     }
 

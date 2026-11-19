@@ -51,7 +51,7 @@
       </StackPanel>
     </Grid>
 
-    <TabControl Grid.Row="1">
+    <TabControl x:Name="MainTabs" Grid.Row="1">
       <TabItem Header="Create">
         <DockPanel>
           <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
@@ -716,6 +716,717 @@
             </Grid>
           </ScrollViewer>
         </DockPanel>
+      </TabItem>
+
+      <TabItem Header="MovieClipper">
+        <Grid Margin="0,12,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="390"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Border Style="{StaticResource CardBorder}">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel>
+                <TextBlock Text="MovieClipper — Music-Length TikToks" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="One-click ChatGPT movie ideas and scores, TMDB title logo, YouTube trailer highlights, music-beat scene cuts, clean centered ratings and TikTok publishing." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,12"/>
+                <Label Content="MOVIE NICHE"/>
+                <TextBox Text="{Binding MovieNiche, UpdateSourceTrigger=PropertyChanged}"/>
+                <Label Content="NUMBER OF MOVIES" Margin="0,7,0,0"/>
+                <TextBox Text="{Binding MovieCount, UpdateSourceTrigger=LostFocus}"/>
+                <CheckBox Content="New Chat (otherwise reuse this MovieClipper chat)" IsChecked="{Binding MovieNewChat, Mode=TwoWay}" Margin="0,8,0,4"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Generate Ideas + Scores + SEO (One ChatGPT Request)" Command="{Binding MovieGenerateCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="YouTube trailer auto-download" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="MovieClipper first checks the local cache, then automatically searches and downloads a matching official trailer using bundled yt-dlp. Available local trailer files are reused." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <CheckBox Content="Automatically find and download trailers from YouTube" IsChecked="{Binding MovieAutoDownload, Mode=TwoWay}" Margin="0,6,0,7"/>
+                <CheckBox Content="Use my signed-in Edge YouTube session if downloads need authentication" IsChecked="{Binding MovieUseBrowserYouTubeLogin, Mode=TwoWay}" Margin="0,0,0,5"/>
+                <TextBlock Text="Optional. Allows yt-dlp to read your local Edge browser cookies; may require Edge to be closed. No cookies are stored in the ZeroVideo project." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,6"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose trailer cache folder..." Command="{Binding MovieBrowseSourceCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding MovieSourceFolder}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Preview Search for First Checked Movie" Command="{Binding MovieFindTrailerCommand}" HorizontalAlignment="Left"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Your background music / sound" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="The video starts with moving trailer footage. TMDB movie title artwork appears over the action; scenes cut on detected soundtrack beats, with music from the first frame." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose my audio..." Command="{Binding MovieBrowseSoundCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding MovieSoundFile}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,8"/>
+                <Label Content="CUSTOM MUSIC VOLUME"/>
+                <Slider Minimum="0" Maximum="1" Value="{Binding MovieMusicLevel, Mode=TwoWay}"/>
+                <CheckBox Content="Mix quiet trailer dialogue with music" IsChecked="{Binding MovieKeepDialogue}" Margin="0,8,0,0"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Publishing" FontSize="16" FontWeight="SemiBold"/>
+                <CheckBox Content="Auto-submit via ZeroVideo's existing TikTok publisher" IsChecked="{Binding MoviePublish}" Margin="0,8,0,0"/>
+                <CheckBox Content="I have rights to publish these trailers and I authorize this batch" IsChecked="{Binding PublishConsent, Mode=TwoWay}" Margin="0,5,0,8"/>
+                <TextBlock Text="MovieClipper batch uses the interval selected on the Publishing tab." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,7"/>
+                <TextBlock Text="FIRST POST (LOCAL YYYY-MM-DD HH:mm)" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
+                <TextBox Text="{Binding MovieFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Text="Schedule videos 30 minutes or more apart using the Publishing interval selector. TikTok sign-in, authorization and final batch confirmation use the existing working publisher." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
+                <WrapPanel>
+                  <Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK MOVIECLIPPER" Command="{Binding MovieStartCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Resume Workflow" Command="{Binding MovieResumeCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Retry Failed" Command="{Binding MovieRetryFailedCommand}" Margin="0,0,8,8"/>
+                  <Button Content="Force Stop" Command="{Binding MovieForceStopCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Open Exported Videos" Command="{Binding MovieOpenOutputCommand}" Margin="0,0,8,8"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding MovieCheckpointStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,3"/>
+                <TextBlock Text="Output folder: Videos\\ZeroVideo\\MovieClipper" Foreground="{StaticResource Muted}" Margin="0,7,0,0"/>
+                <TextBlock Text="{Binding MovieStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+              </StackPanel>
+            </ScrollViewer>
+          </Border>
+          <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                <TextBlock Text="ChatGPT Movie Idea Generator" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="Reference-style review: Plot, Acting, Pacing, Cinematography, Writing, Ending, Overall. Video length follows your background music (no looping). Large centered white /10 scores, no caption backgrounds." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+              </StackPanel>
+              <TabControl>
+                <TabItem Header="Ideas &amp; Progress">
+              <DataGrid ItemsSource="{Binding MovieClipperIdeas}" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Single">
+                <DataGrid.Columns>
+                  <DataGridCheckBoxColumn Header="✓" Binding="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="44"/>
+                  <DataGridTextColumn Header="Movie" Binding="{Binding Label}" IsReadOnly="True" Width="2*"/>
+                  <DataGridTextColumn Header="TMDB" Binding="{Binding Rating}" IsReadOnly="True" Width="95"/>
+                  <DataGridTextColumn Header="Status" Binding="{Binding Status}" IsReadOnly="True" Width="2*"/>
+                </DataGrid.Columns>
+              </DataGrid>
+                </TabItem>
+                <TabItem Header="Movie History">
+                  <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding MovieHistorySummary}" Foreground="{StaticResource Muted}" Margin="0,6,0,8"/>
+                    <DataGrid ItemsSource="{Binding MovieHistory}" AutoGenerateColumns="False" IsReadOnly="True">
+                      <DataGrid.Columns>
+                        <DataGridTextColumn Header="Movie" Binding="{Binding Title}" Width="2*"/>
+                        <DataGridTextColumn Header="Year" Binding="{Binding Year}" Width="70"/>
+                        <DataGridTextColumn Header="Completed" Binding="{Binding CompletedAt}" Width="170"/>
+                        <DataGridTextColumn Header="Export" Binding="{Binding ExportPath}" Width="3*"/>
+                      </DataGrid.Columns>
+                    </DataGrid>
+                  </DockPanel>
+                </TabItem>
+              </TabControl>
+            </DockPanel>
+          </Border>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="NBAClipper">
+        <Grid Margin="0,12,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="390"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Border Style="{StaticResource CardBorder}">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel>
+                <TextBlock Text="NBAClipper — Individual Player TikToks" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="One-click individual NBA player ideas, six subjective skill ratings, player-specific highlight clips, music-beat editing and TikTok publishing." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,12"/>
+                <Label Content="NBA PLAYER NICHE"/>
+                <TextBox Text="{Binding NbaNiche, UpdateSourceTrigger=PropertyChanged}"/>
+                <Label Content="VIDEO STYLE" Margin="0,7,0,0"/>
+                <ComboBox ItemsSource="{Binding NbaFormats}" SelectedItem="{Binding NbaFormat, Mode=TwoWay}" Margin="0,3,0,8"/>
+                <Label Content="NUMBER OF PLAYERS" Margin="0,7,0,0"/>
+                <TextBox Text="{Binding NbaCount, UpdateSourceTrigger=LostFocus}"/>
+                <CheckBox Content="New Chat (otherwise reuse this NbaClipper chat)" IsChecked="{Binding NbaNewChat, Mode=TwoWay}" Margin="0,8,0,4"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Generate Ideas + Scores + SEO (One ChatGPT Request)" Command="{Binding NbaGenerateCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="YouTube individual-player highlights" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Checks local NBA highlight cache, then finds individual-player YouTube videos. Use only clips you have the rights to edit and publish." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <CheckBox Content="Automatically find and download NBA player highlights" IsChecked="{Binding NbaAutoDownload, Mode=TwoWay}" Margin="0,6,0,7"/>
+                <CheckBox Content="Use my signed-in Edge YouTube session if downloads need authentication" IsChecked="{Binding NbaBrowserLogin, Mode=TwoWay}" Margin="0,0,0,5"/>
+                <TextBlock Text="Optional. Allows yt-dlp to read your local Edge browser cookies; may require Edge to be closed. No cookies are stored in the ZeroVideo project." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,6"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose highlight cache folder..." Command="{Binding NbaBrowseSourceCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding NbaSourceFolder}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Preview Search for First Checked Player" Command="{Binding NbaFindHighlightsCommand}" HorizontalAlignment="Left"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Your background music / sound" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Moving individual-player highlights, name overlay, beat-synced cuts and subjective /10 skill ratings. Music plays from the first frame." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose my audio..." Command="{Binding NbaBrowseSoundCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding NbaSoundFile}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,8"/>
+                <Label Content="CUSTOM MUSIC VOLUME"/>
+                <Slider Minimum="0" Maximum="1" Value="{Binding NbaMusicLevel, Mode=TwoWay}"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Publishing" FontSize="16" FontWeight="SemiBold"/>
+                <CheckBox Content="Auto-submit via ZeroVideo's existing TikTok publisher" IsChecked="{Binding NbaPublish}" Margin="0,8,0,0"/>
+                <CheckBox Content="I have the rights to publish this highlight footage and authorize this batch" IsChecked="{Binding PublishConsent, Mode=TwoWay}" Margin="0,5,0,8"/>
+                <TextBlock Text="Uses the existing working TikTok publisher and your Publishing tab interval." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,7"/>
+                <TextBlock Text="FIRST POST (LOCAL YYYY-MM-DD HH:mm)" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
+                <TextBox Text="{Binding NbaFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Text="Schedule videos 30 minutes or more apart using the Publishing interval selector. TikTok sign-in, authorization and final batch confirmation use the existing working publisher." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
+                <WrapPanel>
+                  <Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK NBACLIPPER" Command="{Binding NbaStartCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Resume Workflow" Command="{Binding NbaResumeCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Retry Failed" Command="{Binding NbaRetryFailedCommand}" Margin="0,0,8,8"/>
+                  <Button Content="Force Stop" Command="{Binding NbaForceStopCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Open Exported Videos" Command="{Binding NbaOpenOutputCommand}" Margin="0,0,8,8"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding NbaCheckpointStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,3"/>
+                <TextBlock Text="Output folder: Videos\\ZeroVideo\\NBAClipper" Foreground="{StaticResource Muted}" Margin="0,7,0,0"/>
+                <TextBlock Text="{Binding NbaStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+              </StackPanel>
+            </ScrollViewer>
+          </Border>
+          <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                <TextBlock Text="ChatGPT NBA Player Idea Generator" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="Player Ratings, Best Plays, or Player Legacy. Six subjective skills: Shooting, Finishing, Handles, Playmaking, Defense, Basketball IQ, plus Overall." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+              </StackPanel>
+              <TabControl>
+                <TabItem Header="Ideas &amp; Progress">
+              <DataGrid ItemsSource="{Binding NbaClipperIdeas}" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Single">
+                <DataGrid.Columns>
+                  <DataGridCheckBoxColumn Header="✓" Binding="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="44"/>
+                  <DataGridTextColumn Header="Player / Concept" Binding="{Binding Label}" IsReadOnly="True" Width="2*"/>
+                  <DataGridTextColumn Header="Style" Binding="{Binding Mode}" IsReadOnly="True" Width="110"/>
+                  <DataGridTextColumn Header="Status" Binding="{Binding Status}" IsReadOnly="True" Width="2*"/>
+                </DataGrid.Columns>
+              </DataGrid>
+                </TabItem>
+                <TabItem Header="Player History">
+                  <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding NbaHistorySummary}" Foreground="{StaticResource Muted}" Margin="0,6,0,8"/>
+                    <DataGrid ItemsSource="{Binding NbaHistory}" AutoGenerateColumns="False" IsReadOnly="True">
+                      <DataGrid.Columns>
+                        <DataGridTextColumn Header="Player" Binding="{Binding Name}" Width="2*"/>
+                        <DataGridTextColumn Header="Concept" Binding="{Binding Concept}" Width="2*"/>
+                        <DataGridTextColumn Header="Completed" Binding="{Binding CompletedAt}" Width="170"/>
+                        <DataGridTextColumn Header="Export" Binding="{Binding OutputPath}" Width="3*"/>
+                      </DataGrid.Columns>
+                    </DataGrid>
+                  </DockPanel>
+                </TabItem>
+              </TabControl>
+            </DockPanel>
+          </Border>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="StreamerClipper">
+        <Grid Margin="0,12,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="390"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Border Style="{StaticResource CardBorder}">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel>
+                <TextBlock Text="StreamerClipper — Individual Streamer TikToks" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="One-click Twitch, Kick and YouTube individual streamers — idea generation, footage sourcing, beat-synced horizontal highlights, individual history and the proven TikTok queue." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,12"/>
+                <Label Content="STREAMER NICHE"/>
+                <TextBox Text="{Binding StreamerNiche, UpdateSourceTrigger=PropertyChanged}"/>
+                <Label Content="VIDEO STYLE" Margin="0,7,0,0"/>
+                <ComboBox ItemsSource="{Binding StreamerFormats}" SelectedItem="{Binding StreamerFormat, Mode=TwoWay}" Margin="0,3,0,8"/>
+                <Label Content="NUMBER OF VIDEOS" Margin="0,7,0,0"/>
+                <TextBox Text="{Binding StreamerCount, UpdateSourceTrigger=LostFocus}"/>
+                <CheckBox Content="New Chat (otherwise reuse this StreamerClipper chat)" IsChecked="{Binding StreamerNewChat, Mode=TwoWay}" Margin="0,8,0,4"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Generate Ideas + Scores + SEO (One ChatGPT Request)" Command="{Binding StreamerGenerateCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="YouTube individual-player highlights" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Searches YouTube for streamer highlight footage or uses authorized local clips. Source availability varies; confirm reuse rights before publishing." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <CheckBox Content="Automatically find and download Streamer player highlights" IsChecked="{Binding StreamerAutoDownload, Mode=TwoWay}" Margin="0,6,0,7"/>
+                <CheckBox Content="Use my signed-in Edge YouTube session if downloads need authentication" IsChecked="{Binding StreamerBrowserLogin, Mode=TwoWay}" Margin="0,0,0,5"/>
+                <TextBlock Text="Optional. Allows yt-dlp to read your local Edge browser cookies; may require Edge to be closed. No cookies are stored in the ZeroVideo project." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,6"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose highlight cache folder..." Command="{Binding StreamerBrowseSourceCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding StreamerSourceFolder}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Preview Search for First Checked Streamer" Command="{Binding StreamerFindHighlightsCommand}" HorizontalAlignment="Left"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Your background music / sound" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Preserves horizontal video centered in a vertical 9:16 canvas, with a blurred background above and below. Beat-sync music and mode-specific captions." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose my audio..." Command="{Binding StreamerBrowseSoundCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding StreamerSoundFile}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,8"/>
+                <Label Content="CUSTOM MUSIC VOLUME"/>
+                <Slider Minimum="0" Maximum="1" Value="{Binding StreamerMusicLevel, Mode=TwoWay}"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Publishing" FontSize="16" FontWeight="SemiBold"/>
+                <CheckBox Content="Auto-submit via ZeroVideo's existing TikTok publisher" IsChecked="{Binding StreamerPublish}" Margin="0,8,0,0"/>
+                <CheckBox Content="I have the rights to publish this highlight footage and authorize this batch" IsChecked="{Binding PublishConsent, Mode=TwoWay}" Margin="0,5,0,8"/>
+                <TextBlock Text="Uses the existing working TikTok publisher and your Publishing tab interval." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,7"/>
+                <TextBlock Text="FIRST POST (LOCAL YYYY-MM-DD HH:mm)" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
+                <TextBox Text="{Binding StreamerFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Text="Schedule videos 30 minutes or more apart using the Publishing interval selector. TikTok sign-in, authorization and final batch confirmation use the existing working publisher." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
+                <WrapPanel>
+                  <Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK StreamerCLIPPER" Command="{Binding StreamerStartCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Resume Workflow" Command="{Binding StreamerResumeCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Retry Failed" Command="{Binding StreamerRetryFailedCommand}" Margin="0,0,8,8"/>
+                  <Button Content="Force Stop" Command="{Binding StreamerForceStopCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Open Exported Videos" Command="{Binding StreamerOpenOutputCommand}" Margin="0,0,8,8"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding StreamerCheckpointStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,3"/>
+                <TextBlock Text="Output folder: Videos\\ZeroVideo\\StreamerClipper" Foreground="{StaticResource Muted}" Margin="0,7,0,0"/>
+                <TextBlock Text="{Binding StreamerStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+              </StackPanel>
+            </ScrollViewer>
+          </Border>
+          <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                <TextBlock Text="ChatGPT Streamer Player Idea Generator" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="Streamer Ratings, Funny Moments, Viral Reactions. Ideas and SEO are created in one request. Ratings are subjective, never claimed as official statistics." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+              </StackPanel>
+              <TabControl>
+                <TabItem Header="Ideas &amp; Progress">
+              <DataGrid ItemsSource="{Binding StreamerClipperIdeas}" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Single">
+                <DataGrid.Columns>
+                  <DataGridCheckBoxColumn Header="✓" Binding="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="44"/>
+                  <DataGridTextColumn Header="Streamer / Concept" Binding="{Binding Label}" IsReadOnly="True" Width="2*"/>
+                  <DataGridTextColumn Header="Style" Binding="{Binding Mode}" IsReadOnly="True" Width="110"/>
+                  <DataGridTextColumn Header="Status" Binding="{Binding Status}" IsReadOnly="True" Width="2*"/>
+                </DataGrid.Columns>
+              </DataGrid>
+                </TabItem>
+                <TabItem Header="Streamer History">
+                  <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding StreamerHistorySummary}" Foreground="{StaticResource Muted}" Margin="0,6,0,8"/>
+                    <DataGrid ItemsSource="{Binding StreamerHistory}" AutoGenerateColumns="False" IsReadOnly="True">
+                      <DataGrid.Columns>
+                        <DataGridTextColumn Header="Streamer" Binding="{Binding Name}" Width="2*"/>
+                        <DataGridTextColumn Header="Concept" Binding="{Binding Concept}" Width="2*"/>
+                        <DataGridTextColumn Header="Completed" Binding="{Binding CompletedAt}" Width="170"/>
+                        <DataGridTextColumn Header="Export" Binding="{Binding OutputPath}" Width="3*"/>
+                      </DataGrid.Columns>
+                    </DataGrid>
+                  </DockPanel>
+                </TabItem>
+              </TabControl>
+            </DockPanel>
+          </Border>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="FootballClipper">
+        <Grid Margin="0,12,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="390"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Border Style="{StaticResource CardBorder}">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel>
+                <TextBlock Text="FootballClipper — Individual Football Player TikToks" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="One-click Individual soccer players and football legends — idea generation, footage sourcing, beat-synced horizontal highlights, individual history and the proven TikTok queue." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,12"/>
+                <Label Content="FOOTBALL PLAYER NICHE"/>
+                <TextBox Text="{Binding FootballNiche, UpdateSourceTrigger=PropertyChanged}"/>
+                <Label Content="VIDEO STYLE" Margin="0,7,0,0"/>
+                <ComboBox ItemsSource="{Binding FootballFormats}" SelectedItem="{Binding FootballFormat, Mode=TwoWay}" Margin="0,3,0,8"/>
+                <Label Content="NUMBER OF VIDEOS" Margin="0,7,0,0"/>
+                <TextBox Text="{Binding FootballCount, UpdateSourceTrigger=LostFocus}"/>
+                <CheckBox Content="New Chat (otherwise reuse this FootballClipper chat)" IsChecked="{Binding FootballNewChat, Mode=TwoWay}" Margin="0,8,0,4"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Generate Ideas + Scores + SEO (One ChatGPT Request)" Command="{Binding FootballGenerateCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="YouTube individual-player highlights" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Searches YouTube for football player highlight footage or uses authorized local clips. Source availability varies; confirm reuse rights before publishing." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <CheckBox Content="Automatically find and download Football player highlights" IsChecked="{Binding FootballAutoDownload, Mode=TwoWay}" Margin="0,6,0,7"/>
+                <CheckBox Content="Use my signed-in Edge YouTube session if downloads need authentication" IsChecked="{Binding FootballBrowserLogin, Mode=TwoWay}" Margin="0,0,0,5"/>
+                <TextBlock Text="Optional. Allows yt-dlp to read your local Edge browser cookies; may require Edge to be closed. No cookies are stored in the ZeroVideo project." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,6"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose highlight cache folder..." Command="{Binding FootballBrowseSourceCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding FootballSourceFolder}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Preview Search for First Checked Football Player" Command="{Binding FootballFindHighlightsCommand}" HorizontalAlignment="Left"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Your background music / sound" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Preserves horizontal video centered in a vertical 9:16 canvas, with a blurred background above and below. Beat-sync music and mode-specific captions." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose my audio..." Command="{Binding FootballBrowseSoundCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding FootballSoundFile}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,8"/>
+                <Label Content="CUSTOM MUSIC VOLUME"/>
+                <Slider Minimum="0" Maximum="1" Value="{Binding FootballMusicLevel, Mode=TwoWay}"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Publishing" FontSize="16" FontWeight="SemiBold"/>
+                <CheckBox Content="Auto-submit via ZeroVideo's existing TikTok publisher" IsChecked="{Binding FootballPublish}" Margin="0,8,0,0"/>
+                <CheckBox Content="I have the rights to publish this highlight footage and authorize this batch" IsChecked="{Binding PublishConsent, Mode=TwoWay}" Margin="0,5,0,8"/>
+                <TextBlock Text="Uses the existing working TikTok publisher and your Publishing tab interval." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,7"/>
+                <TextBlock Text="FIRST POST (LOCAL YYYY-MM-DD HH:mm)" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
+                <TextBox Text="{Binding FootballFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Text="Schedule videos 30 minutes or more apart using the Publishing interval selector. TikTok sign-in, authorization and final batch confirmation use the existing working publisher." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
+                <WrapPanel>
+                  <Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK FootballCLIPPER" Command="{Binding FootballStartCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Resume Workflow" Command="{Binding FootballResumeCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Retry Failed" Command="{Binding FootballRetryFailedCommand}" Margin="0,0,8,8"/>
+                  <Button Content="Force Stop" Command="{Binding FootballForceStopCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Open Exported Videos" Command="{Binding FootballOpenOutputCommand}" Margin="0,0,8,8"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding FootballCheckpointStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,3"/>
+                <TextBlock Text="Output folder: Videos\\ZeroVideo\\FootballClipper" Foreground="{StaticResource Muted}" Margin="0,7,0,0"/>
+                <TextBlock Text="{Binding FootballStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+              </StackPanel>
+            </ScrollViewer>
+          </Border>
+          <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                <TextBlock Text="ChatGPT Football Player Idea Generator" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="Player Ratings, Best Goals, Football Legacy. Ideas and SEO are created in one request. Ratings are subjective, never claimed as official statistics." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+              </StackPanel>
+              <TabControl>
+                <TabItem Header="Ideas &amp; Progress">
+              <DataGrid ItemsSource="{Binding FootballClipperIdeas}" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Single">
+                <DataGrid.Columns>
+                  <DataGridCheckBoxColumn Header="✓" Binding="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="44"/>
+                  <DataGridTextColumn Header="Football Player / Concept" Binding="{Binding Label}" IsReadOnly="True" Width="2*"/>
+                  <DataGridTextColumn Header="Style" Binding="{Binding Mode}" IsReadOnly="True" Width="110"/>
+                  <DataGridTextColumn Header="Status" Binding="{Binding Status}" IsReadOnly="True" Width="2*"/>
+                </DataGrid.Columns>
+              </DataGrid>
+                </TabItem>
+                <TabItem Header="Football Player History">
+                  <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding FootballHistorySummary}" Foreground="{StaticResource Muted}" Margin="0,6,0,8"/>
+                    <DataGrid ItemsSource="{Binding FootballHistory}" AutoGenerateColumns="False" IsReadOnly="True">
+                      <DataGrid.Columns>
+                        <DataGridTextColumn Header="Football Player" Binding="{Binding Name}" Width="2*"/>
+                        <DataGridTextColumn Header="Concept" Binding="{Binding Concept}" Width="2*"/>
+                        <DataGridTextColumn Header="Completed" Binding="{Binding CompletedAt}" Width="170"/>
+                        <DataGridTextColumn Header="Export" Binding="{Binding OutputPath}" Width="3*"/>
+                      </DataGrid.Columns>
+                    </DataGrid>
+                  </DockPanel>
+                </TabItem>
+              </TabControl>
+            </DockPanel>
+          </Border>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="UFCClipper">
+        <Grid Margin="0,12,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="390"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Border Style="{StaticResource CardBorder}">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel>
+                <TextBlock Text="UFCClipper — Individual MMA Fighter TikToks" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="One-click Individual UFC and MMA fighters — idea generation, footage sourcing, beat-synced horizontal highlights, individual history and the proven TikTok queue." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,12"/>
+                <Label Content="MMA FIGHTER NICHE"/>
+                <TextBox Text="{Binding UfcNiche, UpdateSourceTrigger=PropertyChanged}"/>
+                <Label Content="VIDEO STYLE" Margin="0,7,0,0"/>
+                <ComboBox ItemsSource="{Binding UfcFormats}" SelectedItem="{Binding UfcFormat, Mode=TwoWay}" Margin="0,3,0,8"/>
+                <Label Content="NUMBER OF VIDEOS" Margin="0,7,0,0"/>
+                <TextBox Text="{Binding UfcCount, UpdateSourceTrigger=LostFocus}"/>
+                <CheckBox Content="New Chat (otherwise reuse this UfcClipper chat)" IsChecked="{Binding UfcNewChat, Mode=TwoWay}" Margin="0,8,0,4"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Generate Ideas + Scores + SEO (One ChatGPT Request)" Command="{Binding UfcGenerateCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="YouTube individual-player highlights" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Searches YouTube for mma fighter highlight footage or uses authorized local clips. Source availability varies; confirm reuse rights before publishing." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <CheckBox Content="Automatically find and download UFC player highlights" IsChecked="{Binding UfcAutoDownload, Mode=TwoWay}" Margin="0,6,0,7"/>
+                <CheckBox Content="Use my signed-in Edge YouTube session if downloads need authentication" IsChecked="{Binding UfcBrowserLogin, Mode=TwoWay}" Margin="0,0,0,5"/>
+                <TextBlock Text="Optional. Allows yt-dlp to read your local Edge browser cookies; may require Edge to be closed. No cookies are stored in the ZeroVideo project." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,6"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose highlight cache folder..." Command="{Binding UfcBrowseSourceCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding UfcSourceFolder}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Preview Search for First Checked MMA Fighter" Command="{Binding UfcFindHighlightsCommand}" HorizontalAlignment="Left"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Your background music / sound" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Preserves horizontal video centered in a vertical 9:16 canvas, with a blurred background above and below. Beat-sync music and mode-specific captions." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose my audio..." Command="{Binding UfcBrowseSoundCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding UfcSoundFile}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,8"/>
+                <Label Content="CUSTOM MUSIC VOLUME"/>
+                <Slider Minimum="0" Maximum="1" Value="{Binding UfcMusicLevel, Mode=TwoWay}"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Publishing" FontSize="16" FontWeight="SemiBold"/>
+                <CheckBox Content="Auto-submit via ZeroVideo's existing TikTok publisher" IsChecked="{Binding UfcPublish}" Margin="0,8,0,0"/>
+                <CheckBox Content="I have the rights to publish this highlight footage and authorize this batch" IsChecked="{Binding PublishConsent, Mode=TwoWay}" Margin="0,5,0,8"/>
+                <TextBlock Text="Uses the existing working TikTok publisher and your Publishing tab interval." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,7"/>
+                <TextBlock Text="FIRST POST (LOCAL YYYY-MM-DD HH:mm)" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
+                <TextBox Text="{Binding UfcFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Text="Schedule videos 30 minutes or more apart using the Publishing interval selector. TikTok sign-in, authorization and final batch confirmation use the existing working publisher." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
+                <WrapPanel>
+                  <Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK UFCCLIPPER" Command="{Binding UfcStartCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Resume Workflow" Command="{Binding UfcResumeCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Retry Failed" Command="{Binding UfcRetryFailedCommand}" Margin="0,0,8,8"/>
+                  <Button Content="Force Stop" Command="{Binding UfcForceStopCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Open Exported Videos" Command="{Binding UfcOpenOutputCommand}" Margin="0,0,8,8"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding UfcCheckpointStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,3"/>
+                <TextBlock Text="Output folder: Videos\\ZeroVideo\\UFCClipper" Foreground="{StaticResource Muted}" Margin="0,7,0,0"/>
+                <TextBlock Text="{Binding UfcStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+              </StackPanel>
+            </ScrollViewer>
+          </Border>
+          <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                <TextBlock Text="ChatGPT UFC Player Idea Generator" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="Fighter Ratings, Knockouts, Fighter Legacy. Ideas and SEO are created in one request. Ratings are subjective, never claimed as official statistics." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+              </StackPanel>
+              <TabControl>
+                <TabItem Header="Ideas &amp; Progress">
+              <DataGrid ItemsSource="{Binding UfcClipperIdeas}" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Single">
+                <DataGrid.Columns>
+                  <DataGridCheckBoxColumn Header="✓" Binding="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="44"/>
+                  <DataGridTextColumn Header="MMA Fighter / Concept" Binding="{Binding Label}" IsReadOnly="True" Width="2*"/>
+                  <DataGridTextColumn Header="Style" Binding="{Binding Mode}" IsReadOnly="True" Width="110"/>
+                  <DataGridTextColumn Header="Status" Binding="{Binding Status}" IsReadOnly="True" Width="2*"/>
+                </DataGrid.Columns>
+              </DataGrid>
+                </TabItem>
+                <TabItem Header="MMA Fighter History">
+                  <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding UfcHistorySummary}" Foreground="{StaticResource Muted}" Margin="0,6,0,8"/>
+                    <DataGrid ItemsSource="{Binding UfcHistory}" AutoGenerateColumns="False" IsReadOnly="True">
+                      <DataGrid.Columns>
+                        <DataGridTextColumn Header="MMA Fighter" Binding="{Binding Name}" Width="2*"/>
+                        <DataGridTextColumn Header="Concept" Binding="{Binding Concept}" Width="2*"/>
+                        <DataGridTextColumn Header="Completed" Binding="{Binding CompletedAt}" Width="170"/>
+                        <DataGridTextColumn Header="Export" Binding="{Binding OutputPath}" Width="3*"/>
+                      </DataGrid.Columns>
+                    </DataGrid>
+                  </DockPanel>
+                </TabItem>
+              </TabControl>
+            </DockPanel>
+          </Border>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="F1Clipper">
+        <Grid Margin="0,12,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="390"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Border Style="{StaticResource CardBorder}">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel>
+                <TextBlock Text="F1Clipper — Individual F1 Driver TikToks" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="One-click Individual Formula 1 racing drivers — idea generation, footage sourcing, beat-synced horizontal highlights, individual history and the proven TikTok queue." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,12"/>
+                <Label Content="F1 DRIVER NICHE"/>
+                <TextBox Text="{Binding F1Niche, UpdateSourceTrigger=PropertyChanged}"/>
+                <Label Content="VIDEO STYLE" Margin="0,7,0,0"/>
+                <ComboBox ItemsSource="{Binding F1Formats}" SelectedItem="{Binding F1Format, Mode=TwoWay}" Margin="0,3,0,8"/>
+                <Label Content="NUMBER OF VIDEOS" Margin="0,7,0,0"/>
+                <TextBox Text="{Binding F1Count, UpdateSourceTrigger=LostFocus}"/>
+                <CheckBox Content="New Chat (otherwise reuse this F1Clipper chat)" IsChecked="{Binding F1NewChat, Mode=TwoWay}" Margin="0,8,0,4"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Generate Ideas + Scores + SEO (One ChatGPT Request)" Command="{Binding F1GenerateCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="YouTube individual-player highlights" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Searches YouTube for f1 driver highlight footage or uses authorized local clips. Source availability varies; confirm reuse rights before publishing." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <CheckBox Content="Automatically find and download F1 player highlights" IsChecked="{Binding F1AutoDownload, Mode=TwoWay}" Margin="0,6,0,7"/>
+                <CheckBox Content="Use my signed-in Edge YouTube session if downloads need authentication" IsChecked="{Binding F1BrowserLogin, Mode=TwoWay}" Margin="0,0,0,5"/>
+                <TextBlock Text="Optional. Allows yt-dlp to read your local Edge browser cookies; may require Edge to be closed. No cookies are stored in the ZeroVideo project." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,6"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose highlight cache folder..." Command="{Binding F1BrowseSourceCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding F1SourceFolder}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Preview Search for First Checked F1 Driver" Command="{Binding F1FindHighlightsCommand}" HorizontalAlignment="Left"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Your background music / sound" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Preserves horizontal video centered in a vertical 9:16 canvas, with a blurred background above and below. Beat-sync music and mode-specific captions." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose my audio..." Command="{Binding F1BrowseSoundCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding F1SoundFile}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,8"/>
+                <Label Content="CUSTOM MUSIC VOLUME"/>
+                <Slider Minimum="0" Maximum="1" Value="{Binding F1MusicLevel, Mode=TwoWay}"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Publishing" FontSize="16" FontWeight="SemiBold"/>
+                <CheckBox Content="Auto-submit via ZeroVideo's existing TikTok publisher" IsChecked="{Binding F1Publish}" Margin="0,8,0,0"/>
+                <CheckBox Content="I have the rights to publish this highlight footage and authorize this batch" IsChecked="{Binding PublishConsent, Mode=TwoWay}" Margin="0,5,0,8"/>
+                <TextBlock Text="Uses the existing working TikTok publisher and your Publishing tab interval." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,7"/>
+                <TextBlock Text="FIRST POST (LOCAL YYYY-MM-DD HH:mm)" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
+                <TextBox Text="{Binding F1FirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Text="Schedule videos 30 minutes or more apart using the Publishing interval selector. TikTok sign-in, authorization and final batch confirmation use the existing working publisher." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
+                <WrapPanel>
+                  <Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK F1CLIPPER" Command="{Binding F1StartCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Resume Workflow" Command="{Binding F1ResumeCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Retry Failed" Command="{Binding F1RetryFailedCommand}" Margin="0,0,8,8"/>
+                  <Button Content="Force Stop" Command="{Binding F1ForceStopCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Open Exported Videos" Command="{Binding F1OpenOutputCommand}" Margin="0,0,8,8"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding F1CheckpointStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,3"/>
+                <TextBlock Text="Output folder: Videos\\ZeroVideo\\F1Clipper" Foreground="{StaticResource Muted}" Margin="0,7,0,0"/>
+                <TextBlock Text="{Binding F1Status}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+              </StackPanel>
+            </ScrollViewer>
+          </Border>
+          <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                <TextBlock Text="ChatGPT F1 Player Idea Generator" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="Driver Ratings, Best Overtakes, Driver Legacy. Ideas and SEO are created in one request. Ratings are subjective, never claimed as official statistics." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+              </StackPanel>
+              <TabControl>
+                <TabItem Header="Ideas &amp; Progress">
+              <DataGrid ItemsSource="{Binding F1ClipperIdeas}" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Single">
+                <DataGrid.Columns>
+                  <DataGridCheckBoxColumn Header="✓" Binding="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="44"/>
+                  <DataGridTextColumn Header="F1 Driver / Concept" Binding="{Binding Label}" IsReadOnly="True" Width="2*"/>
+                  <DataGridTextColumn Header="Style" Binding="{Binding Mode}" IsReadOnly="True" Width="110"/>
+                  <DataGridTextColumn Header="Status" Binding="{Binding Status}" IsReadOnly="True" Width="2*"/>
+                </DataGrid.Columns>
+              </DataGrid>
+                </TabItem>
+                <TabItem Header="F1 Driver History">
+                  <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding F1HistorySummary}" Foreground="{StaticResource Muted}" Margin="0,6,0,8"/>
+                    <DataGrid ItemsSource="{Binding F1History}" AutoGenerateColumns="False" IsReadOnly="True">
+                      <DataGrid.Columns>
+                        <DataGridTextColumn Header="F1 Driver" Binding="{Binding Name}" Width="2*"/>
+                        <DataGridTextColumn Header="Concept" Binding="{Binding Concept}" Width="2*"/>
+                        <DataGridTextColumn Header="Completed" Binding="{Binding CompletedAt}" Width="170"/>
+                        <DataGridTextColumn Header="Export" Binding="{Binding OutputPath}" Width="3*"/>
+                      </DataGrid.Columns>
+                    </DataGrid>
+                  </DockPanel>
+                </TabItem>
+              </TabControl>
+            </DockPanel>
+          </Border>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="AnimeClipper">
+        <Grid Margin="0,12,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="390"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Border Style="{StaticResource CardBorder}">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel>
+                <TextBlock Text="AnimeClipper — Individual Anime Character TikToks" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="One-click Individual anime characters only — idea generation, footage sourcing, beat-synced horizontal highlights, individual history and the proven TikTok queue." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,12"/>
+                <Label Content="ANIME CHARACTER NICHE"/>
+                <TextBox Text="{Binding AnimeNiche, UpdateSourceTrigger=PropertyChanged}"/>
+                <Label Content="VIDEO STYLE" Margin="0,7,0,0"/>
+                <ComboBox ItemsSource="{Binding AnimeFormats}" SelectedItem="{Binding AnimeFormat, Mode=TwoWay}" Margin="0,3,0,8"/>
+                <Label Content="NUMBER OF VIDEOS" Margin="0,7,0,0"/>
+                <TextBox Text="{Binding AnimeCount, UpdateSourceTrigger=LostFocus}"/>
+                <CheckBox Content="New Chat (otherwise reuse this AnimeClipper chat)" IsChecked="{Binding AnimeNewChat, Mode=TwoWay}" Margin="0,8,0,4"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Generate Ideas + Scores + SEO (One ChatGPT Request)" Command="{Binding AnimeGenerateCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="YouTube individual-player highlights" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Searches YouTube for anime character highlight footage or uses authorized local clips. Source availability varies; confirm reuse rights before publishing." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <CheckBox Content="Automatically find and download Anime player highlights" IsChecked="{Binding AnimeAutoDownload, Mode=TwoWay}" Margin="0,6,0,7"/>
+                <CheckBox Content="Use my signed-in Edge YouTube session if downloads need authentication" IsChecked="{Binding AnimeBrowserLogin, Mode=TwoWay}" Margin="0,0,0,5"/>
+                <TextBlock Text="Optional. Allows yt-dlp to read your local Edge browser cookies; may require Edge to be closed. No cookies are stored in the ZeroVideo project." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,6"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose highlight cache folder..." Command="{Binding AnimeBrowseSourceCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding AnimeSourceFolder}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Preview Search for First Checked Anime Character" Command="{Binding AnimeFindHighlightsCommand}" HorizontalAlignment="Left"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Your background music / sound" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Preserves horizontal video centered in a vertical 9:16 canvas, with a blurred background above and below. Beat-sync music and mode-specific captions." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose my audio..." Command="{Binding AnimeBrowseSoundCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding AnimeSoundFile}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,8"/>
+                <Label Content="CUSTOM MUSIC VOLUME"/>
+                <Slider Minimum="0" Maximum="1" Value="{Binding AnimeMusicLevel, Mode=TwoWay}"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Publishing" FontSize="16" FontWeight="SemiBold"/>
+                <CheckBox Content="Auto-submit via ZeroVideo's existing TikTok publisher" IsChecked="{Binding AnimePublish}" Margin="0,8,0,0"/>
+                <CheckBox Content="I have the rights to publish this highlight footage and authorize this batch" IsChecked="{Binding PublishConsent, Mode=TwoWay}" Margin="0,5,0,8"/>
+                <TextBlock Text="Uses the existing working TikTok publisher and your Publishing tab interval." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,7"/>
+                <TextBlock Text="FIRST POST (LOCAL YYYY-MM-DD HH:mm)" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
+                <TextBox Text="{Binding AnimeFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Text="Schedule videos 30 minutes or more apart using the Publishing interval selector. TikTok sign-in, authorization and final batch confirmation use the existing working publisher." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
+                <WrapPanel>
+                  <Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK AnimeCLIPPER" Command="{Binding AnimeStartCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Resume Workflow" Command="{Binding AnimeResumeCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Retry Failed" Command="{Binding AnimeRetryFailedCommand}" Margin="0,0,8,8"/>
+                  <Button Content="Force Stop" Command="{Binding AnimeForceStopCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Open Exported Videos" Command="{Binding AnimeOpenOutputCommand}" Margin="0,0,8,8"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding AnimeCheckpointStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,3"/>
+                <TextBlock Text="Output folder: Videos\\ZeroVideo\\AnimeClipper" Foreground="{StaticResource Muted}" Margin="0,7,0,0"/>
+                <TextBlock Text="{Binding AnimeStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+              </StackPanel>
+            </ScrollViewer>
+          </Border>
+          <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                <TextBlock Text="ChatGPT Anime Player Idea Generator" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="Character Ratings, Epic Battles, Character Legacy. Ideas and SEO are created in one request. Ratings are subjective, never claimed as official statistics." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+              </StackPanel>
+              <TabControl>
+                <TabItem Header="Ideas &amp; Progress">
+              <DataGrid ItemsSource="{Binding AnimeClipperIdeas}" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Single">
+                <DataGrid.Columns>
+                  <DataGridCheckBoxColumn Header="✓" Binding="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="44"/>
+                  <DataGridTextColumn Header="Anime Character / Concept" Binding="{Binding Label}" IsReadOnly="True" Width="2*"/>
+                  <DataGridTextColumn Header="Style" Binding="{Binding Mode}" IsReadOnly="True" Width="110"/>
+                  <DataGridTextColumn Header="Status" Binding="{Binding Status}" IsReadOnly="True" Width="2*"/>
+                </DataGrid.Columns>
+              </DataGrid>
+                </TabItem>
+                <TabItem Header="Anime Character History">
+                  <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding AnimeHistorySummary}" Foreground="{StaticResource Muted}" Margin="0,6,0,8"/>
+                    <DataGrid ItemsSource="{Binding AnimeHistory}" AutoGenerateColumns="False" IsReadOnly="True">
+                      <DataGrid.Columns>
+                        <DataGridTextColumn Header="Anime Character" Binding="{Binding Name}" Width="2*"/>
+                        <DataGridTextColumn Header="Concept" Binding="{Binding Concept}" Width="2*"/>
+                        <DataGridTextColumn Header="Completed" Binding="{Binding CompletedAt}" Width="170"/>
+                        <DataGridTextColumn Header="Export" Binding="{Binding OutputPath}" Width="3*"/>
+                      </DataGrid.Columns>
+                    </DataGrid>
+                  </DockPanel>
+                </TabItem>
+              </TabControl>
+            </DockPanel>
+          </Border>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="GamingCharactersClipper">
+        <Grid Margin="0,12,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="390"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Border Style="{StaticResource CardBorder}">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel>
+                <TextBlock Text="GamingCharactersClipper — Individual Gaming Character TikToks" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="One-click Individual characters from video games — idea generation, footage sourcing, beat-synced horizontal highlights, individual history and the proven TikTok queue." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,12"/>
+                <Label Content="GAMING CHARACTER NICHE"/>
+                <TextBox Text="{Binding GamingCharactersNiche, UpdateSourceTrigger=PropertyChanged}"/>
+                <Label Content="VIDEO STYLE" Margin="0,7,0,0"/>
+                <ComboBox ItemsSource="{Binding GamingCharactersFormats}" SelectedItem="{Binding GamingCharactersFormat, Mode=TwoWay}" Margin="0,3,0,8"/>
+                <Label Content="NUMBER OF VIDEOS" Margin="0,7,0,0"/>
+                <TextBox Text="{Binding GamingCharactersCount, UpdateSourceTrigger=LostFocus}"/>
+                <CheckBox Content="New Chat (otherwise reuse this GamingCharactersClipper chat)" IsChecked="{Binding GamingCharactersNewChat, Mode=TwoWay}" Margin="0,8,0,4"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Generate Ideas + Scores + SEO (One ChatGPT Request)" Command="{Binding GamingCharactersGenerateCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="YouTube individual-player highlights" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Searches YouTube for gaming character highlight footage or uses authorized local clips. Source availability varies; confirm reuse rights before publishing." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <CheckBox Content="Automatically find and download GamingCharacters player highlights" IsChecked="{Binding GamingCharactersAutoDownload, Mode=TwoWay}" Margin="0,6,0,7"/>
+                <CheckBox Content="Use my signed-in Edge YouTube session if downloads need authentication" IsChecked="{Binding GamingCharactersBrowserLogin, Mode=TwoWay}" Margin="0,0,0,5"/>
+                <TextBlock Text="Optional. Allows yt-dlp to read your local Edge browser cookies; may require Edge to be closed. No cookies are stored in the ZeroVideo project." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,6"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose highlight cache folder..." Command="{Binding GamingCharactersBrowseSourceCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding GamingCharactersSourceFolder}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Preview Search for First Checked Gaming Character" Command="{Binding GamingCharactersFindHighlightsCommand}" HorizontalAlignment="Left"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Your background music / sound" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Preserves horizontal video centered in a vertical 9:16 canvas, with a blurred background above and below. Beat-sync music and mode-specific captions." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose my audio..." Command="{Binding GamingCharactersBrowseSoundCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding GamingCharactersSoundFile}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,8"/>
+                <Label Content="CUSTOM MUSIC VOLUME"/>
+                <Slider Minimum="0" Maximum="1" Value="{Binding GamingCharactersMusicLevel, Mode=TwoWay}"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Publishing" FontSize="16" FontWeight="SemiBold"/>
+                <CheckBox Content="Auto-submit via ZeroVideo's existing TikTok publisher" IsChecked="{Binding GamingCharactersPublish}" Margin="0,8,0,0"/>
+                <CheckBox Content="I have the rights to publish this highlight footage and authorize this batch" IsChecked="{Binding PublishConsent, Mode=TwoWay}" Margin="0,5,0,8"/>
+                <TextBlock Text="Uses the existing working TikTok publisher and your Publishing tab interval." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,7"/>
+                <TextBlock Text="FIRST POST (LOCAL YYYY-MM-DD HH:mm)" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
+                <TextBox Text="{Binding GamingCharactersFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Text="Schedule videos 30 minutes or more apart using the Publishing interval selector. TikTok sign-in, authorization and final batch confirmation use the existing working publisher." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
+                <WrapPanel>
+                  <Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK GamingCharactersCLIPPER" Command="{Binding GamingCharactersStartCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Resume Workflow" Command="{Binding GamingCharactersResumeCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Retry Failed" Command="{Binding GamingCharactersRetryFailedCommand}" Margin="0,0,8,8"/>
+                  <Button Content="Force Stop" Command="{Binding GamingCharactersForceStopCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Open Exported Videos" Command="{Binding GamingCharactersOpenOutputCommand}" Margin="0,0,8,8"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding GamingCharactersCheckpointStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,3"/>
+                <TextBlock Text="Output folder: Videos\\ZeroVideo\\GamingCharactersClipper" Foreground="{StaticResource Muted}" Margin="0,7,0,0"/>
+                <TextBlock Text="{Binding GamingCharactersStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+              </StackPanel>
+            </ScrollViewer>
+          </Border>
+          <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                <TextBlock Text="ChatGPT GamingCharacters Player Idea Generator" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="Character Ratings, Best Moments, Character Legacy. Ideas and SEO are created in one request. Ratings are subjective, never claimed as official statistics." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+              </StackPanel>
+              <TabControl>
+                <TabItem Header="Ideas &amp; Progress">
+              <DataGrid ItemsSource="{Binding GamingCharactersClipperIdeas}" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Single">
+                <DataGrid.Columns>
+                  <DataGridCheckBoxColumn Header="✓" Binding="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="44"/>
+                  <DataGridTextColumn Header="Gaming Character / Concept" Binding="{Binding Label}" IsReadOnly="True" Width="2*"/>
+                  <DataGridTextColumn Header="Style" Binding="{Binding Mode}" IsReadOnly="True" Width="110"/>
+                  <DataGridTextColumn Header="Status" Binding="{Binding Status}" IsReadOnly="True" Width="2*"/>
+                </DataGrid.Columns>
+              </DataGrid>
+                </TabItem>
+                <TabItem Header="Gaming Character History">
+                  <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding GamingCharactersHistorySummary}" Foreground="{StaticResource Muted}" Margin="0,6,0,8"/>
+                    <DataGrid ItemsSource="{Binding GamingCharactersHistory}" AutoGenerateColumns="False" IsReadOnly="True">
+                      <DataGrid.Columns>
+                        <DataGridTextColumn Header="Gaming Character" Binding="{Binding Name}" Width="2*"/>
+                        <DataGridTextColumn Header="Concept" Binding="{Binding Concept}" Width="2*"/>
+                        <DataGridTextColumn Header="Completed" Binding="{Binding CompletedAt}" Width="170"/>
+                        <DataGridTextColumn Header="Export" Binding="{Binding OutputPath}" Width="3*"/>
+                      </DataGrid.Columns>
+                    </DataGrid>
+                  </DockPanel>
+                </TabItem>
+              </TabControl>
+            </DockPanel>
+          </Border>
+        </Grid>
       </TabItem>
 
       <TabItem Header="Idea Generation">
@@ -1814,9 +2525,9 @@
               <StackPanel Orientation="Horizontal">
                 <TextBox Width="220" Text="{Binding PublishFirstSlot, UpdateSourceTrigger=PropertyChanged}"
                          ToolTip="YYYY-MM-DD HH:MM"/>
-                <ComboBox Width="110" Margin="10,0,0,0" ItemsSource="{Binding PublishIntervals}"
-                          SelectedItem="{Binding PublishIntervalHours}"/>
-                <TextBlock Text="hours apart" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                <ComboBox Width="145" Margin="10,0,0,0" ItemsSource="{Binding PublishIntervalChoices}"
+                          SelectedItem="{Binding PublishIntervalChoice}"/>
+                <TextBlock Text="apart" VerticalAlignment="Center" Margin="6,0,0,0"/>
               </StackPanel>
               <StackPanel Orientation="Horizontal" Margin="0,9,0,4">
                 <Button Style="{StaticResource SecondaryButton}" Content="Apply Bulk Schedule"
@@ -1862,6 +2573,12 @@
       <TabItem Header="Settings">
         <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
           <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel MaxWidth="800" HorizontalAlignment="Left"><TextBlock Text="Dependencies &amp; paths" FontSize="21" FontWeight="SemiBold"/>
+            <Separator Margin="0,14"/>
+            <TextBlock Text="Tab visibility" FontSize="18" FontWeight="SemiBold"/>
+            <TextBlock Text="Check the tabs you want visible. Changes apply immediately and are saved locally. Settings always stays available." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
+            <WrapPanel x:Name="TabVisibilityOptions" MaxWidth="740" Margin="0,2,0,12"/>
+            <Button Content="Show all tabs" Click="ShowAllTabs_OnClick" Style="{StaticResource SecondaryButton}" HorizontalAlignment="Left" Margin="0,0,0,14"/>
+            <Separator Margin="0,14"/>
             <Label Content="PROJECTS ROOT" Margin="0,12,0,0"/><TextBox Width="740" Text="{Binding Settings.ProjectsRoot}"/>
             <Label Content="FFMPEG.EXE" Margin="0,10,0,0"/><TextBox Width="740" Text="{Binding Settings.FfmpegPath}"/>
             <Label Content="FFPROBE.EXE" Margin="0,10,0,0"/><TextBox Width="740" Text="{Binding Settings.FfprobePath}"/>

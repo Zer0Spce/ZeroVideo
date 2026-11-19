@@ -266,9 +266,175 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     /// DESCRIPTION when the schedule controls weren't mounted. Never search
     /// the caption or arbitrary page text for a date.
     /// </summary>
+
+    // TikTok periodically renders the schedule controls without the old
+    // .date-picker-input / .time-picker-input classes. Identify a visible
+    // date/time value ONLY beneath the explicit "When to post" heading.
+    // Never search the caption, video description, sidebar, or the full page
+    // for a date to click. If ambiguous, stop before final submission.
+    private static async Task<ILocator?> FindTikTokScheduleFieldNearHeadingAsync(
+        IPage page, bool date, Action<string>? log, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var field = date ? "date" : "time";
+        var result = await page.EvaluateAsync<System.Text.Json.JsonElement>(
+            """
+            kind => {
+              const marker='data-zerovideo-schedule-'+kind+'-trigger';
+              document.querySelectorAll('['+marker+']').forEach(e=>e.removeAttribute(marker));
+              const visible=e=>{
+                if(!e)return false;
+                const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+                return r.width>4 && r.height>6 && r.top>=0 && r.bottom<=innerHeight+40 &&
+                  s.display!=='none' && s.visibility!=='hidden';
+              };
+              const text=e=>(e.value||e.innerText||e.textContent||'').trim()
+                .replace(/\s+/g,' ');
+              const heads=[...document.querySelectorAll('h1,h2,h3,h4,h5,div,span,label,strong')]
+                .filter(e=>visible(e)&&text(e)==='When to post'&&
+                  ![...e.children].some(c=>text(c)==='When to post'));
+              if(heads.length!==1)return {found:false,reason:'When to post heading absent/ambiguous'};
+              const head=heads[0].getBoundingClientRect();
+              const regex=kind==='date'
+                ?/^(?:\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})$/
+                :/^\d{1,2}:\d{2}(?:\s*[AP]M)?$/i;
+              const nodes=[...document.querySelectorAll('input,button,[role="button"],[role="combobox"],span,div')];
+              const leaves=nodes.filter(e=>{
+                if(!visible(e)||!regex.test(text(e)))return false;
+                if(e.closest('[contenteditable="true"],[role="textbox"],[data-e2e="post_video_button"]'))
+                  return false;
+                const r=e.getBoundingClientRect();
+                if(r.top<head.bottom-5 || r.top>head.bottom+175)return false;
+                // Do not allow a large container/description/sidebar as a target.
+                if(r.width>400 || r.height>90)return false;
+                return ![...e.children].some(c=>visible(c)&&text(c)===text(e));
+              });
+              const choices=[];
+              for(const e of leaves){
+                let chosen=e, best=0;
+                for(let a=e,depth=0;a&&depth<4;a=a.parentElement,depth++){
+                  const r=a.getBoundingClientRect();
+                  if(r.width<65||r.width>360||r.height<22||r.height>70)continue;
+                  if(r.top<head.bottom-6||r.top>head.bottom+175)continue;
+                  if(a.closest('[contenteditable="true"],[role="textbox"]'))continue;
+                  const cls=typeof a.className==='string'?a.className.toLowerCase():'';
+                  const isButton=a.matches('button,input,[role="button"],[role="combobox"],[tabindex]');
+                  const dateHint=/date|calendar/.test(cls+' '+(a.getAttribute('aria-label')||''));
+                  const timeHint=/time/.test(cls+' '+(a.getAttribute('aria-label')||''));
+                  const score=(isButton?12:0)+(kind==='date'&&dateHint?20:0)+
+                    (kind==='time'&&timeHint?20:0)+(r.height>=30?3:0)-depth;
+                  if(score>best){best=score;chosen=a;}
+                }
+                choices.push({el:chosen,label:text(e),area:chosen.getBoundingClientRect().width*
+                    chosen.getBoundingClientRect().height});
+              }
+              const unique=[];
+              for(const c of choices)if(!unique.some(v=>v.el===c.el))unique.push(c);
+              if(unique.length!==1)return {found:false,
+                reason:'Expected one '+kind+' field, found '+unique.length};
+              unique[0].el.setAttribute(marker,'true');
+              return {found:true,label:unique[0].label};
+            }
+            """, field);
+        if (!result.GetProperty("found").GetBoolean())
+        {
+            log?.Invoke("TikTok: scoped " + field + " fallback unavailable: " +
+                result.GetProperty("reason").GetString());
+            return null;
+        }
+        var locator = page.Locator("[data-zerovideo-schedule-" + field + "-trigger='true']");
+        if (await locator.CountAsync() != 1 || !await locator.First.IsVisibleAsync())
+            return null;
+        log?.Invoke("TikTok: schedule " + field + " identified under When to post: '" +
+            result.GetProperty("label").GetString() + "'.");
+        return locator.First;
+    }
+
+    // Some TikTok accounts render the newer "When to post" toolbar as
+    // three adjacent controls: [calendar date] [clock time] [GMT timezone].
+    // Identify ONLY the date/time control beside that exact heading; do not
+    // interact with privacy, caption, or timezone dropdowns.
+    private static async Task<ILocator?> FindTikTokNewScheduleToolbarFieldAsync(
+        IPage page, bool date, Action<string>? log, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var kind=date?"date":"time";
+        var result=await page.EvaluateAsync<System.Text.Json.JsonElement>(
+            """
+            kind=>{
+              const marker='data-zerovideo-schedule-'+kind+'-trigger';
+              const visible=e=>{
+                if(!e)return false;
+                const r=e.getBoundingClientRect(),c=getComputedStyle(e);
+                return r.width>10&&r.height>10&&r.top>=0&&r.bottom<innerHeight+50&&
+                  c.display!=='none'&&c.visibility!=='hidden';
+              };
+              const text=e=>(e.value||e.innerText||e.textContent||'')
+                .replace(/\s+/g,' ').trim();
+              const datePattern=/^(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}|\d{4}-\d{2}-\d{2})$/i;
+              const timePattern=/^\d{1,2}:\d{2}(?:\s*[AP]M)?$/i;
+              const pattern=kind==='date'?datePattern:timePattern;
+              const heads=[...document.querySelectorAll('h1,h2,h3,h4,span,div,strong')]
+                .filter(e=>visible(e)&&text(e)==='When to post'&&
+                  ![...e.children].some(c=>text(c)==='When to post'));
+              if(heads.length!==1)return {ok:false,reason:'When to post heading ambiguous'};
+              const h=heads[0].getBoundingClientRect();
+              const nodes=[...document.querySelectorAll('input,button,[role="button"],[role="combobox"],span,div')]
+                .filter(e=>{
+                  if(!visible(e)||!pattern.test(text(e))||
+                    e.closest('[contenteditable="true"],[role="textbox"],[data-e2e="post_video_button"]'))return false;
+                  const r=e.getBoundingClientRect();
+                  return r.top>=h.bottom-5&&r.top<=h.bottom+180&&
+                    r.left>=h.left-25&&r.width<=340&&r.height<=85&&
+                    ![...e.children].some(c=>visible(c)&&text(c)===text(e));
+                });
+              const boxes=[];
+              for(const leaf of nodes) {
+                let chosen=leaf;
+                // Prefer the clickable enclosing tile rather than the icon
+                // or text span. Keep the tile short enough not to include
+                // the adjacent GMT+8 selector.
+                for(let p=leaf.parentElement,depth=0;p&&depth<4;p=p.parentElement,depth++){
+                  const r=p.getBoundingClientRect();
+                  if(r.width>360||r.width<90||r.height>75||r.height<30)continue;
+                  if(r.top<h.bottom-8||r.top>h.bottom+180)continue;
+                  if(/GMT|Local Time/i.test(text(p)))continue;
+                  chosen=p;
+                  if(p.matches('button,[role="button"],[role="combobox"],[tabindex]')||
+                    /picker|select|input/i.test(typeof p.className==='string'?p.className:''))break;
+                }
+                const rect=chosen.getBoundingClientRect();
+                boxes.push({el:chosen,center:rect.left+rect.width/2,label:text(leaf)});
+              }
+              const unique=[];
+              for(const b of boxes)if(!unique.some(x=>Math.abs(x.center-b.center)<24))unique.push(b);
+              if(unique.length!==1)return {ok:false,reason:'Expected one '+kind+' toolbar tile, found '+unique.length};
+              document.querySelectorAll('['+marker+']').forEach(e=>e.removeAttribute(marker));
+              unique[0].el.setAttribute(marker,'true');
+              return {ok:true,label:unique[0].label};
+            }
+            """,kind);
+        if(!result.GetProperty("ok").GetBoolean())
+        {
+            log?.Invoke("TikTok: new toolbar "+kind+" locator: "+
+                result.GetProperty("reason").GetString());
+            return null;
+        }
+        var marked=page.Locator("[data-zerovideo-schedule-"+kind+"-trigger='true']");
+        if(await marked.CountAsync()!=1||!await marked.IsVisibleAsync())return null;
+        log?.Invoke("TikTok: selected "+kind+" field in new When to post toolbar: "+
+            result.GetProperty("label").GetString());
+        return marked.First;
+    }
+
     private static async Task<ILocator?> FindTikTokScheduleDateTriggerAsync(
         IPage page, Action<string>? log, CancellationToken ct)
     {
+        // Prefer the newly positioned account-specific date tile; it can
+        // coexist with hidden legacy date widgets elsewhere in the document.
+        var newToolbar=await FindTikTokNewScheduleToolbarFieldAsync(
+            page,true,log,ct);
+        if(newToolbar is not null)return newToolbar;
         var preferred = page.Locator(".date-picker-input:visible");
         for(var poll=0;poll<20;poll++)
         {
@@ -333,6 +499,9 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         var found=await page.EvaluateAsync<System.Text.Json.JsonElement>(inspect);
         if(!found.GetProperty("found").GetBoolean())
         {
+            var scoped = await FindTikTokScheduleFieldNearHeadingAsync(
+                page, date: true, log, ct);
+            if(scoped is not null) return scoped;
             log?.Invoke("TikTok: date widget NOT available after Schedule activation: " +
                 found.GetProperty("reason").GetString() +
                 ". Will not click dates in the video caption.");
@@ -352,6 +521,124 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         return marked.First;
     }
 
+
+    // The November 2026 TikTok calendar is a floating TUX popover rather than
+    // the legacy .DatePicker__panel. Select a day only from the unique visible
+    // calendar for the requested month, adjacent to the scheduling date input.
+    // Do not use GetByText(day) on the page; dates also occur in captions.
+    // Match TikTok's current TUX calendar: month header "November / 2026",
+    // weekday row and 7-column day grid (not the legacy DatePicker__panel).
+    // Only click a day after identifying the unique visible monthly grid and
+    // confirming both its text and its weekday column / calendar row.
+    private static async Task<bool> SelectTikTokTuxCalendarDayAsync(
+        IPage page, ILocator dateTrigger, DateTime target,
+        Action<string>? log, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var result=await page.EvaluateAsync<System.Text.Json.JsonElement>(
+            """
+            arg => {
+              const marker='data-zerovideo-tux-calendar-day';
+              document.querySelectorAll('['+marker+']').forEach(e=>e.removeAttribute(marker));
+              const visible=e=>{
+                const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+                return r.width>7&&r.height>7&&r.bottom>0&&r.top<innerHeight&&
+                  s.display!=='none'&&s.visibility!=='hidden';
+              };
+              const t=e=>(e.innerText||e.textContent||'').replace(/\s+/g,' ').trim();
+              const input=document.querySelector('[data-zerovideo-schedule-date-trigger]');
+              if(!input||!visible(input))return {ok:false,why:'date input missing'};
+              const ir=input.getBoundingClientRect();
+              const months=['January','February','March','April','May','June',
+                'July','August','September','October','November','December'];
+              const header=new RegExp('^'+months[arg.month-1]+'\\s*[/, -]?\\s*'+arg.year+'$','i');
+              // Require a leaf header, not the whole upload page.
+              const headers=[...document.querySelectorAll('div,span,strong,h2,h3')]
+                .filter(e=>visible(e)&&header.test(t(e))&&
+                  ![...e.children].some(c=>header.test(t(c))));
+              const valid=[];
+              for(const h of headers){
+                for(let p=h.parentElement,depth=0;p&&depth<7;p=p.parentElement,depth++){
+                  const r=p.getBoundingClientRect();
+                  if(r.width<280||r.width>510||r.height<245||r.height>540)continue;
+                  if(r.left>ir.right+100||r.right<ir.left-100||
+                     r.top>ir.bottom+20||r.bottom<ir.top-150)continue;
+                  const txt=t(p);
+                  if(!/Sun\s+Mon\s+Tue\s+Wed\s+Thurs?\s+Fri\s+Sat/i.test(txt))
+                    continue;
+                  const leaves=[...p.querySelectorAll('button,span,div,[role="gridcell"]')]
+                    .filter(n=>visible(n)&&/^(?:[1-9]|[12]\d|3[01])$/.test(t(n))&&
+                      ![...n.children].some(c=>visible(c)&&t(c)===t(n)))
+                    .map(e=>{const d=e.getBoundingClientRect();
+                      return {e,x:d.left+d.width/2,y:d.top+d.height/2,text:t(e)};});
+                  // Unique visual cells (some day elements are nested)
+                  const cells=[];
+                  for(const n of leaves){
+                    if(cells.some(c=>Math.abs(c.x-n.x)<8&&Math.abs(c.y-n.y)<8))continue;
+                    cells.push(n);
+                  }
+                  if(cells.length<28||cells.length>42)continue;
+                  const ys=[...new Set(cells.map(c=>Math.round(c.y/12)*12))]
+                    .sort((a,b)=>a-b);
+                  const rows=[];
+                  for(const c of cells) {
+                    let row=rows.find(x=>Math.abs(x.y-c.y)<13);
+                    if(!row){row={y:c.y,cells:[]};rows.push(row)}
+                    row.cells.push(c);
+                  }
+                  rows.sort((a,b)=>a.y-b.y);
+                  if(rows.some(row=>row.cells.length!==7))continue;
+                  rows.forEach(row=>row.cells.sort((a,b)=>a.x-b.x));
+                  const startDay=new Date(arg.year,arg.month-1,1).getDay();
+                  const index=startDay+arg.day-1;
+                  const row=Math.floor(index/7),col=index%7;
+                  const cell=rows[row]?.cells[col];
+                  if(!cell||cell.text!==String(arg.day))continue;
+                  const element=cell.e.closest('button,[role="gridcell"],[role="button"]')||cell.e;
+                  if(element.matches(':disabled,[aria-disabled="true"],[data-disabled="true"]')||
+                    element.closest('[aria-disabled="true"],[data-disabled="true"]'))continue;
+                  valid.push({element,area:r.width*r.height,cells:cells.length});
+                  break;
+                }
+              }
+              const choices=[...new Set(valid.map(x=>x.element))];
+              if(choices.length!==1)return {ok:false,why:'monthly grid selection ambiguous',
+                headers:headers.length,grids:valid.length};
+              choices[0].setAttribute(marker,'yes');
+              return {ok:true,day:arg.day,cells:valid[0].cells};
+            }
+            """,new{year=target.Year,month=target.Month,day=target.Day});
+        if(!result.GetProperty("ok").GetBoolean())
+        {
+            log?.Invoke("TikTok: TUX calendar day selection unavailable: "+
+                result.GetProperty("why").GetString()+"; diagnostic="+result.GetRawText());
+            return false;
+        }
+        var day=page.Locator("[data-zerovideo-tux-calendar-day='yes']");
+        if(await day.CountAsync()!=1||!await day.IsVisibleAsync()||
+           !await day.IsEnabledAsync())return false;
+        log?.Invoke("TikTok: selecting "+target.ToString("yyyy-MM-dd")+
+            " inside verified seven-column monthly calendar.");
+        await day.ClickAsync(new(){Timeout=7000});
+        for(var poll=0;poll<22;poll++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var shown=await dateTrigger.EvaluateAsync<string>(
+                "e=>(e.value||e.innerText||e.textContent||'').trim()");
+            if(DateTime.TryParse(shown,
+                System.Globalization.CultureInfo.GetCultureInfo("en-US"),
+                System.Globalization.DateTimeStyles.None,out var date)&&
+                date.Date==target.Date)
+            {
+                log?.Invoke("TikTok: selected calendar date verified: "+shown);
+                return true;
+            }
+            await Task.Delay(170,ct);
+        }
+        await SaveTikTokPickerEvidenceAsync(page,"TUX-Date-Not-Committed",log);
+        return false;
+    }
+
     private static async Task<bool> SetTikTokDateStrictAsync(
         IPage page, ILocator dateTrigger, DateTime target,
         Action<string>? log, CancellationToken ct, bool subsequent = false)
@@ -368,7 +655,8 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                 ?el.parentElement.className:'',
               ariaLabel:el.getAttribute('aria-label')||'',
               placeholder:el.getAttribute('placeholder')||'',
-              testId:el.getAttribute('data-testid')||'',
+              testId:(el.getAttribute('data-testid')||'')+' '+
+                (el.getAttribute('data-zerovideo-schedule-date-trigger')?'date-calendar-trigger':''),
               visibleText:(el.innerText||el.value||'').trim().slice(0,200),
               insideEditor:!!el.closest('[contenteditable="true"],[role="textbox"]'),
               insideFinalSubmission:!!el.closest('[data-e2e="post_video_button"]')
@@ -390,18 +678,29 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
 
         await SaveTikTokDateTriggerDiagnosticAsync(
             page,dateTrigger,"Before-Click",target,log,subsequent);
-        var shown=(await dateTrigger.InnerTextAsync()).Trim();
+        var shown=(await dateTrigger.EvaluateAsync<string>(
+            "el => (el.value||el.innerText||el.textContent||'').trim()")).Trim();
         if(DateTime.TryParse(shown,culture,System.Globalization.DateTimeStyles.None,out var existing)
             && existing.Date==target.Date) return true;
 
         var calendar=page.Locator(".DatePicker__panel:visible").First;
-        // Do not toggle a calendar that already opened during a React render.
+        // The new TUX calendar is a portal; it never creates a DatePicker__panel.
+        // Try its verified day picker first, BEFORE the seven-second legacy wait.
+        // The subsequent-video path must not click the date wrapper twice:
+        // doing so closes the already-open calendar.
         if(await calendar.CountAsync()==0)
         {
             log?.Invoke("TikTok: opening date picker for " +
                 (subsequent ? "video 2+" : "first/standalone video") +
                 "; displayed='" + shown + "', target=" + target.ToString("yyyy-MM-dd"));
             await dateTrigger.ClickAsync(new(){Timeout=7000});
+            await Task.Delay(220,ct);
+            if(await SelectTikTokTuxCalendarDayAsync(page,dateTrigger,target,log,ct))
+                return true;
+            // If TUX is visibly open but ambiguous, do NOT toggle the
+            // wrapper and close the calendar before another attempt.
+            var tuxVisible=await page.Locator("[data-zerovideo-tux-calendar-day='yes']").CountAsync()>0;
+            if(tuxVisible)return false;
         }
         var panelOpen=false;
         try
@@ -420,28 +719,18 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
 
         if(!panelOpen)
         {
-            // The date text may be a child of the actual clickable control.
-            // Only retry through a clearly date-specific, interactive ancestor.
-            var wrapper=await FindTikTokDateTriggerWrapperAsync(page,dateTrigger,log);
-            if(wrapper is not null)
-            {
-                await wrapper.ClickAsync(new(){Timeout=7000});
-                try
-                {
-                    await calendar.WaitForAsync(new(){
-                        State=WaitForSelectorState.Visible,Timeout=5000});
-                    panelOpen=true;
-                    log?.Invoke("TikTok: date calendar opened through date-control wrapper.");
-                }
-                catch(PlaywrightException)
-                {
-                    await SaveTikTokDateTriggerDiagnosticAsync(
-                        page,dateTrigger,"Wrapper-Not-Opened",target,log,subsequent);
-                }
-            }
+            // Do not click a second date ancestor. The TUX calendar is an
+            // overlay that toggles closed on a repeated click.
+            if(await SelectTikTokTuxCalendarDayAsync(page,dateTrigger,target,log,ct))
+                return true;
         }
         if(!panelOpen || await calendar.CountAsync()==0)
         {
+            // Current TikTok UI opens a November/2026 TUX calendar whose panel
+            // is not named DatePicker__panel. Select day using strict, scoped
+            // geometry and verify the read-only input before final submission.
+            if(await SelectTikTokTuxCalendarDayAsync(page,dateTrigger,target,log,ct))
+                return true;
             log?.Invoke("TikTok: date calendar still unavailable — stopping scheduling " +
                 "before time or final submit, without selecting an unverified date.");
             await SaveTikTokPickerEvidenceAsync(page,"Date-Panel-Missing",log);
@@ -562,7 +851,8 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         await option.ClickAsync(new(){Timeout=7000});
         // No Escape on successful day click; it may revert the selection.
         await Task.Delay(350,ct);
-        var selected=(await dateTrigger.InnerTextAsync()).Trim();
+        var selected=(await dateTrigger.EvaluateAsync<string>(
+            "el => (el.value||el.innerText||el.textContent||'').trim()")).Trim();
         var ok=DateTime.TryParse(selected,culture,
             System.Globalization.DateTimeStyles.None,out var read)&&read.Date==target.Date;
         log?.Invoke("TikTok: date requested "+target.ToString("yyyy-MM-dd")+
@@ -574,23 +864,27 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     private static async Task<ILocator?> GetTikTokTimePopupAsync(
         IPage page, ILocator timeTrigger, Action<string>? log)
     {
+        // TikTok keeps inactive picker copies mounted with nonzero geometry.
+        // Playwright :visible alone does not exclude .tiktok-timepicker-invisible.
         var popup=page.Locator(
-            ".tiktok-timepicker-time-picker-container:visible, .TimePicker__panel:visible").First;
-        if(await popup.CountAsync()>0)return popup;
+            ".tiktok-timepicker-time-picker-container:not(.tiktok-timepicker-invisible):visible, " +
+            ".TimePicker__panel:visible").First;
+        if(await popup.CountAsync()>0 && await popup.IsVisibleAsync())return popup;
         // Current TikTok CSS may differ. A candidate must be a small visible
         // popup containing at least 10 short numeric option texts in TWO
         // distinct horizontal columns, adjacent to the time trigger.
         var marked=await page.EvaluateAsync<bool>(@"
 ()=>{document.querySelectorAll('[data-zerovideo-time-popup]').forEach(
  e=>e.removeAttribute('data-zerovideo-time-popup'));
- const trigger=[...document.querySelectorAll('.time-picker-input')].find(e=>{
+ const trigger=[...document.querySelectorAll(
+   '[data-zerovideo-schedule-time-trigger=true],.time-picker-input')].find(e=>{
  const r=e.getBoundingClientRect();return r.width>10&&r.height>10});
  if(!trigger)return false;
  const tr=trigger.getBoundingClientRect();
  let matches=[];
- for(const p of document.querySelectorAll('[role=dialog],[role=listbox],.Picker__panel,[class*=TimePicker]')){
+ for(const p of document.querySelectorAll('[role=dialog],[role=listbox],[role=menu],[class*=TimePicker],[class*=time-picker],[class*=timePicker]')){
   const r=p.getBoundingClientRect(),s=getComputedStyle(p);
-  if(s.display==='none'||s.visibility==='hidden'||r.width<180||
+  if(s.display==='none'||s.visibility==='hidden'||p.classList.contains('tiktok-timepicker-invisible')||r.width<180||
      r.width>520||r.height<180||r.height>650)continue;
   if(Math.abs((r.left+r.width/2)-(tr.left+tr.width/2))>310||
      Math.min(Math.abs(r.bottom-tr.top),Math.abs(r.top-tr.bottom))>200)continue;
@@ -620,76 +914,150 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         IPage page, ILocator popup, int value, bool hour,
         Action<string>? log, CancellationToken ct)
     {
-        var direct=popup.Locator(hour?
-            "span[class*='tiktok-timepicker-left']":
-            "span[class*='tiktok-timepicker-right']")
-            .Filter(new(){HasTextRegex=new System.Text.RegularExpressions.Regex(
-                @"^\s*0?"+value+@"\s*$")}).First;
-        if(await direct.CountAsync()>0)
+        ct.ThrowIfCancellationRequested();
+        var target=value.ToString("00",System.Globalization.CultureInfo.InvariantCulture);
+
+        // New TikTok account: each clock column is an accessible listbox
+        // with buttons such as role=option aria-label="Hours 22" and
+        // role=option aria-label="Minutes 05". This is NOT the older
+        // .tiktok-timepicker-option-text markup.
+        var newPanel=page.Locator(".TimePicker__panel:visible");
+        if(await newPanel.CountAsync()==1)
         {
-            await direct.ScrollIntoViewIfNeededAsync(new(){Timeout=5000});
-            await direct.ClickAsync(new(){Timeout=5000});
-            log?.Invoke("TikTok: selected "+(hour?"hour ":"minute ")+value+" via popup option.");
+            var column=hour?"Hours":"Minutes";
+            var label=column+" "+target;
+            var option=newPanel.First.Locator(
+                "[role='listbox'][aria-label='"+column+"'] "+
+                "button[role='option'][aria-label='"+label+"']");
+            var matches=await option.CountAsync();
+            if(matches!=1 || !await option.First.IsVisibleAsync() ||
+                !await option.First.IsEnabledAsync() ||
+                await option.First.GetAttributeAsync("data-disabled")=="true")
+            {
+                log?.Invoke("TikTok: new TimePicker "+label+
+                    " unavailable (matches="+matches+"). No unrelated element clicked.");
+                return false;
+            }
+            await option.First.ScrollIntoViewIfNeededAsync(new(){Timeout=5000});
+            await option.First.ClickAsync(new(){Timeout=6000});
+            log?.Invoke("TikTok: selected "+label+
+                " from new accessible TimePicker column.");
+            await Task.Delay(180,ct);
             return true;
         }
-        // For newer markup, mark ONLY a numeric leaf inside the verified
-        // time popup, in the correct left/right column.
-        const string inspect=@"
-(root,args)=>{
- root.querySelectorAll('[data-zerovideo-option]').forEach(
- e=>e.removeAttribute('data-zerovideo-option'));
- const b=root.getBoundingClientRect(),mid=b.left+b.width/2;
- const nums=[];
- for(const e of root.querySelectorAll('span,button,div,li')){
-   const t=(e.textContent||'').trim();
-   if(!/^\d{1,2}$/.test(t))continue;
-   if([...e.children].some(c=>(c.textContent||'').trim()===t))continue;
-   const r=e.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2;
-   if(r.width<3||r.height<3||r.width>130||r.height>75)continue;
-   if(args.hour?x>=mid:x<=mid)continue;
-   if(y<b.top+5||y>b.bottom-5)continue;
-   nums.push({e,n:Number(t),y});
- }
- const candidates=nums.filter(n=>n.n===args.value);
- candidates.sort((a,b)=>Math.abs(a.y-(b.top+b.height/2))-
-  Math.abs(b.y-(b.top+b.height/2)));
- if(candidates.length)candidates[0].e.setAttribute('data-zerovideo-option','true');
- return {found:candidates.length>0,
-  min:nums.length?Math.min(...nums.map(x=>x.n)):-1,
-  max:nums.length?Math.max(...nums.map(x=>x.n)):-1,
-  count:nums.length};
-}";
-        for(var i=0;i<22;i++)
+
+        // Preserve the proven legacy time-picker selector for accounts
+        // that still use the two TUX option-text columns.
+        var col=hour?"left":"right";
+        var active=page.Locator(
+            ".tiktok-timepicker-time-picker-container:not(.tiktok-timepicker-invisible):visible");
+        if(await active.CountAsync()!=1)
+        {
+            log?.Invoke("TikTok: neither unique new TimePicker panel nor "+
+                "legacy active picker is available; no blind click.");
+            return false;
+        }
+        var exact=active.Locator(
+            ".tiktok-timepicker-option-text.tiktok-timepicker-"+col)
+            .Filter(new(){HasTextRegex=new System.Text.RegularExpressions.Regex(
+                @"^\s*"+target+@"\s*$")});
+        if(await exact.CountAsync()!=1)
+        {
+            log?.Invoke("TikTok: legacy "+col+" option "+target+
+                " not unique; no blind click.");
+            return false;
+        }
+        var choice=exact.First.Locator("xpath=..");
+        if(!await choice.IsVisibleAsync()||!await choice.IsEnabledAsync())
+            return false;
+        await choice.ScrollIntoViewIfNeededAsync(new(){Timeout=5000});
+        await choice.ClickAsync(new(){Timeout=5000});
+        log?.Invoke("TikTok: selected legacy "+(hour?"hour ":"minute ")+target);
+        await Task.Delay(200,ct);
+        return true;
+    }
+
+    // The TUX time value may be held by a child INPUT or text node. Reading
+    // el.value || el.innerText from the outer wrapper can return an empty
+    // string, even while the UI visibly displays e.g. 23:00.
+    private static async Task<string> ReadTikTokTimeValueAsync(
+        ILocator timeTrigger, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var raw=await timeTrigger.EvaluateAsync<string>(
+            """
+            el => {
+              const options=[el];
+              options.push(...el.querySelectorAll('input,[role="combobox"],span'));
+              if(el.parentElement)
+                options.push(...el.parentElement.querySelectorAll('input'));
+              for(const n of options){
+                const value=(n.value||n.innerText||n.textContent||'')
+                  .replace(/[\u200b-\u200f\u202a-\u202e]/g,'')
+                  .trim();
+                const match=value.match(/(?:^|[^\d])(\d{1,2}):([0-5]\d)(?!\d)/);
+                if(match)return match[1].padStart(2,'0')+':'+match[2];
+              }
+              return '';
+            }
+            """);
+        return raw.Trim();
+    }
+
+    private static async Task<bool> WaitTikTokTimeValueAsync(
+        ILocator trigger, DateTime target, Action<string>? log,
+        CancellationToken ct)
+    {
+        var wanted=target.ToString("HH:mm",System.Globalization.CultureInfo.InvariantCulture);
+        string last="";
+        for(var poll=0;poll<14;poll++)
         {
             ct.ThrowIfCancellationRequested();
-            var probe=await popup.EvaluateAsync<System.Text.Json.JsonElement>(
-                inspect,new {value,hour});
-            if(probe.GetProperty("found").GetBoolean())
+            last=await ReadTikTokTimeValueAsync(trigger,ct);
+            if(last==wanted)
             {
-                var marked=popup.Locator("[data-zerovideo-option='true']");
-                if(await marked.CountAsync()!=1)return false;
-                await marked.ClickAsync(new(){Timeout=5000});
-                log?.Invoke("TikTok: selected "+(hour?"hour ":"minute ")+value+
-                    " in isolated popup.");
+                log?.Invoke("TikTok: committed time verified: "+last);
                 return true;
             }
-            var count=probe.GetProperty("count").GetInt32();
-            if(count==0){log?.Invoke("TikTok: no values in "+(hour?"hour":"minute")+" column.");return false;}
-            var min=probe.GetProperty("min").GetInt32();
-            var max=probe.GetProperty("max").GetInt32();
-            var direction=value<min?-1:1;
-            if(value>max)direction=1;
-            // Scrolling only inside verified popup. No click outside it.
-            var bb=await popup.BoundingBoxAsync();
-            if(bb is null)return false;
-            await page.Mouse.MoveAsync(bb.X+bb.Width*(hour?.25f:.75f),
-                bb.Y+bb.Height*.5f);
-            await page.Mouse.WheelAsync(0,direction*130);
             await Task.Delay(180,ct);
         }
-        log?.Invoke("TikTok: "+(hour?"hour":"minute")+" "+value+
-            " not reachable safely in time popup.");
+        log?.Invoke("TikTok: time readback expected "+wanted+
+            ", actual '"+last+"'. No final submission.");
         return false;
+    }
+
+    private static async Task<bool> VerifyTikTokScheduledFieldsAsync(
+        IPage page, DateTimeOffset requested, Action<string>? log, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var date=await FindTikTokScheduleDateTriggerAsync(page,log,ct);
+        var time=await FindTikTokNewScheduleToolbarFieldAsync(
+            page,false,log,ct) ??
+            page.Locator(".time-picker-input:visible").First;
+        if(await time.CountAsync()==0)
+            time=await FindTikTokScheduleFieldNearHeadingAsync(
+                page,date:false,log,ct) ??
+                page.Locator(".time-picker-input:visible").First;
+        if(date is null||await time.CountAsync()!=1)
+        {
+            log?.Invoke("TikTok: date or time field missing during final schedule readback.");
+            return false;
+        }
+        var displayedDate=await date.EvaluateAsync<string>(
+            "el => (el.value||el.innerText||el.textContent||'').trim()");
+        var displayedTime=await ReadTikTokTimeValueAsync(time,ct);
+        var target=requested.LocalDateTime;
+        var parsed=DateTime.TryParse(displayedDate,
+            System.Globalization.CultureInfo.GetCultureInfo("en-US"),
+            System.Globalization.DateTimeStyles.None,out var day);
+        var valid=parsed&&day.Date==target.Date&&
+            (displayedTime==target.ToString("HH:mm")||
+             displayedTime==target.ToString("H:mm"));
+        log?.Invoke("TikTok: FINAL readback expected " +
+            target.ToString("yyyy-MM-dd HH:mm") + " displayed " +
+            displayedDate + " " + displayedTime + " valid=" + valid);
+        if(!valid)await SaveTikTokPickerEvidenceAsync(page,"Final-Readback-Mismatch",log);
+        return valid;
     }
 
     private static async Task<bool> SetTikTokScheduleAsync(
@@ -736,40 +1104,68 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
 
         // Date failure does not authorize any click outside the time field;
         // time is tested independently but inside its own verified popup.
-        var timeTrigger=page.Locator(".time-picker-input:visible").First;
+        var timeTrigger=await FindTikTokNewScheduleToolbarFieldAsync(
+            page,false,log,ct) ??
+            page.Locator(".time-picker-input:visible").First;
         if(await timeTrigger.CountAsync()==0)
-            timeTrigger=page.GetByText(new System.Text.RegularExpressions.Regex(
-                @"^\s*\d{1,2}:\d{2}\s*$")).First;
+            timeTrigger=await FindTikTokScheduleFieldNearHeadingAsync(
+                page, date: false, log, ct) ??
+                page.Locator(".time-picker-input:visible").First;
         var timeOk=false;
         if(await timeTrigger.CountAsync()>0&&await timeTrigger.IsVisibleAsync())
         {
-            var current=(await timeTrigger.InnerTextAsync()).Trim();
-            var expected=target.ToString("HH:mm");
-            timeOk=current==expected||current==target.ToString("H:mm");
+            timeOk=await ReadTikTokTimeValueAsync(timeTrigger,ct)==
+                target.ToString("HH:mm",culture);
             if(!timeOk)
             {
                 await page.Keyboard.PressAsync("Escape");
                 await timeTrigger.ClickAsync(new(){Timeout=6000});
-                await Task.Delay(350,ct);
+                await Task.Delay(300,ct);
                 await SaveTikTokPickerEvidenceAsync(page,"Time-Open",log);
                 var popup=await GetTikTokTimePopupAsync(page,timeTrigger,log);
                 if(popup is not null)
                 {
                     var hour=await SelectTikTokTimeColumnAsync(
                         page,popup,target.Hour,true,log,ct);
-                    var minute=await SelectTikTokTimeColumnAsync(
-                        page,popup,target.Minute,false,log,ct);
-                    log?.Invoke("TikTok: time option results hour="+hour+" minute="+minute);
-                    // Toggle ONLY the dedicated time trigger to close popup;
-                    // never click anywhere else on the upload form.
-                    await timeTrigger.ClickAsync(new(){Timeout=6000});
-                    await Task.Delay(350,ct);
+                    if(!hour)
+                    {
+                        log?.Invoke("TikTok: hour could not be selected in active picker.");
+                    }
+                    else
+                    {
+                        // The popup can close or re-render after the hour click.
+                        // If it already committed the requested clock, do NOT
+                        // toggle the trigger and accidentally reopen it.
+                        timeOk=await ReadTikTokTimeValueAsync(timeTrigger,ct)==
+                            target.ToString("HH:mm",culture);
+                        if(!timeOk)
+                        {
+                            var minutePopup=await GetTikTokTimePopupAsync(
+                                page,timeTrigger,log);
+                            if(minutePopup is null)
+                            {
+                                await timeTrigger.ClickAsync(new(){Timeout=6000});
+                                await Task.Delay(220,ct);
+                                minutePopup=await GetTikTokTimePopupAsync(
+                                    page,timeTrigger,log);
+                            }
+                            var minute=minutePopup is not null &&
+                                await SelectTikTokTimeColumnAsync(
+                                    page,minutePopup,target.Minute,false,log,ct);
+                            log?.Invoke("TikTok: time-picker selections hour="+hour+
+                                " minute="+minute);
+                        }
+                    }
+                    // Picking the minute itself often closes the TUX popup.
+                    // Do not click the time trigger to close it: that may
+                    // toggle it back open or re-render an old clock state.
+                    timeOk=await WaitTikTokTimeValueAsync(
+                        timeTrigger,target,log,ct);
+                    if(timeOk)
+                        await page.Keyboard.PressAsync("Escape");
                 }
-                current=(await timeTrigger.InnerTextAsync()).Trim();
-                timeOk=current==expected||current==target.ToString("H:mm");
-                log?.Invoke("TikTok: time requested="+expected+" displayed="+current+
-                    " verified="+timeOk);
-                if(!timeOk)await SaveTikTokPickerEvidenceAsync(page,"Time-Failed",log);
+                if(!timeOk)
+                    await SaveTikTokPickerEvidenceAsync(page,"Time-Failed",log);
             }
         }
         if(!dateOk||!timeOk)
@@ -869,11 +1265,240 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         }
     }
 
+    // A navigation to /tiktokstudio/content is NOT enough to confirm a post.
+    // Reconcile against the actual Studio Posts row: title + exact scheduled
+    // local date + local clock time. No Submit/Post action occurs here.
+    public async Task<bool> VerifyExistingTikTokScheduledPostAsync(
+        ZeroVideoSettings settings, string expectedTitle, DateTimeOffset slot,
+        Action<string>? log = null, CancellationToken ct = default)
+    {
+        await browser.EnsureStartedAsync(settings);
+        var page=await browser.GetOrCreatePageAsync("tiktok.com");
+        return await VerifyTikTokPostInStudioAsync(page,expectedTitle,slot,log,ct);
+    }
+
+    private static async Task<bool> VerifyTikTokPostInStudioAsync(
+        IPage origin, string expectedTitle, DateTimeOffset? slot,
+        Action<string>? log, CancellationToken ct)
+    {
+        if (!slot.HasValue || string.IsNullOrWhiteSpace(expectedTitle)) return false;
+        // A TikTok Posts row is the receipt, NOT a redirect from /upload.
+        // React splits/truncates the visible movie title and wraps the blue
+        // date badge. Identify *one physical row* holding BOTH the movie
+        // title prefix and its scheduled local date + clock.
+        var prefix=System.Text.RegularExpressions.Regex.Replace(
+            expectedTitle.Trim(), @"\s+", " ");
+        prefix=prefix[..Math.Min(prefix.Length,25)];
+        var local=slot.Value.LocalDateTime;
+        var monthDay=local.ToString("MMM d",
+            System.Globalization.CultureInfo.InvariantCulture);
+        var clock=local.ToString("h:mmtt",
+            System.Globalization.CultureInfo.InvariantCulture);
+        var onPosts=origin.Url.Contains("/tiktokstudio/content",
+            StringComparison.OrdinalIgnoreCase);
+        var audit=onPosts?origin:await origin.Context.NewPageAsync();
+        try
+        {
+            if(!onPosts)
+                await audit.GotoAsync("https://www.tiktok.com/tiktokstudio/content",
+                    new(){WaitUntil=WaitUntilState.DOMContentLoaded,Timeout=45000});
+            for(var pass=0;pass<22;pass++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var result=await audit.EvaluateAsync<System.Text.Json.JsonElement>(
+                    """
+                    arg => {
+                      const norm=s=>(s||'').replace(/[\u200b-\u200f]/g,'')
+                        .replace(/\s+/g,' ').trim().toLowerCase();
+                      const key=s=>norm(s).replace(/[^a-z0-9]/g,'');
+                      const prefix=key(arg.prefix);
+                      const date=key(arg.monthDay),clock=key(arg.clock);
+                      const dateStart=date+clock;
+                      const text=e=>norm(e.innerText||e.textContent||'');
+                      const isVisible=e=>{
+                        const r=e.getBoundingClientRect();
+                        const css=getComputedStyle(e);
+                        return r.width>1 && r.height>1 &&
+                          css.display!=='none'&&css.visibility!=='hidden';
+                      };
+                      // Parse the blue schedule badge first. A date anywhere
+                      // else on the Posts page must NOT confirm a movie.
+                      const badges=[...document.querySelectorAll('span,a,div,p,time')]
+                        .filter(e=>{
+                          if(!isVisible(e))return false;
+                          const own=key(text(e));
+                          if(own.length>110||!own.includes(dateStart))return false;
+                          return ![...e.children].some(c=>
+                            key(text(c)).includes(dateStart));
+                        });
+                      const matched=new Map(),samples=[];
+                      for(const badge of badges){
+                        const badgeRect=badge.getBoundingClientRect();
+                        const candidates=[];
+                        // TikTok uses flex rows, not always <tr>. A title may
+                        // occupy a sibling cell and can be split by <span>s.
+                        for(let p=badge.parentElement,depth=0;p&&depth<14;
+                            p=p.parentElement,depth++){
+                          const r=p.getBoundingClientRect();
+                          if(r.height>310)break; // never accept the Posts table
+                          if(r.width<240||r.height<48)continue;
+                          if(!key(text(p)).includes(dateStart))continue;
+                          if(!key(text(p)).includes(prefix))continue;
+                          // A real row has a video thumbnail and several
+                          // action controls; avoid matching surrounding cards.
+                          const hasThumbnail=!!p.querySelector('img,video,canvas');
+                          const actions=p.querySelectorAll('button,[role="button"]').length;
+                          // New Studio cards sometimes use CSS background
+                          // thumbnails and icon-only div actions. A compact,
+                          // wide row with BOTH exact date/clock and title is
+                          // sufficient even when those markup tags are absent.
+                          const rowShape=r.width>=600&&r.height>=60&&r.height<=170;
+                          if(!hasThumbnail && actions<2 && !rowShape)continue;
+                          candidates.push({el:p,area:r.width*r.height,top:Math.round(r.top)});
+                        }
+                        candidates.sort((a,b)=>a.area-b.area);
+                        if(candidates.length) {
+                          const chosen=candidates[0];
+                          // Deduplicate nested date badges from the same row.
+                          const rowKey=String(chosen.top);
+                          matched.set(rowKey,chosen);
+                        }
+                      }
+                      // Observability: log safe row previews even when no
+                      // match, to distinguish a title mismatch from date parsing.
+                      const preview=badges.slice(0,5).map(e=>{
+                        const r=e.getBoundingClientRect();
+                        return {badge:text(e).slice(0,75),top:Math.round(r.top)};
+                      });
+                      return {matches:matched.size,badges:badges.length,
+                        preview,path:location.pathname,ready:
+                          !!document.querySelector('img,video')};
+                    }
+                    """,new{prefix,monthDay,clock});
+                var hits=result.GetProperty("matches").GetInt32();
+                if(hits==1)
+                {
+                    log?.Invoke("TikTok: VERIFIED Studio Posts row for '"+prefix+
+                        "' at "+monthDay+" "+clock+
+                        ". Marking Scheduled and continuing to next queued video.");
+                    return true;
+                }
+                if(hits>1)
+                {
+                    log?.Invoke("TikTok: multiple distinct rows match title and "+
+                        "time; stopping to avoid a false confirmation. "+
+                        result.GetRawText());
+                    return false;
+                }
+                if(pass is 2 or 8 or 15 or 21)
+                    log?.Invoke("TikTok: Studio Posts matching pass "+(pass+1)+
+                        "/22: "+result.GetRawText());
+                if(pass is 8 or 15)
+                    await audit.EvaluateAsync(
+                        "() => { let list=[...document.querySelectorAll('*')]"+
+                        ".filter(e=>e.clientHeight>250 && e.scrollHeight>e.clientHeight+80)"+
+                        ".sort((a,b)=>b.clientHeight-a.clientHeight)[0];"+
+                        "if(list)list.scrollTop+=list.clientHeight*.8;"+
+                        "else window.scrollBy(0,500); }");
+                await Task.Delay(850,ct);
+            }
+            log?.Invoke("TikTok: no unambiguous Studio Posts row for '"+prefix+
+                "' at "+monthDay+" "+clock+
+                ". No duplicate upload will be attempted.");
+            return false;
+        }
+        catch(OperationCanceledException){throw;}
+        catch(Exception ex)
+        {
+            log?.Invoke("TikTok: Studio Posts read-only verification error: "+
+                ex.Message.Split('\n')[0]);
+            return false;
+        }
+        finally
+        {
+            if(!onPosts)
+                try{await audit.CloseAsync();}catch(PlaywrightException){}
+        }
+    }
+
     // A single final action: NEVER retry a clicked Schedule/Post button.
     // If TikTok doesn't clearly confirm receipt, flag an ambiguous submission
     // and require the user to inspect TikTok Studio before attempting again.
-    private static async Task<string> SubmitTikTokOnceAsync(
+    // The Schedule radio in "When to post" can have the same name as the
+    // final CTA. On newer Studio pages the footer button may lack the older
+    // data-e2e value. Mark a unique action ONLY below the Checks section.
+    private static async Task<ILocator?> FindTikTokFinalFooterButtonAsync(
         IPage page, bool scheduled, Action<string>? log, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var lookup = await page.EvaluateAsync<System.Text.Json.JsonElement>(
+            """
+            scheduled => {
+              const marker='data-zerovideo-final-upload-cta';
+              document.querySelectorAll('['+marker+']').forEach(x=>x.removeAttribute(marker));
+              const visible=e=>{
+                const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+                return r.width>5&&r.height>10&&r.bottom>0&&r.top<innerHeight&&
+                  s.display!=='none'&&s.visibility!=='hidden';
+              };
+              const value=e=>(e.innerText||e.textContent||'')
+                .replace(/\s+/g,' ').trim();
+              const checks=[...document.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span')]
+                .filter(e=>value(e)==='Checks'&&
+                  ![...e.children].some(c=>value(c)==='Checks'));
+              // If we can locate Checks, the genuine CTA must be below it.
+              const checksBottom=checks.length===1 ?
+                checks[0].getBoundingClientRect().bottom+scrollY : null;
+              const labels=scheduled ?
+                /^(?:Schedule|Post|Publish)$/i : /^(?:Post|Post now|Publish)$/i;
+              const candidates=[...document.querySelectorAll('button,[role="button"]')]
+                .filter(e=>visible(e)&&labels.test(value(e))).filter(e=>{
+                  const y=e.getBoundingClientRect().top+scrollY;
+                  if(checksBottom!==null && y<=checksBottom)return false;
+                  if(e.closest('[role="radio"],[role="radiogroup"]'))return false;
+                  return true;
+                }).map(e=>{
+                  const r=e.getBoundingClientRect();
+                  const data=(e.getAttribute('data-e2e')||'')+' '+
+                    (e.getAttribute('data-testid')||'');
+                  const score=(data.includes('post_video_button')?100:0)+
+                    (/post|submit|publish/i.test(data)?30:0)+
+                    (checksBottom!==null?25:0)+
+                    (r.top>innerHeight*.5?10:0);
+                  return {e,score,label:value(e),y:r.top};
+                }).sort((a,b)=>b.score-a.score);
+              if(candidates.length===0)
+                return {ok:false,reason:'No visible footer Schedule/Post CTA'};
+              const best=candidates[0];
+              if(candidates.length>1&&candidates[1].score===best.score)
+                return {ok:false,reason:'Ambiguous footer CTA candidates: '+
+                  candidates.map(x=>x.label+'@'+Math.round(x.y)).join(', ')};
+              if(checksBottom===null &&
+                  !/post_video_button|submit|publish/i.test(
+                    (best.e.getAttribute('data-e2e')||'')+' '+
+                    (best.e.getAttribute('data-testid')||'')))
+                return {ok:false,reason:'Checks section missing and CTA has no trusted identifier'};
+              best.e.setAttribute(marker,'true');
+              return {ok:true,label:best.label,source:'scoped footer button'};
+            }
+            """, scheduled);
+        if (!lookup.GetProperty("ok").GetBoolean())
+        {
+            log?.Invoke("TikTok: final footer CTA fallback: " +
+                lookup.GetProperty("reason").GetString());
+            return null;
+        }
+        var candidate=page.Locator("[data-zerovideo-final-upload-cta='true']");
+        if(await candidate.CountAsync()!=1 || !await candidate.IsVisibleAsync())
+            return null;
+        log?.Invoke("TikTok: identified real footer action: '" +
+            lookup.GetProperty("label").GetString()+"'.");
+        return candidate;
+    }
+
+    private static async Task<string> SubmitTikTokOnceAsync(
+        IPage page, bool scheduled, string expectedTitle,
+        DateTimeOffset? expectedSlot, Action<string>? log, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         if (!Uri.TryCreate(page.Url, UriKind.Absolute, out var address) ||
@@ -885,33 +1510,56 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             return "TikTok: submission NOT attempted; browser is not on TikTok Studio upload.";
         }
 
+        // The final Schedule/Post CTA is below the fold on TikTok Studio.
+        // Its presence on the page is not enough: scroll to the real upload
+        // footer and let React finish any pending editor/schedule rerender.
+        await page.EvaluateAsync("() => window.scrollTo({top: document.documentElement.scrollHeight, behavior: 'instant'})");
+        await Task.Delay(500, ct);
+        log?.Invoke("TikTok: locating the FINAL publishing CTA at the bottom of the upload page.");
+
         // The upload footer's stable data-e2e selector is more specific than
         // the Schedule radio label and avoids privacy/music controls.
         var button = page.Locator("button[data-e2e='post_video_button']:visible");
         var count = await button.CountAsync();
         if (count != 1)
         {
-            // Only a single real button (never a generic text node, label,
-            // radio or page coordinate) can serve as fallback.
-            button = page.GetByRole(AriaRole.Button, new()
-            {
-                NameRegex = new System.Text.RegularExpressions.Regex(
-                    scheduled ? @"^\s*Schedule\s*$" :
-                    @"^\s*(Post|Publish|Post now)\s*$",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase)
-            });
+            // Different TikTok builds expose the scheduling toggle and
+            // the publishing CTA with the same text. Scope fallback to
+            // a unique button BELOW Checks, never the schedule radio.
+            button = await FindTikTokFinalFooterButtonAsync(
+                page,scheduled,log,ct) ??
+                page.Locator("[data-zerovideo-final-upload-cta='true']");
             count = await button.CountAsync();
         }
         if (count != 1)
         {
             log?.Invoke("TikTok: final " + (scheduled ? "Schedule" : "Post") +
                 " button missing/ambiguous (matches=" + count + "). No submission attempted.");
-            await SaveTikTokPickerEvidenceAsync(page, "Final-Button-Missing", log);
+            await SaveTikTokFinalSubmitEvidenceAsync(page,"Final-Button-Missing",log);
             return "TikTok: submission NOT attempted; final button missing or ambiguous. Review in Studio.";
         }
 
         var submit = button.First;
+        await submit.ScrollIntoViewIfNeededAsync(new(){Timeout=8000});
+        await Task.Delay(250, ct);
         var label = (await submit.InnerTextAsync()).Trim();
+        // A finished transfer isn't necessarily a processed TikTok video.
+        // Wait for the *actual final button* to be enabled. Do not click
+        // while TikTok still has a pending validation/processing state.
+        for (var poll = 0; poll < 20; poll++)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (await submit.IsEnabledAsync() &&
+                (await submit.GetAttributeAsync("aria-disabled")) != "true" &&
+                (await submit.GetAttributeAsync("data-disabled")) != "true")
+                break;
+            if (poll % 5 == 0)
+                log?.Invoke("TikTok: final Schedule/Post button not enabled yet; waiting for validation/processing.");
+            await Task.Delay(500, ct);
+        }
+        log?.Invoke("TikTok: final CTA label='" + label +
+            "', data-e2e='" + (await submit.GetAttributeAsync("data-e2e") ?? "") +
+            "', enabled=" + await submit.IsEnabledAsync());
         var validLabel = scheduled
             ? System.Text.RegularExpressions.Regex.IsMatch(label,
                 @"^\s*(Schedule|Post|Publish)\s*$",
@@ -925,7 +1573,10 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             (await submit.GetAttributeAsync("data-disabled")) == "true")
         {
             log?.Invoke("TikTok: final action disabled or unexpected label: '" + label +
-                "'. No submission attempted.");
+                "'. No submission attempted; CTA HTML: " +
+                (await submit.EvaluateAsync<string>("e=>e.outerHTML")).Substring(0,
+                    Math.Min(800,(await submit.EvaluateAsync<string>("e=>e.outerHTML")).Length)));
+            await SaveTikTokFinalSubmitEvidenceAsync(page,"Final-Button-Not-Enabled",log);
             return "TikTok: submission NOT attempted; final " +
                 (scheduled ? "Schedule" : "Post") + " button not enabled.";
         }
@@ -938,6 +1589,35 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         {
             log?.Invoke("TikTok: refused ambiguous non-CTA button: " + label);
             return "TikTok: submission NOT attempted; final Schedule button not verified.";
+        }
+
+        // Do not send a post while the hashtag suggestion menu is still open:
+        // TikTok may consume the button click as a suggestion selection.
+        var hashtagSuggestions=page.Locator(
+            "[role='listbox']:visible, [data-e2e='hashtag-suggestion-list']:visible");
+        if(await hashtagSuggestions.CountAsync()>0)
+        {
+            await page.Keyboard.PressAsync("Escape");
+            await Task.Delay(200,ct);
+            if(await hashtagSuggestions.CountAsync()>0)
+            {
+                log?.Invoke("TikTok: hashtag autocomplete still covers Studio controls.");
+                return "TikTok: submission NOT attempted; dismiss hashtag dropdown first.";
+            }
+        }
+        // Playwright trial click checks actionability without dispatching a
+        // second publish. It detects obstructing overlays, disabled buttons,
+        // sticky controls and incomplete React rerenders before the one click.
+        try
+        {
+            await submit.ClickAsync(new(){Timeout=9000,Trial=true});
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
+        {
+            log?.Invoke("TikTok: final CTA is not clickable: "+ex.Message.Split('\n')[0]);
+            await SaveDiagnosticAsync(page,"TikTok-Final-CTA-Blocked",log);
+            await SaveTikTokFinalSubmitEvidenceAsync(page,"Final-CTA-Blocked",log);
+            return "TikTok: submission NOT attempted; final button blocked. Inspect TikTok Studio.";
         }
 
         log?.Invoke("TikTok: verified date/time and upload readiness; clicking final '" +
@@ -955,10 +1635,14 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             log?.Invoke("TikTok: final button click was attempted; outcome uncertain: " +
                 ex.Message.Split((char)10)[0]);
             await SaveDiagnosticAsync(page, "TikTok-Submit-Outcome-Uncertain", log);
-            return "TikTok: SUBMISSION_ATTEMPTED; result uncertain. Check TikTok Studio Posts before retrying.";
+            await SaveTikTokFinalSubmitEvidenceAsync(page,"Submit-Outcome-Uncertain",log);
+            // An exception during navigation is NOT proof of success. Never
+            // make a second submit attempt, and never block by scraping Posts.
+            return "TikTok: SUBMISSION_ATTEMPTED; click outcome uncertain. Check TikTok Studio Posts before retrying.";
         }
 
         if (!attempted) return "TikTok: submission NOT attempted.";
+        await SaveTikTokFinalSubmitEvidenceAsync(page,"After-One-Submit-Click",log);
         // Only trust a post/schedule success message or the upload page
         // navigating away. An ambiguous outcome is NEVER a confirmed post.
         var originalUrl = address.AbsolutePath.TrimEnd('/');
@@ -995,9 +1679,21 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                     now.AbsolutePath.TrimEnd('/') != originalUrl &&
                     !now.AbsolutePath.Contains("/upload", StringComparison.OrdinalIgnoreCase))
                 {
-                    log?.Invoke("TikTok: navigated away from the upload form after submission, " +
-                        "but post status has not been independently confirmed.");
-                    return "TikTok: SUBMISSION_ATTEMPTED; TikTok left the upload page. Verify the post in Studio.";
+                    // TikTok navigated to its Posts page following our
+                    // one permitted final Schedule/Post click. Treat this as
+                    // accepted-for-handoff, NOT independently verified.
+                    // Skip the fragile title/date DOM scrape and let the
+                    // publisher advance to the next fresh upload tab.
+                    if(now.AbsolutePath.Contains("/tiktokstudio/content",
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        log?.Invoke("TikTok: final submission redirected to Studio Posts. "+
+                            "Proceeding to next queued upload without Posts DOM verification.");
+                        return "TikTok: SUBMISSION_REDIRECTED; final submit navigated to Studio Posts; platform outcome not independently verified.";
+                    }
+                    log?.Invoke("TikTok: submission navigated to unexpected page '"+
+                        now.AbsolutePath+"'. Batch must pause.");
+                    return "TikTok: SUBMISSION_ATTEMPTED; unexpected redirect after submit. Check Studio Posts.";
                 }
             }
             catch (PlaywrightException)
@@ -1010,7 +1706,155 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         log?.Invoke("TikTok: final button was clicked once; no definitive receipt " +
             "was detected. Check TikTok Studio Posts before retrying.");
         await SaveDiagnosticAsync(page, "TikTok-Submit-Confirmation-Unknown", log);
+        await SaveTikTokFinalSubmitEvidenceAsync(page,"Submit-Confirmation-Unknown",log);
         return "TikTok: SUBMISSION_ATTEMPTED; confirmation unavailable. Check TikTok Studio Posts before retrying.";
+    }
+
+
+    // TikTok may asynchronously prefill the contenteditable caption with the
+    // uploaded file name (e.g. 1226578_20261119_142908085...). Always verify
+    // the editor AFTER upload processing, not merely after FillAsync returns.
+    private static string TikTokCaptionComparison(string text)
+        => System.Text.RegularExpressions.Regex.Replace(
+            (text ?? "").Replace("\u200B", "").Replace("\uFEFF", ""),
+            @"\s+", " ").Trim();
+
+    private static string TikTokCleanCaption(string caption)
+    {
+        var value = (caption ?? "").Trim();
+        // Strip a leftover file-name prefix only when it is clearly a generated
+        // MovieClipper export identifier followed by a long timestamp.
+        value = System.Text.RegularExpressions.Regex.Replace(value,
+            @"^\s*\d{5,12}_(?:\d{8}_\d{6,9}|\d{14,19})\s*",
+            "", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        return value;
+    }
+
+    private static async Task<bool> TikTokFillVerifiedCaptionAsync(
+        IPage page, string wanted, Action<string>? log, CancellationToken ct)
+    {
+        // TikTok presents a hashtag autocomplete dropdown when a
+        // contenteditable caption ends in #MovieReview etc. The dropdown can
+        // obscure scheduling fields and can restore focus after a React render.
+        // Verify existing text BEFORE FillAsync: rewriting an already-correct
+        // caption would needlessly reopen the autocomplete on every post.
+        for (var attempt=1;attempt<=3;attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            foreach (var frame in page.Frames)
+            {
+                try
+                {
+                    var editor = frame.Locator("[contenteditable='true']:visible").First;
+                    if (await editor.CountAsync()!=1 || !await editor.IsVisibleAsync()) continue;
+                    var found=await editor.EvaluateAsync<string>(
+                        "el => (el.innerText||el.textContent||'').replace(/\\u200b/g,'').trim()");
+                    if(TikTokCaptionComparison(found)!=TikTokCaptionComparison(wanted))
+                    {
+                        await editor.FillAsync(wanted);
+                        await Task.Delay(750,ct);
+                    }
+                    // Explicitly commit the caption and dismiss autocomplete.
+                    // Escape only affects the editor popup, not the form submit.
+                    await editor.PressAsync("Escape",new(){Timeout=4000});
+                    await editor.PressAsync("Tab",new(){Timeout=4000});
+                    await Task.Delay(600,ct);
+                    found=await editor.EvaluateAsync<string>(
+                        "el => (el.innerText||el.textContent||'').replace(/\\u200b/g,'').trim()");
+                    if(TikTokCaptionComparison(found)==TikTokCaptionComparison(wanted))
+                    {
+                        log?.Invoke("TikTok: SEO caption verified and hashtag autocomplete dismissed.");
+                        return true;
+                    }
+                    log?.Invoke("TikTok: caption changed after upload/focus switch ("+attempt+
+                        "/3); expected "+wanted.Length+", actual "+found.Length+".");
+                }
+                catch (PlaywrightException ex)
+                {
+                    log?.Invoke("TikTok: caption editor unavailable: "+ex.Message.Split('\n')[0]);
+                }
+            }
+            await Task.Delay(400,ct);
+        }
+        await SaveDiagnosticAsync(page,"TikTok-Caption-Mismatch",log);
+        log?.Invoke("TikTok: caption verification failed; submission blocked.");
+        return false;
+    }
+
+    // Passive post-scheduling verification. Never change focus or press Tab:
+    // doing so scrolls TikTok back to Description instead of submitting.
+    private static async Task<bool> TikTokVerifyCaptionReadOnlyAsync(
+        IPage page, string wanted, Action<string>? log, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var matching = 0;
+        foreach (var frame in page.Frames)
+        {
+            var editors = frame.Locator("[contenteditable='true']:visible");
+            if (await editors.CountAsync() == 0) continue;
+            var actual = await editors.First.EvaluateAsync<string>(
+                "el => (el.innerText||el.textContent||'').trim()");
+            if(TikTokCaptionComparison(actual)==TikTokCaptionComparison(wanted))
+                matching++;
+        }
+        log?.Invoke("TikTok: passive caption verification after schedule: "+
+            (matching == 1 ? "MATCHED (no focus changes)" :
+            "FAILED (matching editors="+matching+")"));
+        return matching == 1;
+    }
+
+    // Preserve a privacy-limited snapshot of only the final button, visible
+    // validation messages, current schedule inputs, and dialog actions. Never
+    // collect captions, cookies, uploaded media or page HTML wholesale.
+    private static async Task SaveTikTokFinalSubmitEvidenceAsync(
+        IPage page, string step, Action<string>? log)
+    {
+        try
+        {
+            var snapshot = await page.EvaluateAsync<string>(
+                """
+                () => {
+                  const visible = e => {
+                    const r=e.getBoundingClientRect();
+                    const s=getComputedStyle(e);
+                    return r.width>2 && r.height>2 &&
+                      s.visibility!=='hidden' && s.display!=='none';
+                  };
+                  const text = e => (e.innerText||e.value||'').trim().replace(/\s+/g,' ').slice(0,100);
+                  const all = [...document.querySelectorAll('button,[role="button"]')];
+                  const buttons = all.filter(visible).map(e=>({
+                    text:text(e),dataE2e:e.getAttribute('data-e2e'),
+                    disabled:e.disabled||e.getAttribute('aria-disabled')==='true',
+                    type:e.getAttribute('type'),className:typeof e.className==='string'?e.className.slice(0,110):'',
+                    y:Math.round(e.getBoundingClientRect().top)
+                  })).filter(x=>/post|publish|schedule|confirm|continue|cancel/i.test(x.text)||
+                    /post_video_button/.test(x.dataE2e||''));
+                  const fields = [...document.querySelectorAll('input[readonly]')]
+                    .filter(visible).map(e=>({value:e.value,type:e.type}));
+                  const errors = [...document.querySelectorAll(
+                    '[role="alert"],[aria-invalid="true"],[class*="error"],[class*="Error"],[data-e2e*="error"]')]
+                    .filter(visible).map(e=>text(e)).filter(Boolean).slice(0,12);
+                  const dialogs=[...document.querySelectorAll('[role="dialog"],[aria-modal="true"]')]
+                    .filter(visible).map(e=>({label:text(e).slice(0,140),
+                      buttons:[...e.querySelectorAll('button')].filter(visible).map(text)}));
+                  return JSON.stringify({path:location.pathname,scrollY,buttons,
+                    fields,errors,dialogs},null,2);
+                }
+                """);
+            var dir=Path.Combine(Environment.GetFolderPath(
+                Environment.SpecialFolder.LocalApplicationData),
+                "ZeroVideo","PublishingDiagnostics");
+            Directory.CreateDirectory(dir);
+            var file=Path.Combine(dir,"TikTok-Final-"+step+"-"+
+                DateTime.Now.ToString("yyyyMMdd-HHmmss-fff")+".txt");
+            await File.WriteAllTextAsync(file,snapshot);
+            log?.Invoke("TikTok: final CTA diagnostic saved: "+file);
+        }
+        catch(Exception ex)
+        {
+            log?.Invoke("TikTok: final CTA evidence unavailable: "+
+                ex.Message.Split('\n')[0]);
+        }
     }
 
     public async Task<string> PrepareAsync(ZeroVideoSettings settings, string destination,
@@ -1138,41 +1982,50 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         }
         else
         {
-            // TikTok Studio is frequently updated; use semantic text inputs and fail visibly
-            // rather than silently filling an unrelated control.
-            var filled = false;
-            for (var attempt = 0; attempt < 30 && !filled; attempt++)
-            {
-                ct.ThrowIfCancellationRequested();
-                foreach (var frame in page.Frames)
-                {
-                    try
-                    {
-                        var editor = frame.Locator("[contenteditable=true]").First;
-                        if (await editor.CountAsync() > 0 && await editor.IsVisibleAsync())
-                        {
-                            await editor.FillAsync(caption);
-                            filled = true;
-                            break;
-                        }
-                    }
-                    catch (PlaywrightException) { }
-                }
-                if (!filled) await Task.Delay(1000, ct);
-            }
-            if (!filled)
-                return "TikTok: caption entry FAILED. No post was submitted; review in TikTok Studio.";
-            log?.Invoke("TikTok: caption entered; automatic final submission authorized in ZeroVideo.");
+            // TikTok asynchronously inserts the video filename as a default
+            // caption. Wait for upload completion BEFORE overwriting it.
+            if (!await WaitForTikTokUploadReadyAsync(page, log, ct))
+                return "TikTok: upload still processing; final submission NOT attempted.";
+            var finalCaption = TikTokCleanCaption(caption);
+            if (string.IsNullOrWhiteSpace(finalCaption) ||
+                finalCaption.Length > 3500)
+                return "TikTok: invalid SEO caption. No post submitted.";
+            if (!await TikTokFillVerifiedCaptionAsync(page,finalCaption,log,ct))
+                return "TikTok: caption mismatch after upload; final submission NOT attempted.";
             try
             {
-                if (!await WaitForTikTokUploadReadyAsync(page, log, ct))
-                    return "TikTok: upload still processing; final submission NOT attempted.";
                 if (scheduledAt.HasValue &&
                     !await SetTikTokScheduleAsync(page, scheduledAt.Value, log, ct,
                         subsequent: freshTikTokUploadPage))
                     return "TikTok: requested date/time NOT verified. Final submission NOT attempted.";
-                // Only reach the final button after all required checks passed.
-                return await SubmitTikTokOnceAsync(page, scheduledAt.HasValue, log, ct);
+
+                // CRITICAL: after scheduling, do NOT call the interactive
+                // caption fill routine again. It presses Escape + Tab and
+                // sends focus/scroll back to the Description at the top,
+                // which can dismiss the final Schedule action before clicking.
+                // Read back caption in place, without focusing or changing DOM.
+                if (!await TikTokVerifyCaptionReadOnlyAsync(page,finalCaption,log,ct))
+                {
+                    await SaveTikTokFinalSubmitEvidenceAsync(page,"Caption-Changed-After-Schedule",log);
+                    return "TikTok: caption changed after scheduling; final submission NOT attempted.";
+                }
+                if (scheduledAt.HasValue &&
+                    !await VerifyTikTokScheduledFieldsAsync(page,scheduledAt.Value,log,ct))
+                    return "TikTok: schedule changed after upload metadata update. Final post NOT attempted.";
+                // The upload/editor can take minutes. A slot that was valid
+                // at batch start can become too close before TikTok accepts it.
+                // Do not silently change a user-approved schedule.
+                if (scheduledAt.HasValue &&
+                    scheduledAt.Value <= DateTimeOffset.Now.AddMinutes(20))
+                {
+                    log?.Invoke("TikTok: scheduling slot expired during upload: " +
+                        scheduledAt.Value.ToString("yyyy-MM-dd HH:mm zzz") +
+                        ". Move it 30+ minutes later and resume.");
+                    return "TikTok: submission NOT attempted; schedule is now less than " +
+                        "20 minutes away. Choose a later slot.";
+                }
+                return await SubmitTikTokOnceAsync(page, scheduledAt.HasValue,
+                    finalCaption.Split('\n')[0].Trim(),scheduledAt,log,ct);
             }
             catch (Exception ex) when (ex is PlaywrightException or TimeoutException or InvalidOperationException)
             {
