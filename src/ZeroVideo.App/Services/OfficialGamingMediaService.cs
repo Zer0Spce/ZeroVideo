@@ -664,6 +664,13 @@ public sealed class OfficialGamingMediaService
             subject + " gameplay trailer IGN GameSpot"
         };
         var runner = new ProcessRunner();
+        var bundledDeno = Path.Combine(AppContext.BaseDirectory, "deno.exe");
+        var jsArg = File.Exists(bundledDeno)
+            ? " --js-runtimes " + QuoteProcessArgument("deno:" + bundledDeno)
+            : "";
+        if (jsArg.Length == 0)
+            log?.Invoke("YouTube: bundled Deno runtime missing; format extraction " +
+                "may fail. Check for deno.exe next to ZeroVideo.exe.");
         var searchCandidates = new List<YouTubeClipLead>();
         foreach (var query in queries)
         {
@@ -672,8 +679,8 @@ public sealed class OfficialGamingMediaService
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 timeout.CancelAfter(TimeSpan.FromSeconds(55));
-                var arguments = "--ignore-config --flat-playlist " +
-                    "--dump-single-json --no-warnings --playlist-end 10 " +
+                var arguments = "--ignore-config --flat-playlist " + jsArg +
+                    " --dump-single-json --no-warnings --playlist-end 10 " +
                     QuoteProcessArgument("ytsearch10:" + query);
                 var response = await runner.RunAsync(downloader, arguments, ct: timeout.Token);
                 if (response.ExitCode != 0)
@@ -730,8 +737,8 @@ public sealed class OfficialGamingMediaService
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 timeout.CancelAfter(TimeSpan.FromSeconds(35));
-                var args = "--ignore-config --no-playlist --skip-download " +
-                    "--dump-single-json --no-warnings " + QuoteProcessArgument(item.Url);
+                var args = "--ignore-config --no-playlist --skip-download " + jsArg +
+                    " --dump-single-json --no-warnings " + QuoteProcessArgument(item.Url);
                 var info = await runner.RunAsync(downloader, args, ct: timeout.Token);
                 if (info.ExitCode != 0)
                 {
@@ -788,7 +795,10 @@ public sealed class OfficialGamingMediaService
             ct.ThrowIfCancellationRequested();
             if (result.Count >= 6) break;
             var id = lead.Url[(lead.Url.LastIndexOf('=') + 1)..];
-            var cached = Path.Combine(cache, id + ".mp4");
+            var cached = Directory.GetFiles(cache, id + ".*")
+                .FirstOrDefault(x => new[] { ".mp4", ".webm", ".mkv" }
+                    .Contains(Path.GetExtension(x), StringComparer.OrdinalIgnoreCase) &&
+                    new FileInfo(x).Length >= 50_000) ?? Path.Combine(cache, id + ".mp4");
             if (!File.Exists(cached) || new FileInfo(cached).Length < 50_000)
             {
                 try
@@ -803,8 +813,8 @@ public sealed class OfficialGamingMediaService
                     // Download first; extracting a --download-sections excerpt
                     // often fails when YouTube's segmented stream does not
                     // expose suitable keyframes. Full local file is reliable.
-                    var args = "--ignore-config --no-playlist --no-progress " +
-                        "--no-warnings --no-part --max-filesize 180M " +
+                    var args = "--ignore-config --no-playlist --no-progress " + jsArg +
+                        " --no-warnings --no-part --max-filesize 180M " +
                         "-f " + QuoteProcessArgument(
                             "bv*[height<=720]+ba/b[height<=720]/best[height<=720]") +
                         " --merge-output-format mp4" + ffmpegArg +
