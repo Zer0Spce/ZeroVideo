@@ -740,7 +740,7 @@
                 <Button Style="{StaticResource SecondaryButton}" Content="Preview Search for First Checked Movie" Command="{Binding MovieFindTrailerCommand}" HorizontalAlignment="Left"/>
                 <Separator Margin="0,13"/>
                 <TextBlock Text="Your background music / sound" FontWeight="SemiBold" FontSize="16"/>
-                <TextBlock Text="The title image plays for 2 seconds. Your audio plays over the next 28 seconds; the finished video is exactly 30 seconds." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <TextBlock Text="The TMDB poster is a brief 0.75-second opening. Audio starts immediately, and 10 scene-aware cuts fill the rest of the 30-second video." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
                 <Button Style="{StaticResource SecondaryButton}" Content="Choose my audio..." Command="{Binding MovieBrowseSoundCommand}" HorizontalAlignment="Left"/>
                 <TextBlock Text="{Binding MovieSoundFile}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,8"/>
                 <Label Content="CUSTOM MUSIC VOLUME"/>
@@ -753,7 +753,8 @@
                 <TextBlock Text="FIRST POST (LOCAL YYYY-MM-DD HH:mm)" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
                 <TextBox Text="{Binding MovieFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
                 <TextBlock Text="Hourly schedule: 1 video every 60 minutes. TikTok account sign-in, publishing authorization and final batch confirmation use the existing working publisher." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
-                <Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK MOVIECLIPPER" Command="{Binding MovieStartCommand}" HorizontalAlignment="Left"/>
+                <WrapPanel><Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK MOVIECLIPPER" Command="{Binding MovieStartCommand}"/><Button Style="{StaticResource SecondaryButton}" Content="Open Exported Videos" Command="{Binding MovieOpenOutputCommand}" Margin="8,0,0,0"/></WrapPanel>
+                <TextBlock Text="Output folder: Videos\\ZeroVideo\\MovieClipper" Foreground="{StaticResource Muted}" Margin="0,7,0,0"/>
                 <TextBlock Text="{Binding MovieStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
               </StackPanel>
             </ScrollViewer>
@@ -762,7 +763,7 @@
             <DockPanel>
               <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
                 <TextBlock Text="ChatGPT Movie Idea Generator" FontSize="21" FontWeight="SemiBold"/>
-                <TextBlock Text="Checked movies are processed sequentially. Only verified TMDB scores are published; no invented plot or acting ratings." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                <TextBlock Text="Checked movies are processed sequentially. Prominent centered Plot / Acting / Cinematography / Ending scores are labeled editorial estimates; the TMDB score remains sourced." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
               </StackPanel>
               <DataGrid ItemsSource="{Binding MovieClipperIdeas}" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Single">
                 <DataGrid.Columns>
