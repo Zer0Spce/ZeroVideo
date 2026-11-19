@@ -1095,6 +1095,78 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     // A single final action: NEVER retry a clicked Schedule/Post button.
     // If TikTok doesn't clearly confirm receipt, flag an ambiguous submission
     // and require the user to inspect TikTok Studio before attempting again.
+    // The Schedule radio in "When to post" can have the same name as the
+    // final CTA. On newer Studio pages the footer button may lack the older
+    // data-e2e value. Mark a unique action ONLY below the Checks section.
+    private static async Task<ILocator?> FindTikTokFinalFooterButtonAsync(
+        IPage page, bool scheduled, Action<string>? log, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var lookup = await page.EvaluateAsync<System.Text.Json.JsonElement>(
+            """
+            scheduled => {
+              const marker='data-zerovideo-final-upload-cta';
+              document.querySelectorAll('['+marker+']').forEach(x=>x.removeAttribute(marker));
+              const visible=e=>{
+                const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+                return r.width>5&&r.height>10&&r.bottom>0&&r.top<innerHeight&&
+                  s.display!=='none'&&s.visibility!=='hidden';
+              };
+              const value=e=>(e.innerText||e.textContent||'')
+                .replace(/\s+/g,' ').trim();
+              const checks=[...document.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span')]
+                .filter(e=>value(e)==='Checks'&&
+                  ![...e.children].some(c=>value(c)==='Checks'));
+              // If we can locate Checks, the genuine CTA must be below it.
+              const checksBottom=checks.length===1 ?
+                checks[0].getBoundingClientRect().bottom+scrollY : null;
+              const labels=scheduled ?
+                /^(?:Schedule|Post|Publish)$/i : /^(?:Post|Post now|Publish)$/i;
+              const candidates=[...document.querySelectorAll('button,[role="button"]')]
+                .filter(e=>visible(e)&&labels.test(value(e))).filter(e=>{
+                  const y=e.getBoundingClientRect().top+scrollY;
+                  if(checksBottom!==null && y<=checksBottom)return false;
+                  if(e.closest('[role="radio"],[role="radiogroup"]'))return false;
+                  return true;
+                }).map(e=>{
+                  const r=e.getBoundingClientRect();
+                  const data=(e.getAttribute('data-e2e')||'')+' '+
+                    (e.getAttribute('data-testid')||'');
+                  const score=(data.includes('post_video_button')?100:0)+
+                    (/post|submit|publish/i.test(data)?30:0)+
+                    (checksBottom!==null?25:0)+
+                    (r.top>innerHeight*.5?10:0);
+                  return {e,score,label:value(e),y:r.top};
+                }).sort((a,b)=>b.score-a.score);
+              if(candidates.length===0)
+                return {ok:false,reason:'No visible footer Schedule/Post CTA'};
+              const best=candidates[0];
+              if(candidates.length>1&&candidates[1].score===best.score)
+                return {ok:false,reason:'Ambiguous footer CTA candidates: '+
+                  candidates.map(x=>x.label+'@'+Math.round(x.y)).join(', ')};
+              if(checksBottom===null &&
+                  !/post_video_button|submit|publish/i.test(
+                    (best.e.getAttribute('data-e2e')||'')+' '+
+                    (best.e.getAttribute('data-testid')||'')))
+                return {ok:false,reason:'Checks section missing and CTA has no trusted identifier'};
+              best.e.setAttribute(marker,'true');
+              return {ok:true,label:best.label,source:'scoped footer button'};
+            }
+            """, scheduled);
+        if (!lookup.GetProperty("ok").GetBoolean())
+        {
+            log?.Invoke("TikTok: final footer CTA fallback: " +
+                lookup.GetProperty("reason").GetString());
+            return null;
+        }
+        var candidate=page.Locator("[data-zerovideo-final-upload-cta='true']");
+        if(await candidate.CountAsync()!=1 || !await candidate.IsVisibleAsync())
+            return null;
+        log?.Invoke("TikTok: identified real footer action: '" +
+            lookup.GetProperty("label").GetString()+"'.");
+        return candidate;
+    }
+
     private static async Task<string> SubmitTikTokOnceAsync(
         IPage page, bool scheduled, Action<string>? log, CancellationToken ct)
     {
@@ -1121,15 +1193,12 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         var count = await button.CountAsync();
         if (count != 1)
         {
-            // Only a single real button (never a generic text node, label,
-            // radio or page coordinate) can serve as fallback.
-            button = page.GetByRole(AriaRole.Button, new()
-            {
-                NameRegex = new System.Text.RegularExpressions.Regex(
-                    scheduled ? @"^\s*Schedule\s*$" :
-                    @"^\s*(Post|Publish|Post now)\s*$",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase)
-            });
+            // Different TikTok builds expose the scheduling toggle and
+            // the publishing CTA with the same text. Scope fallback to
+            // a unique button BELOW Checks, never the schedule radio.
+            button = await FindTikTokFinalFooterButtonAsync(
+                page,scheduled,log,ct) ??
+                page.Locator("[data-zerovideo-final-upload-cta='true']");
             count = await button.CountAsync();
         }
         if (count != 1)
