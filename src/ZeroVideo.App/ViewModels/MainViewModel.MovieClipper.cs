@@ -89,6 +89,7 @@ public sealed partial class MainViewModel
         {
             MovieLoadHistory();
         MovieRestoreCheckpoint();
+        MovieImportPreviousExports();
             _movieRetryFailedOnly = false;
             await MovieStartAsync();
         }));
@@ -404,9 +405,11 @@ public sealed partial class MainViewModel
         MoviePrepareChat();
         try
         {
-            if (MovieClipperIdeas.Count == 0) await MovieGenerateAsync(); // One click from niche to queue.
+            var regeneratedIdeas = MovieClipperIdeas.Count == 0;
+            if (regeneratedIdeas) await MovieGenerateAsync(); // Retry a failed idea generation too.
             var selected = MovieClipperIdeas.Where(x => x.IsChecked &&
-                (!_movieRetryFailedOnly || MovieCheckpointItem(x).Stage == "Failed")).ToList();
+                (!_movieRetryFailedOnly || regeneratedIdeas ||
+                 MovieCheckpointItem(x).Stage == "Failed")).ToList();
             if (selected.Count == 0) { MovieStatus = "No pending movies selected. Generate ideas for a new batch."; return; }
             if (!DateTime.TryParseExact(MovieFirstSlot, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture,
                     DateTimeStyles.AssumeLocal, out var first) ||
