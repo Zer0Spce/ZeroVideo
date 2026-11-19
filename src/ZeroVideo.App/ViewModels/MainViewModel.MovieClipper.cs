@@ -41,6 +41,7 @@ public sealed partial class MainViewModel
     private bool _moviePublish = true;
     private bool _movieKeepDialogue;
     private bool _movieAutoDownload = true;
+    private bool _movieUseBrowserYouTubeLogin;
     private bool _movieProcessing;
     private bool _movieNewChat;
     private bool _movieRetryFailedOnly;
@@ -53,7 +54,7 @@ public sealed partial class MainViewModel
     private void MovieSaveMediaPreferences()
     {
         Directory.CreateDirectory(Path.GetDirectoryName(MoviePrefsFile)!);
-        File.WriteAllText(MoviePrefsFile, JsonSerializer.Serialize(new { source_folder = MovieSourceFolder, sound_file = MovieSoundFile }));
+        File.WriteAllText(MoviePrefsFile, JsonSerializer.Serialize(new { source_folder = MovieSourceFolder, sound_file = MovieSoundFile, use_browser_youtube_login = MovieUseBrowserYouTubeLogin }));
     }
     public ObservableCollection<MovieClipperEntry> MovieClipperIdeas { get; } = [];
     public string MovieNiche { get => _movieNiche; set => Set(ref _movieNiche, value); }
@@ -65,6 +66,7 @@ public sealed partial class MainViewModel
     public bool MoviePublish { get => _moviePublish; set => Set(ref _moviePublish, value); }
     public bool MovieKeepDialogue { get => _movieKeepDialogue; set => Set(ref _movieKeepDialogue, value); }
     public bool MovieAutoDownload { get => _movieAutoDownload; set => Set(ref _movieAutoDownload, value); }
+    public bool MovieUseBrowserYouTubeLogin { get => _movieUseBrowserYouTubeLogin; set { if (Set(ref _movieUseBrowserYouTubeLogin, value)) MovieSaveMediaPreferences(); } }
     public bool MovieProcessing { get => _movieProcessing; private set => Set(ref _movieProcessing, value); }
     public bool MovieNewChat { get => _movieNewChat; set => Set(ref _movieNewChat, value); }
     public string MovieCheckpointStatus => _movieCheckpoint.Items.Count + " checkpointed movies; saved at " + MovieCheckpointPath;
@@ -153,6 +155,8 @@ public sealed partial class MainViewModel
                 using var prefs = JsonDocument.Parse(File.ReadAllText(MoviePrefsFile));
                 MovieSourceFolder = MovieJson(prefs.RootElement, "source_folder") is var folder && !string.IsNullOrWhiteSpace(folder) ? folder : MovieSourceFolder;
                 MovieSoundFile = MovieJson(prefs.RootElement, "sound_file") is var sound && !string.IsNullOrWhiteSpace(sound) ? sound : MovieSoundFile;
+                if (prefs.RootElement.TryGetProperty("use_browser_youtube_login", out var useBrowser) && useBrowser.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                    _movieUseBrowserYouTubeLogin = useBrowser.GetBoolean();
             }
         }
         catch (Exception ex) { MovieStatus = "MovieClipper media preferences: " + ex.Message; }
@@ -368,10 +372,12 @@ public sealed partial class MainViewModel
         {
             // Fallback only: yt-dlp search can fail with sign-in or bot checks.
             var searchText = movie.Label + " official movie trailer";
-            var search = await MovieRunProcessAsync(downloader,
-                ["--no-playlist", "--flat-playlist", "--dump-single-json",
-                 "--skip-download", "--no-warnings", "ytsearch8:" + searchText],
-                _cts.Token);
+            var searchArgs = new List<string> { "--no-playlist", "--flat-playlist",
+                "--dump-single-json", "--skip-download", "--no-warnings",
+                "ytsearch8:" + searchText };
+            if (MovieUseBrowserYouTubeLogin)
+                searchArgs.InsertRange(0, ["--cookies-from-browser", "edge"]);
+            var search = await MovieRunProcessAsync(downloader, searchArgs, _cts.Token);
             if (search.Code != 0)
             {
                 errors.Add("YouTube search: " + MovieDownloaderError(search.Error));
@@ -426,6 +432,8 @@ public sealed partial class MainViewModel
             if (!string.IsNullOrWhiteSpace(Settings.FfmpegPath) &&
                 File.Exists(Settings.FfmpegPath))
                 arguments.InsertRange(0, ["--ffmpeg-location", Settings.FfmpegPath]);
+            if (MovieUseBrowserYouTubeLogin)
+                arguments.InsertRange(0, ["--cookies-from-browser", "edge"]);
             var download = await MovieRunProcessAsync(downloader, arguments, _cts.Token);
             if (download.Code == 0 && File.Exists(target) &&
                 new FileInfo(target).Length > 10_000)
