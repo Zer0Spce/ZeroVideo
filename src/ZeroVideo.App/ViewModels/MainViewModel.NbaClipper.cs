@@ -416,10 +416,17 @@ public sealed partial class MainViewModel
         var cover=Path.Combine(work,"thumbnail.jpg");
         var video=Path.Combine(NbaExportFolder,player.PlayerId+"_"+
             DateTime.Now.ToString("yyyyMMdd_HHmmssfff")+".mp4");
+        // Preserve the full landscape highlight in the center. Only the
+        // enlarged duplicate behind it is blurred to fill a vertical canvas.
+        const string verticalCover =
+            "split=2[bgraw][fgraw];" +
+            "[bgraw]scale=720:1280:force_original_aspect_ratio=increase," +
+            "crop=720:1280,boxblur=20:2[bg];" +
+            "[fgraw]scale=720:1280:force_original_aspect_ratio=decrease[fg];" +
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2:format=auto,format=yuv420p";
         var thumb=await MovieRunProcessAsync(ffmpeg,
             ["-y","-ss","1","-i",sourcePath,"-frames:v","1",
-             "-vf","scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280",
-             cover],_cts.Token);
+             "-filter_complex",verticalCover,cover],_cts.Token);
         if(thumb.Code!=0||!File.Exists(cover))
             throw new IOException("Could not generate the player thumbnail.");
         var timeline=await MovieBeatTimelineAsync(ffmpeg,music,exact);
@@ -446,12 +453,23 @@ public sealed partial class MainViewModel
             "-ss",MovieNumber(offsets[i]),"-t",
             MovieNumber(timeline[i+1]-timeline[i]),"-i",sourcePath]);
         args.AddRange(["-i",music]);
-        const string frame="scale=1080:1920:force_original_aspect_ratio=increase,"+
-            "crop=1080:1920,setsar=1,fps=30,format=yuv420p";
+        // Unlike MovieClipper, NBAClipper must never crop basketball
+        // gameplay to 9:16. Keep the entire original horizontal frame.
+        // Fill TikTok's 1080x1920 canvas with a blurred, enlarged duplicate.
         var filters=new List<string>();
-        for(var i=0;i<count;i++)filters.Add("["+i+":v]"+frame+
-            ",trim=duration="+MovieNumber(timeline[i+1]-timeline[i])+
-            ",setpts=PTS-STARTPTS[v"+i+"]");
+        for(var i=0;i<count;i++)
+        {
+            var dur=MovieNumber(timeline[i+1]-timeline[i]);
+            filters.Add("["+i+":v]fps=30,trim=duration="+dur+
+                ",setpts=PTS-STARTPTS,split=2[bgsrc"+i+"][fgsrc"+i+"]");
+            filters.Add("[bgsrc"+i+"]scale=1080:1920:"+
+                "force_original_aspect_ratio=increase,crop=1080:1920,"+
+                "boxblur=24:2,setsar=1[bg"+i+"]");
+            filters.Add("[fgsrc"+i+"]scale=1080:1920:"+
+                "force_original_aspect_ratio=decrease,setsar=1[fg"+i+"]");
+            filters.Add("[bg"+i+"][fg"+i+"]overlay=(W-w)/2:(H-h)/2:"+
+                "shortest=1:format=auto,format=yuv420p[v"+i+"]");
+        }
         filters.Add(string.Concat(Enumerable.Range(0,count).Select(i=>"[v"+i+"]"))+
             "concat=n="+count+":v=1:a=0[montage]");
         filters.Add("[montage]tpad=stop_mode=clone:stop_duration=1,"+
