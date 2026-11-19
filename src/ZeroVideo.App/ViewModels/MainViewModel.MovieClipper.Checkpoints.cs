@@ -80,6 +80,8 @@ public sealed partial class MainViewModel
     {
         // On upgrade, populate history from older MovieClipper exports instead of
         // treating completed videos from builds #535-#544 as fresh ideas.
+        try
+        {
         if (!Directory.Exists(MovieExportFolder)) return;
         var added = false;
         foreach (var file in Directory.EnumerateFiles(MovieExportFolder, "*.mp4"))
@@ -108,6 +110,8 @@ public sealed partial class MainViewModel
             new JsonSerializerOptions { WriteIndented = true }));
         File.Move(tmp, MovieHistoryPath, overwrite: true);
         MovieLoadHistory();
+        }
+        catch (Exception ex) { Log("MovieClipper export-history migration: " + ex.Message); }
     }
 
     private void MovieRecordHistory(MovieClipperEntry movie, string export)
