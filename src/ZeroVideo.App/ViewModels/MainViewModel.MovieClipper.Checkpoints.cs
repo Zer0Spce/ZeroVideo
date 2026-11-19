@@ -223,6 +223,19 @@ public sealed partial class MainViewModel
             "Which score would you change? #MovieReview #FilmTok #MovieTok";
     }
 
+    private static void MovieEnsureSeoFallback(MovieClipperEntry movie, MovieCheckpointItem cp)
+    {
+        if (string.IsNullOrWhiteSpace(cp.SeoTitle) || cp.SeoTitle.Length > 120)
+            cp.SeoTitle = movie.Label + " Review: Is It Worth Watching?";
+        if (string.IsNullOrWhiteSpace(cp.SeoCaption) || cp.SeoCaption.Length > 400)
+            cp.SeoCaption = movie.Label + " movie review. Plot, acting, pacing, " +
+                "cinematography, writing and ending scored out of 10. Which score would you change?";
+        if (string.IsNullOrWhiteSpace(cp.SeoHashtags) || !cp.SeoHashtags.Contains('#'))
+            cp.SeoHashtags = "#MovieReview #FilmTok #MovieTok";
+        // All values have been included in the single movie-ideas response, or locally
+        // repaired. Do not start a new ChatGPT operation per video.
+    }
+
     private async Task MovieGenerateSeoAsync(MovieClipperEntry movie, MovieCheckpointItem checkpoint)
     {
         if (!string.IsNullOrWhiteSpace(checkpoint.SeoCaption) &&
