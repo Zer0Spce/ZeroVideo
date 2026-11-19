@@ -439,6 +439,114 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         return marked.First;
     }
 
+
+    // The November 2026 TikTok calendar is a floating TUX popover rather than
+    // the legacy .DatePicker__panel. Select a day only from the unique visible
+    // calendar for the requested month, adjacent to the scheduling date input.
+    // Do not use GetByText(day) on the page; dates also occur in captions.
+    private static async Task<bool> SelectTikTokTuxCalendarDayAsync(
+        IPage page, ILocator dateTrigger, DateTime target,
+        Action<string>? log, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var script = """
+            arg => {
+              document.querySelectorAll('[data-zerovideo-tux-calendar-day]')
+                .forEach(e => e.removeAttribute('data-zerovideo-tux-calendar-day'));
+              const v=e=>{
+                const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+                return r.width>2&&r.height>5&&s.display!=='none'&&
+                  s.visibility!=='hidden'&&r.bottom>0&&r.top<innerHeight;
+              };
+              const t=e=>(e.innerText||e.textContent||'').trim().replace(/\s+/g,' ');
+              const input=document.querySelector('[data-zerovideo-schedule-date-trigger]');
+              if(!input)return {ok:false,reason:'date trigger marker missing'};
+              const ir=input.getBoundingClientRect();
+              const months=['January','February','March','April','May','June',
+                'July','August','September','October','November','December'];
+              const header=months[arg.month-1]+'\\s*[/, -]?\\s*'+arg.year;
+              const monthPattern=new RegExp(header,'i');
+              const matches=[];
+              for(const el of document.querySelectorAll('div,section,[role="dialog"],[role="grid"]')){
+                if(!v(el))continue;
+                const r=el.getBoundingClientRect();
+                if(r.width<270||r.width>560||r.height<220||r.height>520)continue;
+                if(r.left>ir.right+180||r.right<ir.left-180||
+                   r.top>ir.bottom+150||r.bottom<ir.top-480)continue;
+                const value=t(el);
+                if(!monthPattern.test(value))continue;
+                const leaves=[...el.querySelectorAll('button,div,span,[role="gridcell"]')]
+                  .filter(n=>v(n)&&/^(?:[1-9]|[12]\d|3[01])$/.test(t(n))&&
+                    ![...n.children].some(c=>v(c)&&t(c)===t(n)));
+                const distinct=new Set(leaves.map(n=>t(n)));
+                if(distinct.size<21)continue;
+                // Reject a panel containing more than one calendar month.
+                const otherMonths=months.filter((m,i)=>i!==arg.month-1 &&
+                  new RegExp(m+'\\s*[/, -]?\\s*'+arg.year,'i').test(value));
+                if(otherMonths.length)continue;
+                const candidates=leaves.filter(n=>t(n)===String(arg.day));
+                const clickable=[];
+                for(const n of candidates){
+                  let choice=n;
+                  for(let p=n,depth=0;p&&depth<4&&el.contains(p);p=p.parentElement,depth++){
+                    if(p.matches('button,[role="gridcell"],[role="button"],[tabindex]')){
+                      choice=p;break;
+                    }
+                  }
+                  const b=choice.getBoundingClientRect();
+                  const disabled=choice.matches(':disabled,[aria-disabled="true"],[data-disabled="true"]')||
+                    !!choice.closest('[aria-disabled="true"],[data-disabled="true"]');
+                  if(!disabled&&b.width>=8&&b.height>=8)clickable.push(choice);
+                }
+                const unique=[...new Set(clickable)];
+                if(unique.length===1) matches.push({panel:el,day:unique[0],area:r.width*r.height});
+              }
+              matches.sort((a,b)=>a.area-b.area);
+              if(!matches.length)return {ok:false,reason:'No unique enabled day in requested month popover'};
+              const chosen=matches[0];
+              if(matches.some(m=>m.area===chosen.area&&m.day!==chosen.day))
+                return {ok:false,reason:'ambiguous calendar day'};
+              chosen.day.setAttribute('data-zerovideo-tux-calendar-day','yes');
+              return {ok:true,tag:chosen.day.tagName,day:arg.day};
+            }
+            """;
+        var result = await page.EvaluateAsync<System.Text.Json.JsonElement>(script,
+            new { day = target.Day, month = target.Month, year = target.Year });
+        if (!result.GetProperty("ok").GetBoolean())
+        {
+            log?.Invoke("TikTok: TUX calendar not safely selectable: " +
+                result.GetProperty("reason").GetString());
+            return false;
+        }
+        var day = page.Locator("[data-zerovideo-tux-calendar-day='yes']");
+        if (await day.CountAsync()!=1 || !await day.IsVisibleAsync() ||
+            !await day.IsEnabledAsync())
+            return false;
+        log?.Invoke("TikTok: clicking verified TUX calendar day " +
+            target.ToString("yyyy-MM-dd") + ".");
+        await day.ClickAsync(new(){Timeout=7000});
+        // Check the actual readonly input value; InnerText of an input is empty.
+        for (var poll=0;poll<20;poll++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var value=(await dateTrigger.EvaluateAsync<string>(
+                "el => (el.value||el.innerText||el.textContent||'').trim()")).Trim();
+            if (DateTime.TryParse(value,
+                System.Globalization.CultureInfo.GetCultureInfo("en-US"),
+                System.Globalization.DateTimeStyles.None,out var actual) &&
+                actual.Date==target.Date)
+            {
+                log?.Invoke("TikTok: TUX date committed and verified: " + value);
+                return true;
+            }
+            await Task.Delay(200,ct);
+        }
+        log?.Invoke("TikTok: TUX calendar clicked but date input did not commit " +
+            target.ToString("yyyy-MM-dd") + ". Stopping without submission.");
+        await SaveTikTokPickerEvidenceAsync(page,"Tux-Date-Uncommitted",log);
+        return false;
+    }
+
     private static async Task<bool> SetTikTokDateStrictAsync(
         IPage page, ILocator dateTrigger, DateTime target,
         Action<string>? log, CancellationToken ct, bool subsequent = false)
@@ -531,6 +639,11 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         }
         if(!panelOpen || await calendar.CountAsync()==0)
         {
+            // Current TikTok UI opens a November/2026 TUX calendar whose panel
+            // is not named DatePicker__panel. Select day using strict, scoped
+            // geometry and verify the read-only input before final submission.
+            if(await SelectTikTokTuxCalendarDayAsync(page,dateTrigger,target,log,ct))
+                return true;
             log?.Invoke("TikTok: date calendar still unavailable — stopping scheduling " +
                 "before time or final submit, without selecting an unverified date.");
             await SaveTikTokPickerEvidenceAsync(page,"Date-Panel-Missing",log);
@@ -651,7 +764,8 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         await option.ClickAsync(new(){Timeout=7000});
         // No Escape on successful day click; it may revert the selection.
         await Task.Delay(350,ct);
-        var selected=(await dateTrigger.InnerTextAsync()).Trim();
+        var selected=(await dateTrigger.EvaluateAsync<string>(
+            "el => (el.value||el.innerText||el.textContent||'').trim()")).Trim();
         var ok=DateTime.TryParse(selected,culture,
             System.Globalization.DateTimeStyles.None,out var read)&&read.Date==target.Date;
         log?.Invoke("TikTok: date requested "+target.ToString("yyyy-MM-dd")+
