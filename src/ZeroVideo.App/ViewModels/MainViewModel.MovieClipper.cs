@@ -643,12 +643,15 @@ public sealed partial class MainViewModel
                 ",setpts=PTS-STARTPTS[v" + i + "]");
         filters.Add(string.Concat(Enumerable.Range(0, count).Select(i => "[v" + i + "]")) +
             "concat=n=" + count + ":v=1:a=0[montage]");
-        var baseInput = "[montage]";
+        // Lock to exactly 30 seconds even if individual shot lengths round to video frames.
+        filters.Add("[montage]tpad=stop_mode=clone:stop_duration=1," +
+            "trim=duration=30,setpts=PTS-STARTPTS[exact]");
+        var baseInput = "[exact]";
         if (logo is not null)
         {
             filters.Add("[" + logoIndex + ":v]scale=820:500:force_original_aspect_ratio=decrease," +
                 "format=rgba,fade=t=in:st=2.1:d=0.25:alpha=1,fade=t=out:st=5.0:d=0.3:alpha=1[logo]");
-            filters.Add("[montage][logo]overlay=x=(W-w)/2:y=(H-h)/2:" +
+            filters.Add("[exact][logo]overlay=x=(W-w)/2:y=(H-h)/2:" +
                 "enable='between(t,2.1,5.3)'[art]");
             baseInput = "[art]";
         }
@@ -691,7 +694,7 @@ public sealed partial class MainViewModel
         else filters.Add("anullsrc=r=48000:cl=stereo,atrim=duration=30[a]");
 
         args.AddRange(["-filter_complex", string.Join(";", filters), "-map", "[v]",
-            "-map", "[a]", "-t", "30", "-c:v", "libx264", "-preset", "veryfast",
+            "-map", "[a]", "-t", "30", "-frames:v", "900", "-c:v", "libx264", "-preset", "veryfast",
             "-crf", "21", "-c:a", "aac", "-b:a", "160k", "-pix_fmt", "yuv420p",
             "-movflags", "+faststart", output]);
         movie.Status = "Beat-sync editing " + count + " distinct shots";
