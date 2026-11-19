@@ -36,7 +36,7 @@ public sealed partial class MainViewModel
     private int _movieCount = 10;
     private string _movieSourceFolder = "";
     private string _movieSoundFile = "";
-    private string _movieStatus = "Ready: ChatGPT ideas → TMDB artwork → automatic YouTube trailer → 30-second edit → TikTok queue.";
+    private string _movieStatus = "Ready: ChatGPT ideas → TMDB artwork → automatic YouTube trailer → soundtrack-length edit → TikTok queue.";
     private string _movieFirstSlot = DateTime.Now.AddHours(2).ToString("yyyy-MM-dd HH:00", CultureInfo.InvariantCulture);
     private bool _moviePublish = true;
     private bool _movieKeepDialogue;
@@ -75,7 +75,7 @@ public sealed partial class MainViewModel
     {
         MovieOpenOutputCommand = new RelayCommand(() => { Directory.CreateDirectory(MovieExportFolder); Process.Start(new ProcessStartInfo("explorer.exe", "\"" + MovieExportFolder + "\"") { UseShellExecute = true }); });
         MovieGenerateCommand = new AsyncCommand(() => RunManagedJobAsync("MovieClipper: ChatGPT ideas", MovieGenerateAsync));
-        MovieStartCommand = new AsyncCommand(() => RunManagedJobAsync("MovieClipper: 30s batch", MovieStartAsync));
+        MovieStartCommand = new AsyncCommand(() => RunManagedJobAsync("MovieClipper: music-length batch", MovieStartAsync));
         MovieBrowseSourceCommand = new RelayCommand(() =>
         {
             var picker = new OpenFolderDialog { Title = "Trailer download/cache folder" };
@@ -202,7 +202,7 @@ public sealed partial class MainViewModel
                 });
                 if (MovieClipperIdeas.Count >= MovieCount) break;
             }
-            MovieStatus = MovieClipperIdeas.Count + " movies verified in TMDB and ready for 30-second rendering.";
+            MovieStatus = MovieClipperIdeas.Count + " movies verified in TMDB and ready for soundtrack-length rendering.";
         }
         catch (Exception ex) { MovieStatus = "Movie ideas failed: " + ex.Message; Log(MovieStatus); }
     }
@@ -473,10 +473,14 @@ public sealed partial class MainViewModel
         using var doc = JsonDocument.Parse(result.Output);
         var duration = MovieJson(doc.RootElement.GetProperty("format"), "duration");
         if (!double.TryParse(duration, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)
-            || seconds < 5) throw new InvalidDataException("Trailer is too short to assemble 30 seconds.");
-        var audio = doc.RootElement.GetProperty("streams").EnumerateArray()
-            .Any(x => MovieJson(x, "codec_type") == "audio");
-        return (seconds, audio);
+            || seconds < 5) throw new InvalidDataException("Trailer is too short for a movie montage.");
+        var audioStreams = doc.RootElement.GetProperty("streams").EnumerateArray()
+            .Where(x => MovieJson(x, "codec_type") == "audio").ToList();
+        if (audioStreams.Count > 0 &&
+            double.TryParse(MovieJson(audioStreams[0], "duration"), NumberStyles.Float,
+                CultureInfo.InvariantCulture, out var streamSeconds) && streamSeconds > 0)
+            seconds = streamSeconds;
+        return (seconds, audioStreams.Count > 0);
     }
 
     private async Task<List<double>> MovieSceneCutsAsync(string ffmpeg, string path, double duration)
@@ -648,7 +652,7 @@ public sealed partial class MainViewModel
                 ",setpts=PTS-STARTPTS[v" + i + "]");
         filters.Add(string.Concat(Enumerable.Range(0, count).Select(i => "[v" + i + "]")) +
             "concat=n=" + count + ":v=1:a=0[montage]");
-        // Lock to exactly 30 seconds even if individual shot lengths round to video frames.
+        // Match the audio duration, rounded to the nearest 30-fps video frame.
         filters.Add("[montage]tpad=stop_mode=clone:stop_duration=1," +
             "trim=duration=" + MovieNumber(videoSeconds) + ",setpts=PTS-STARTPTS[exact]");
         var baseInput = "[exact]";
