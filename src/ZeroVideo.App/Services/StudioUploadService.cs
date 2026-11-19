@@ -617,6 +617,11 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
 
         if(!panelOpen)
         {
+            // New TUX popover is already OPEN at this point. Clicking an
+            // ancestor again would toggle it CLOSED, so try its scoped day
+            // selector before attempting the legacy wrapper click.
+            if(await SelectTikTokTuxCalendarDayAsync(page,dateTrigger,target,log,ct))
+                return true;
             // The date text may be a child of the actual clickable control.
             // Only retry through a clearly date-specific, interactive ancestor.
             var wrapper=await FindTikTokDateTriggerWrapperAsync(page,dateTrigger,log);
