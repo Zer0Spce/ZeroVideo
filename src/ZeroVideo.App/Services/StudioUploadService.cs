@@ -1520,9 +1520,9 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                 ex.Message.Split((char)10)[0]);
             await SaveDiagnosticAsync(page, "TikTok-Submit-Outcome-Uncertain", log);
             await SaveTikTokFinalSubmitEvidenceAsync(page,"Submit-Outcome-Uncertain",log);
-            if(await VerifyTikTokPostInStudioAsync(page,expectedTitle,expectedSlot,log,ct))
-                return "TikTok: SUBMISSION_CONFIRMED; matched title and scheduled time in Studio Posts.";
-            return "TikTok: SUBMISSION_ATTEMPTED; result uncertain. Check TikTok Studio Posts before retrying.";
+            // An exception during navigation is NOT proof of success. Never
+            // make a second submit attempt, and never block by scraping Posts.
+            return "TikTok: SUBMISSION_ATTEMPTED; click outcome uncertain. Check TikTok Studio Posts before retrying.";
         }
 
         if (!attempted) return "TikTok: submission NOT attempted.";
@@ -1563,11 +1563,21 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                     now.AbsolutePath.TrimEnd('/') != originalUrl &&
                     !now.AbsolutePath.Contains("/upload", StringComparison.OrdinalIgnoreCase))
                 {
-                    if(await VerifyTikTokPostInStudioAsync(
-                        page,expectedTitle,expectedSlot,log,ct))
-                        return "TikTok: SUBMISSION_CONFIRMED; matched title and scheduled time in Studio Posts.";
-                    log?.Invoke("TikTok: navigated away from the upload form, but no matching Posts row was verified.");
-                    return "TikTok: SUBMISSION_ATTEMPTED; Studio Posts did not confirm this title and slot.";
+                    // TikTok navigated to its Posts page following our
+                    // one permitted final Schedule/Post click. Treat this as
+                    // accepted-for-handoff, NOT independently verified.
+                    // Skip the fragile title/date DOM scrape and let the
+                    // publisher advance to the next fresh upload tab.
+                    if(now.AbsolutePath.Contains("/tiktokstudio/content",
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        log?.Invoke("TikTok: final submission redirected to Studio Posts. "+
+                            "Proceeding to next queued upload without Posts DOM verification.");
+                        return "TikTok: SUBMISSION_REDIRECTED; final submit navigated to Studio Posts; platform outcome not independently verified.";
+                    }
+                    log?.Invoke("TikTok: submission navigated to unexpected page '"+
+                        now.AbsolutePath+"'. Batch must pause.");
+                    return "TikTok: SUBMISSION_ATTEMPTED; unexpected redirect after submit. Check Studio Posts.";
                 }
             }
             catch (PlaywrightException)
@@ -1577,8 +1587,6 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             }
             await Task.Delay(900, ct);
         }
-        if(await VerifyTikTokPostInStudioAsync(page,expectedTitle,expectedSlot,log,ct))
-            return "TikTok: SUBMISSION_CONFIRMED; matched title and scheduled time in Studio Posts.";
         log?.Invoke("TikTok: final button was clicked once; no definitive receipt " +
             "was detected. Check TikTok Studio Posts before retrying.");
         await SaveDiagnosticAsync(page, "TikTok-Submit-Confirmation-Unknown", log);
