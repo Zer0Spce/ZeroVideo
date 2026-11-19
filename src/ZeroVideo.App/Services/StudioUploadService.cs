@@ -915,35 +915,64 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         Action<string>? log, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        // Second and later uploads often leave an old, inactive time picker
-        // mounted in the DOM. Work exclusively inside the active TUX container.
-        var col = hour ? "left" : "right";
-        var target = value.ToString("00",System.Globalization.CultureInfo.InvariantCulture);
-        var active = page.Locator(
-            ".tiktok-timepicker-time-picker-container:not(.tiktok-timepicker-invisible):visible");
-        if (await active.CountAsync() != 1)
+        var target=value.ToString("00",System.Globalization.CultureInfo.InvariantCulture);
+
+        // New TikTok account: each clock column is an accessible listbox
+        // with buttons such as role=option aria-label="Hours 22" and
+        // role=option aria-label="Minutes 05". This is NOT the older
+        // .tiktok-timepicker-option-text markup.
+        var newPanel=page.Locator(".TimePicker__panel:visible");
+        if(await newPanel.CountAsync()==1)
         {
-            log?.Invoke("TikTok: expected one active time popup, found " +
-                await active.CountAsync() + "; will not click another video's picker.");
+            var column=hour?"Hours":"Minutes";
+            var label=column+" "+target;
+            var option=newPanel.First.Locator(
+                "[role='listbox'][aria-label='"+column+"'] "+
+                "button[role='option'][aria-label='"+label+"']");
+            var matches=await option.CountAsync();
+            if(matches!=1 || !await option.First.IsVisibleAsync() ||
+                !await option.First.IsEnabledAsync() ||
+                await option.First.GetAttributeAsync("data-disabled")=="true")
+            {
+                log?.Invoke("TikTok: new TimePicker "+label+
+                    " unavailable (matches="+matches+"). No unrelated element clicked.");
+                return false;
+            }
+            await option.First.ScrollIntoViewIfNeededAsync(new(){Timeout=5000});
+            await option.First.ClickAsync(new(){Timeout=6000});
+            log?.Invoke("TikTok: selected "+label+
+                " from new accessible TimePicker column.");
+            await Task.Delay(180,ct);
+            return true;
+        }
+
+        // Preserve the proven legacy time-picker selector for accounts
+        // that still use the two TUX option-text columns.
+        var col=hour?"left":"right";
+        var active=page.Locator(
+            ".tiktok-timepicker-time-picker-container:not(.tiktok-timepicker-invisible):visible");
+        if(await active.CountAsync()!=1)
+        {
+            log?.Invoke("TikTok: neither unique new TimePicker panel nor "+
+                "legacy active picker is available; no blind click.");
             return false;
         }
-        var exact = active.Locator(
-            ".tiktok-timepicker-option-text.tiktok-timepicker-" + col)
+        var exact=active.Locator(
+            ".tiktok-timepicker-option-text.tiktok-timepicker-"+col)
             .Filter(new(){HasTextRegex=new System.Text.RegularExpressions.Regex(
-                @"^\s*" + target + @"\s*$")});
-        if (await exact.CountAsync() != 1)
+                @"^\s*"+target+@"\s*$")});
+        if(await exact.CountAsync()!=1)
         {
-            log?.Invoke("TikTok: expected one " + col + " time option " + target +
-                ", found " + await exact.CountAsync());
+            log?.Invoke("TikTok: legacy "+col+" option "+target+
+                " not unique; no blind click.");
             return false;
         }
         var choice=exact.First.Locator("xpath=..");
-        if(!await choice.IsVisibleAsync() || !await choice.IsEnabledAsync())
+        if(!await choice.IsVisibleAsync()||!await choice.IsEnabledAsync())
             return false;
         await choice.ScrollIntoViewIfNeededAsync(new(){Timeout=5000});
         await choice.ClickAsync(new(){Timeout=5000});
-        log?.Invoke("TikTok: selected " + (hour?"hour ":"minute ") + target +
-            " from unique ACTIVE time picker.");
+        log?.Invoke("TikTok: selected legacy "+(hour?"hour ":"minute ")+target);
         await Task.Delay(200,ct);
         return true;
     }
