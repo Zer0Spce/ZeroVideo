@@ -394,6 +394,89 @@
       </TabItem>
 
 
+      <!-- Separate manual Gaming News mode. Existing tabs and publishing controls remain unchanged. -->
+      <TabItem Header="Gaming News Batch">
+        <DockPanel Margin="4,8,4,4">
+          <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,10">
+            <Button Style="{StaticResource SecondaryButton}" Content="Stop" Command="{Binding StopJobCommand}" IsEnabled="{Binding JobRunning}"/>
+            <Button Style="{StaticResource SecondaryButton}" Content="Force Stop" Command="{Binding ForceStopJobCommand}" IsEnabled="{Binding JobRunning}"/>
+            <TextBlock Text="{Binding GamingNewsStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" VerticalAlignment="Center" MaxWidth="870" Margin="14,0,0,0"/>
+          </StackPanel>
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+              <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+                <StackPanel>
+                  <TextBlock Text="Gaming News — One-Click Batch" FontSize="23" FontWeight="Bold" Margin="0,0,0,7"/>
+                  <TextBlock Text="Collect distinct current gaming stories once, create vertical Shorts using the existing offline voice and bold captions, then assign TikTok slots every 30 minutes. No automatic news refresh." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,15"/>
+                  <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <StackPanel>
+                      <Label Content="TIKTOK CHANNEL NAME"/>
+                      <TextBox Text="{Binding GamingNewsChannelName, UpdateSourceTrigger=PropertyChanged}" ToolTip="Example: GamePulse Daily. This name will be spoken in the opening of every Gaming News video."/>
+                      <TextBlock Text="The narration welcomes viewers to your channel and finishes with a relevant question or cliffhanger." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,12"/>
+                      <Label Content="ONLY THIS GAME / TOPIC (blank = all gaming news)"/>
+                      <TextBox Text="{Binding GamingNewsFocus, UpdateSourceTrigger=PropertyChanged}" ToolTip="Example: GTA VI, PlayStation 5, Nintendo Switch 2. Blank for all gaming news."/>
+                      <TextBlock Text="For example GTA VI: only matching headlines will qualify. Fewer news articles may mean fewer videos." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,12"/>
+                      <Label Content="FIRST POSTING DATE AND TIME (LOCAL YYYY-MM-DD HH:MM)"/>
+                      <TextBox Text="{Binding GamingNewsScheduleStart, UpdateSourceTrigger=PropertyChanged}" ToolTip="Leave blank to choose the next safe slot. Use HH:00 or HH:30."/>
+                      <TextBlock Text="Blank automatically selects a safe future posting time. If a full batch renders past the requested start, remaining times roll forward automatically." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,12"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="2">
+                      <Label Content="NUMBER OF VIDEOS"/>
+                      <TextBox Text="{Binding GamingNewsVideoCount, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" ToolTip="Enter any count from 1 to 96, for this specific game/topic." />
+                      <Label Content="TIKTOK POSTING INTERVAL" Margin="0,10,0,0"/>
+                      <ComboBox ItemsSource="{Binding GamingNewsPostingIntervalChoices}" SelectedItem="{Binding GamingNewsPostingIntervalMinutes, Mode=TwoWay}" Width="160" HorizontalAlignment="Left"/>
+                      <TextBlock Text="Minutes between TikTok posts: 30 = 48/day; 60 = 24/day." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,8"/>
+                      <Label Content="VIDEO FORMAT" Margin="0,10,0,0"/>
+                      <TextBlock Text="9:16 vertical (locked)" FontWeight="SemiBold"/>
+                      <Label Content="CAPTIONS" Margin="0,10,0,0"/>
+                      <TextBlock Text="Existing Shorts burned-in bold captions" TextWrapping="Wrap"/>
+                      <Label Content="VOICEOVER" Margin="0,10,0,0"/>
+                      <TextBlock Text="Current local OmniVoice profile from Voice Studio" TextWrapping="Wrap"/>
+                    </StackPanel>
+                  </Grid>
+                </StackPanel>
+              </Border>
+              <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+                <StackPanel>
+                  <TextBlock Text="Background Music (Batch Only)" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                  <CheckBox Content="Use background music" IsChecked="{Binding GamingNewsMusicEnabled, Mode=TwoWay}" Margin="0,0,0,9"/>
+                  <StackPanel Orientation="Horizontal">
+                    <TextBox Width="560" Text="{Binding GamingNewsMusicPath, UpdateSourceTrigger=PropertyChanged}"/>
+                    <Button Style="{StaticResource SecondaryButton}" Content="Choose MP3 / WAV" Command="{Binding GamingNewsChooseMusicCommand}" Margin="10,0,0,0"/>
+                  </StackPanel>
+                  <Label Content="MUSIC GAIN (dB)" Margin="0,11,0,0"/>
+                  <ComboBox ItemsSource="{Binding GamingNewsDbOptions}" SelectedItem="{Binding GamingNewsMusicDb, Mode=TwoWay}" Width="160" HorizontalAlignment="Left"/>
+                  <TextBlock Text="Example: -5 dB louder, -15 dB recommended, -30 dB quieter. Narration volume is unchanged." Foreground="{StaticResource Muted}" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                </StackPanel>
+              </Border>
+              <Border Style="{StaticResource CardBorder}">
+                <StackPanel>
+                  <CheckBox Content="AUTOMATICALLY submit all completed videos to TikTok Studio for scheduled posting" IsChecked="{Binding GamingNewsUploadAutomatically, Mode=TwoWay}" Margin="0,0,0,12"/>
+                  <TextBlock Text="ZeroVideo uploads the batch and schedules each post directly in TikTok Studio. When confirmed by TikTok, future posts go live without manually visiting Publish every hour. Requires an active TikTok Studio login during batch submission." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                  <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                    <Button Style="{StaticResource SecondaryButton}" Content="MAKE A TEST VIDEO" Command="{Binding GamingNewsTestVideoCommand}" Height="40" MinWidth="210" ToolTip="Generate one news video using your current gaming settings. Never schedule or upload it."/>
+                    <Button Style="{StaticResource SecondaryButton}" Content="Open Test Video" Command="{Binding GamingNewsOpenTestVideoCommand}" Height="40" Margin="10,0,0,0" ToolTip="Open the latest rendered test MP4."/>
+                  </StackPanel>
+                  <TextBlock Text="{Binding GamingNewsTestVideoPath}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,10" FontSize="11"/>
+                  <Button Style="{StaticResource PrimaryButton}" Content="GENERATE VIDEOS &amp; AUTO-SCHEDULE ON TIKTOK" Command="{Binding GamingNewsStartBatchCommand}" Height="48"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="AUTO-SCHEDULE EXISTING GAMING NEWS VIDEOS" Command="{Binding GamingNewsSubmitPendingCommand}" Margin="0,8,0,0" Height="40" ToolTip="One click submits existing completed Gaming News videos in the Publish queue to TikTok Studio, with safe future scheduling. Never selects normal Shorts or already submitted posts."/>
+                  <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                    <TextBlock Text="Videos finished: " Foreground="{StaticResource Muted}"/>
+                    <TextBlock Text="{Binding GamingNewsGenerated}" FontWeight="Bold" Margin="0,0,22,0"/>
+                    <TextBlock Text="Local schedule slots: " Foreground="{StaticResource Muted}"/>
+                    <TextBlock Text="{Binding GamingNewsScheduled}" FontWeight="Bold" Margin="0,0,22,0"/>
+                    <TextBlock Text="TikTok submissions: " Foreground="{StaticResource Muted}"/>
+                    <TextBlock Text="{Binding GamingNewsSubmitted}" FontWeight="Bold"/>
+                  </StackPanel>
+                  <TextBlock Text="Scheduled times in the local queue are NOT proof TikTok accepted a post. TikTok submission count and logs show actual Studio attempts. If TikTok requires login or refuses a schedule, ZeroVideo stops safely; it never retries an uncertain post automatically." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,10,0,0"/>
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </ScrollViewer>
+        </DockPanel>
+      </TabItem>
+
       <!-- Isolated Pixabay stock-footage workflow; existing creation tabs are unchanged. -->
       <TabItem Header="Youtube Flow">
         <DockPanel>

@@ -74,6 +74,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         InitializeRealPersonIdentityCommands();
         InitializeOmniVoiceCommands();
         InitializeYouTubeFlowCommands();
+        InitializeGamingNewsCommands();
         BrowseMusicCommand = new RelayCommand(BrowseMusic);
     }
 
@@ -152,6 +153,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         // Preserve their files and report the affected component for troubleshooting.
         TryRestoreStartupView("TikTok intelligence", LoadTikTokIntelligence);
         TryRestoreStartupView("Shorts recovery", LoadShortsRecovery);
+        TryRestoreStartupView("Gaming News preferences", LoadGamingNewsPreferences);
         TryRestoreStartupView("Long-form recovery", LoadLongFormRecovery);
         TryRestoreStartupView("OmniVoice profiles", LoadOmniVoiceProfiles);
         TryRestoreStartupView("Publishing calendar", RefreshPublishingCalendar);
