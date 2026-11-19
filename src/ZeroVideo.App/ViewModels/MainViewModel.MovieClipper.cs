@@ -87,7 +87,8 @@ public sealed partial class MainViewModel
         MovieStartCommand = new AsyncCommand(() => RunManagedJobAsync("MovieClipper: music-length batch", MovieStartAsync));
         MovieResumeCommand = new AsyncCommand(() => RunManagedJobAsync("MovieClipper: resume checkpoint", async () =>
         {
-            MovieRestoreCheckpoint();
+            MovieLoadHistory();
+        MovieRestoreCheckpoint();
             _movieRetryFailedOnly = false;
             await MovieStartAsync();
         }));
@@ -186,10 +187,19 @@ public sealed partial class MainViewModel
                 throw new InvalidOperationException(
                     "TMDB credential not loaded. Launch the private portable package or install movieclipper.local.json in %LOCALAPPDATA%\\ZeroVideo.");
             MovieStatus = "ChatGPT is choosing niche-specific movies...";
+            var excluded = _movieHistory.Select(x => x.Title + " (" + x.Year + ")")
+                .Concat(PublishingQueue.Where(x => File.Exists(x.VideoPath))
+                    .Select(x => x.Title)).Distinct(StringComparer.OrdinalIgnoreCase).Take(200);
             var prompt = $"List exactly {MovieCount} REAL feature movies suited to short-form TikTok film reviews in this niche: {MovieNiche}. " +
-                "Make a diverse list of confirmed titles (no invented films), with release years. Do not include TV shows, duplicates or generic ideas. " +
-                "Return ONLY a valid JSON object in a fenced json code block: " +
-                "{\"response_type\":\"movieclipper_ideas_v1\",\"movies\":[{\"title\":\"Movie name\",\"year\":\"2024\"}]}";
+                "Return confirmed feature films, no TV shows, and NO movies from this completed history: " +
+                string.Join("; ", excluded) + ". " +
+                "In ONE RESPONSE generate the idea list, six subjective 0.0-10.0 ratings for each film (plot, acting, pacing, cinematography, writing, ending), " +
+                "plus its engaging, accurate SEO title (40-85 chars), TikTok caption (100-240 chars) and 3-5 relevant hashtags. " +
+                "Do not fabricate story details, critical consensus, or TMDB category scores. " +
+                "Return ONLY one JSON object inside a fenced json code block, schema: " +
+                "{\"response_type\":\"movieclipper_ideas_v2\",\"movies\":[{\"title\":\"Film title\",\"year\":\"2024\"," +
+                "\"scores\":{\"plot\":8.0,\"acting\":8.0,\"pacing\":8.0,\"cinematography\":8.0,\"writing\":8.0,\"ending\":8.0}," +
+                "\"seo\":{\"title\":\"Film review hook\",\"caption\":\"Accurate review caption\",\"hashtags\":\"#MovieReview #FilmTok #MovieTok\"}}]}";
             MoviePrepareChat();
             var raw = await _chat.GenerateTextAsync(
                 _movieChatProject, Settings, prompt, Log, _cts.Token);
@@ -199,6 +209,7 @@ public sealed partial class MainViewModel
             if (open < 0 || close <= open) throw new InvalidDataException("ChatGPT did not produce a JSON object.");
             using var json = JsonDocument.Parse(raw.Substring(open, close - open + 1));
             var items = json.RootElement.GetProperty("movies");
+            // Keep verified checkpointed ideas until replacement generation is valid.
             MovieClipperIdeas.Clear();
             var seen = new HashSet<int>();
             foreach (var candidate in items.EnumerateArray().Take(MovieCount * 2))
@@ -213,9 +224,14 @@ public sealed partial class MainViewModel
                 var selected = results.FirstOrDefault(x =>
                     MovieClean(MovieJson(x, "title")) == expected &&
                     (year.Length != 4 || MovieJson(x, "release_date").StartsWith(year, StringComparison.Ordinal)));
-                if (selected.ValueKind != JsonValueKind.Object || !seen.Add(selected.GetProperty("id").GetInt32()))
+                if (selected.ValueKind != JsonValueKind.Object ||
+                    !seen.Add(selected.GetProperty("id").GetInt32()) ||
+                    _movieHistory.Any(x => x.TmdbId == selected.GetProperty("id").GetInt32()) ||
+                    PublishingQueue.Any(x => x.VideoPath.Contains(
+                        selected.GetProperty("id").GetInt32().ToString(CultureInfo.InvariantCulture) + "_",
+                        StringComparison.OrdinalIgnoreCase)))
                     continue;
-                MovieClipperIdeas.Add(new MovieClipperEntry
+                var entry = new MovieClipperEntry
                 {
                     TmdbId = selected.GetProperty("id").GetInt32(),
                     Title = MovieJson(selected, "title"),
@@ -224,7 +240,28 @@ public sealed partial class MainViewModel
                     PosterPath = MovieJson(selected, "poster_path"),
                     VoteAverage = selected.GetProperty("vote_average").GetDouble(),
                     VoteCount = selected.GetProperty("vote_count").GetInt32()
-                });
+                };
+                MovieClipperIdeas.Add(entry);
+                var savedIdea = MovieCheckpointItem(entry);
+                if (candidate.TryGetProperty("scores", out var categoryScores) &&
+                    categoryScores.ValueKind == JsonValueKind.Object)
+                {
+                    string[] categories = ["plot", "acting", "pacing", "cinematography", "writing", "ending"];
+                    var values = categories.Select(k => categoryScores.TryGetProperty(k, out var scoreItem) &&
+                        scoreItem.ValueKind == JsonValueKind.Number ? scoreItem.GetDouble() : double.NaN).ToArray();
+                    if (values.All(v => double.IsFinite(v) && v >= 0 && v <= 10))
+                    {
+                        savedIdea.Scores = values.Select(v => Math.Round(v, 1)).ToArray();
+                        savedIdea.ScoringMethod = "ChatGPT subjective review score, generated with movie ideas";
+                    }
+                }
+                if (candidate.TryGetProperty("seo", out var seo) && seo.ValueKind == JsonValueKind.Object)
+                {
+                    savedIdea.SeoTitle = MovieJson(seo, "title");
+                    savedIdea.SeoCaption = MovieJson(seo, "caption");
+                    savedIdea.SeoHashtags = MovieJson(seo, "hashtags");
+                }
+                MovieCheckpointStage(entry, "IdeasReady");
                 if (MovieClipperIdeas.Count >= MovieCount) break;
             }
             MovieCheckpointIdeas();
@@ -466,6 +503,12 @@ public sealed partial class MainViewModel
     private async Task<MovieReviewScores> MovieGenerateScoresAsync(MovieClipperEntry movie)
     {
         var fallback = MovieFallbackScores(movie);
+        var cached = MovieCheckpointItem(movie);
+        if (cached.Scores is { Length: 6 } scores &&
+            scores.All(v => double.IsFinite(v) && v >= 0 && v <= 10))
+            return new MovieReviewScores(scores[0], scores[1], scores[2],
+                scores[3], scores[4], scores[5]);
+        // Legacy checkpoint fallback; no further ChatGPT calls needed when ideas already include scores.
         try
         {
             movie.Status = "ChatGPT is generating six review scores";
@@ -496,13 +539,20 @@ public sealed partial class MainViewModel
                     throw new InvalidDataException("Score out of range: " + name);
                 return Math.Round(v, 1);
             }
-            return new MovieReviewScores(N("plot"), N("acting"), N("pacing"),
+            var made = new MovieReviewScores(N("plot"), N("acting"), N("pacing"),
                 N("cinematography"), N("writing"), N("ending"));
+            cached.Scores = made.Parts;
+            cached.ScoringMethod = "ChatGPT subjective review score";
+            MovieSaveCheckpoint();
+            return made;
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
             Log("MovieClipper scoring fallback for " + movie.Label + ": " + ex.Message);
+            cached.Scores = fallback.Parts;
+            cached.ScoringMethod = "Deterministic fallback estimate";
+            MovieSaveCheckpoint();
             return fallback;
         }
     }
