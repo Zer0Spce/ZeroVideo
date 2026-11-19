@@ -454,6 +454,7 @@ public sealed partial class MainViewModel
                     // The one idea-generation request already includes scores and SEO.
                     MovieEnsureSeoFallback(movie, saved);
                     output.Title = saved.SeoTitle;
+                    output.Description = saved.SeoCaption;
                     output.TikTokCaption = MovieAssembleCaption(saved, movie);
                     output.YouTubeTitle = saved.SeoTitle;
                     output.YouTubeDescription = saved.SeoCaption;
