@@ -912,57 +912,25 @@ public sealed partial class MainViewModel
         }
         var uploader = new StudioUploadService(_browser);
 
-        // A previous run can have genuinely scheduled video #1 before Studio
-        // navigated to /content, while ZeroVideo persisted "attempted" and
-        // paused video #2. Reconcile that row READ-ONLY before validating its
-        // now-past slot or attempting another upload. Never blindly re-post.
-        foreach(var attemptedItem in chosen.Where(x =>
-            x.TikTokStatus.StartsWith("Submission attempted",StringComparison.OrdinalIgnoreCase)).ToList())
+        // Requested fast batch mode: do not scrape Studio Posts between uploads.
+        // A previously attempted submit must NEVER be replayed automatically,
+        // even when its success cannot be confirmed. Uncheck it, retain its
+        // unverified status, and continue with other checked videos only.
+        foreach(var previous in chosen.Where(x =>
+            x.TikTokStatus.StartsWith("Submission attempted",
+                StringComparison.OrdinalIgnoreCase)).ToList())
         {
-            if(!attemptedItem.IsScheduled ||
-                !DateTime.TryParseExact(attemptedItem.ScheduleDateText.Trim(),
-                    "yyyy-MM-dd HH:mm",CultureInfo.InvariantCulture,
-                    DateTimeStyles.AssumeLocal,out var oldSlot))
-            {
-                PublishStatus = "TikTok previous submission for '"+attemptedItem.Title+
-                    "' is uncertain. Check Studio Posts before retrying.";
-                return;
-            }
-            var headline = attemptedItem.TikTokCaption.Split('\n')[0].Trim();
-            PublishStatus = "Checking TikTok Studio Posts for previously submitted "+
-                attemptedItem.Title;
-            bool confirmed;
-            try
-            {
-                confirmed=await uploader.VerifyExistingTikTokScheduledPostAsync(
-                    Settings,headline,new DateTimeOffset(oldSlot),Log,_cts.Token);
-            }
-            catch(OperationCanceledException){throw;}
-            catch(Exception ex)
-            {
-                PublishStatus="TikTok Studio Posts verification unavailable for '"+
-                    attemptedItem.Title+"': "+ex.Message+
-                    ". Queue unchanged; no second submission.";
-                Log(PublishStatus);
-                return;
-            }
-            if(!confirmed)
-            {
-                PublishStatus = "TikTok Studio Posts does not verify '"+attemptedItem.Title+
-                    "' at the requested time. Batch paused to prevent a duplicate.";
-                SavePublishingQueue();
-                return;
-            }
-            attemptedItem.TikTokStatus = "Scheduled";
-            attemptedItem.IsChecked = false;
-            SavePublishingQueue();
-            Log("TikTok: reconciled prior scheduled post, no second submission: "+
-                attemptedItem.Title);
+            previous.TikTokStatus = "Submission attempted - check Studio";
+            previous.IsChecked = false;
+            Log("TikTok: skipped previously attempted video without reupload: "+
+                previous.Title+" (verify in Studio Posts separately).");
         }
+        SavePublishingQueue();
         chosen = PublishingQueue.Where(x=>x.IsChecked).ToList();
         if(chosen.Count==0)
         {
-            PublishStatus="All selected TikTok videos are already verified in Studio Posts.";
+            PublishStatus="No new uploads selected. Previously attempted videos "+
+                "were skipped to avoid duplicates; review Studio Posts.";
             return;
         }
         var prepared = new List<(PublishQueueItem Item, DateTimeOffset? Slot)>();
@@ -1003,7 +971,10 @@ public sealed partial class MainViewModel
             "TikTok's 'Continue to post?' warning if it appears while content " +
             "checks are incomplete. Check your rights, captions, privacy and dates. " +
             "The app will click each final submit button only once per attempt. " +
-            "An uncertain platform response will not trigger a retry.";
+            "After a final click redirects to TikTok Studio Posts, ZeroVideo will " +
+            "advance to the next upload WITHOUT rechecking the Posts list. " +
+            "A redirect is not independent proof of successful scheduling. " +
+            "An uncertain response without that redirect will pause; no automatic retry.";
         if (MessageBox.Show(consent, "Confirm sequential TikTok publishing",
             MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
@@ -1053,6 +1024,18 @@ public sealed partial class MainViewModel
                     item.TikTokStatus = slot.HasValue ? "Scheduled" : "Published";
                     submitted++;
                 }
+                else if (result.StartsWith("TikTok: SUBMISSION_REDIRECTED", StringComparison.Ordinal))
+                {
+                    // This is *not* independently confirmed by TikTok Posts:
+                    // user opted to skip slow/fragile reconciliation checks
+                    // between videos. Record attempted status, uncheck this
+                    // item to prevent duplicates, then open a fresh upload
+                    // tab for the following checked video.
+                    item.TikTokStatus = "Submitted - verify Studio";
+                    submitted++;
+                    Log("TikTok: returned to Studio Posts after submit; "+
+                        "advancing immediately, no DOM verification: "+item.Title);
+                }
                 else if (result.StartsWith("TikTok: SUBMISSION_ATTEMPTED", StringComparison.Ordinal))
                 {
                     item.TikTokStatus = "Submission attempted - check Studio";
@@ -1079,8 +1062,8 @@ public sealed partial class MainViewModel
                 Log($"TikTok batch {index + 1}/{prepared.Count}: {item.TikTokStatus}. " +
                     "No repeat submit attempted.");
             }
-            PublishStatus = $"TikTok batch finished: {submitted}/{prepared.Count} confirmed posts. " +
-                "Each scheduled post was verified against its Studio Posts row.";
+            PublishStatus = $"TikTok batch finished: {submitted}/{prepared.Count} submission handoffs. " +
+                "Posts-page verification was skipped for speed. Check TikTok Studio > Posts for final status.";
         }
         catch (OperationCanceledException)
         {
