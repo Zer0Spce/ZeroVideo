@@ -264,15 +264,28 @@ public sealed partial class MainViewModel
 
     private static void MovieEnsureSeoFallback(MovieClipperEntry movie, MovieCheckpointItem cp)
     {
-        if (string.IsNullOrWhiteSpace(cp.SeoTitle) || cp.SeoTitle.Length > 120)
+        // Stop auto-generated export IDs and timestamps from leaking into the
+        // public title if they were saved in an older checkpoint.
+        cp.SeoTitle = System.Text.RegularExpressions.Regex.Replace(
+            cp.SeoTitle ?? "", @"^\s*\d{5,12}_\d{14,19}\s*", "");
+        if (string.IsNullOrWhiteSpace(cp.SeoTitle) || cp.SeoTitle.Length > 120 ||
+            !cp.SeoTitle.Contains(movie.Title, StringComparison.OrdinalIgnoreCase))
             cp.SeoTitle = movie.Label + " Review: Is It Worth Watching?";
         if (string.IsNullOrWhiteSpace(cp.SeoCaption) || cp.SeoCaption.Length > 400)
             cp.SeoCaption = movie.Label + " movie review. Plot, acting, pacing, " +
                 "cinematography, writing and ending scored out of 10. Which score would you change?";
-        if (string.IsNullOrWhiteSpace(cp.SeoHashtags) || !cp.SeoHashtags.Contains('#'))
-            cp.SeoHashtags = "#MovieReview #FilmTok #MovieTok";
-        // All values have been included in the single movie-ideas response, or locally
-        // repaired. Do not start a new ChatGPT operation per video.
+
+        // TikTok hashtags must be separate tokens. Reject obviously merged or
+        // malformed AI output instead of uploading broken tags.
+        var validTags = System.Text.RegularExpressions.Regex.Matches(
+            cp.SeoHashtags ?? "", @"(?<!\S)#[A-Za-z][A-Za-z0-9_]{1,23}(?=\s|$)")
+            .Select(x => x.Value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(5).ToList();
+        if (validTags.Count < 3)
+            validTags = ["#MovieReview", "#FilmTok", "#MovieTok"];
+        cp.SeoHashtags = string.Join(" ", validTags);
+        // No additional ChatGPT request: saved one-pass SEO or local fallback.
     }
 
     private async Task MovieGenerateSeoAsync(MovieClipperEntry movie, MovieCheckpointItem checkpoint)
