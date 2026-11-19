@@ -381,6 +381,7 @@ public sealed partial class MainViewModel
             RefreshPublishingCalendar();
             RefreshVideoLibrary();
             MovieStatus = $"Rendered {finished.Count}/{selected.Count} movies, exactly {MovieLengthSeconds} seconds each. " +
+                "MP4 files: " + MovieExportFolder + ". Click Open Exported Videos. " +
                 "Missing or failed sources remain visible in the list.";
             if (finished.Count == 0 || !MoviePublish) return;
             if (!PublishConsent)
