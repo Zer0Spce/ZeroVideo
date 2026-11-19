@@ -917,10 +917,11 @@ public sealed partial class MainViewModel
         // even when its success cannot be confirmed. Uncheck it, retain its
         // unverified status, and continue with other checked videos only.
         foreach(var previous in chosen.Where(x =>
-            x.TikTokStatus.StartsWith("Submission attempted",
-                StringComparison.OrdinalIgnoreCase)).ToList())
+            (x.TikTokStatus.StartsWith("Submission attempted",
+                StringComparison.OrdinalIgnoreCase) ||
+             x.TikTokStatus.StartsWith("Submitted - verify Studio",
+                StringComparison.OrdinalIgnoreCase))).ToList())
         {
-            previous.TikTokStatus = "Submission attempted - check Studio";
             previous.IsChecked = false;
             Log("TikTok: skipped previously attempted video without reupload: "+
                 previous.Title+" (verify in Studio Posts separately).");
