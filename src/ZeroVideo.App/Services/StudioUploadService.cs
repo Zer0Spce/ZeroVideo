@@ -1346,6 +1346,82 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         return false;
     }
 
+    // Passive post-scheduling verification. Never change focus or press Tab:
+    // doing so scrolls TikTok back to Description instead of submitting.
+    private static async Task<bool> TikTokVerifyCaptionReadOnlyAsync(
+        IPage page, string wanted, Action<string>? log, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var matching = 0;
+        foreach (var frame in page.Frames)
+        {
+            var editors = frame.Locator("[contenteditable='true']:visible");
+            if (await editors.CountAsync() == 0) continue;
+            var actual = await editors.First.EvaluateAsync<string>(
+                "el => (el.innerText||el.textContent||'').trim()");
+            if(TikTokCaptionComparison(actual)==TikTokCaptionComparison(wanted))
+                matching++;
+        }
+        log?.Invoke("TikTok: passive caption verification after schedule: "+
+            (matching == 1 ? "MATCHED (no focus changes)" :
+            "FAILED (matching editors="+matching+")"));
+        return matching == 1;
+    }
+
+    // Preserve a privacy-limited snapshot of only the final button, visible
+    // validation messages, current schedule inputs, and dialog actions. Never
+    // collect captions, cookies, uploaded media or page HTML wholesale.
+    private static async Task SaveTikTokFinalSubmitEvidenceAsync(
+        IPage page, string step, Action<string>? log)
+    {
+        try
+        {
+            var snapshot = await page.EvaluateAsync<string>(
+                """
+                () => {
+                  const visible = e => {
+                    const r=e.getBoundingClientRect();
+                    const s=getComputedStyle(e);
+                    return r.width>2 && r.height>2 &&
+                      s.visibility!=='hidden' && s.display!=='none';
+                  };
+                  const text = e => (e.innerText||e.value||'').trim().replace(/\s+/g,' ').slice(0,100);
+                  const all = [...document.querySelectorAll('button,[role="button"]')];
+                  const buttons = all.filter(visible).map(e=>({
+                    text:text(e),dataE2e:e.getAttribute('data-e2e'),
+                    disabled:e.disabled||e.getAttribute('aria-disabled')==='true',
+                    type:e.getAttribute('type'),className:typeof e.className==='string'?e.className.slice(0,110):'',
+                    y:Math.round(e.getBoundingClientRect().top)
+                  })).filter(x=>/post|publish|schedule|confirm|continue|cancel/i.test(x.text)||
+                    /post_video_button/.test(x.dataE2e||''));
+                  const fields = [...document.querySelectorAll('input[readonly]')]
+                    .filter(visible).map(e=>({value:e.value,type:e.type}));
+                  const errors = [...document.querySelectorAll(
+                    '[role="alert"],[aria-invalid="true"],[class*="error"],[class*="Error"],[data-e2e*="error"]')]
+                    .filter(visible).map(e=>text(e)).filter(Boolean).slice(0,12);
+                  const dialogs=[...document.querySelectorAll('[role="dialog"],[aria-modal="true"]')]
+                    .filter(visible).map(e=>({label:text(e).slice(0,140),
+                      buttons:[...e.querySelectorAll('button')].filter(visible).map(text)}));
+                  return JSON.stringify({path:location.pathname,scrollY,buttons,
+                    fields,errors,dialogs},null,2);
+                }
+                """);
+            var dir=Path.Combine(Environment.GetFolderPath(
+                Environment.SpecialFolder.LocalApplicationData),
+                "ZeroVideo","PublishingDiagnostics");
+            Directory.CreateDirectory(dir);
+            var file=Path.Combine(dir,"TikTok-Final-"+step+"-"+
+                DateTime.Now.ToString("yyyyMMdd-HHmmss-fff")+".txt");
+            await File.WriteAllTextAsync(file,snapshot);
+            log?.Invoke("TikTok: final CTA diagnostic saved: "+file);
+        }
+        catch(Exception ex)
+        {
+            log?.Invoke("TikTok: final CTA evidence unavailable: "+
+                ex.Message.Split('\n')[0]);
+        }
+    }
+
     public async Task<string> PrepareAsync(ZeroVideoSettings settings, string destination,
         string videoPath, string title, string description, string caption, string thumbnailPath,
         DateTimeOffset? scheduledAt, Action<string>? log = null, CancellationToken ct = default,
@@ -1488,10 +1564,16 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                         subsequent: freshTikTokUploadPage))
                     return "TikTok: requested date/time NOT verified. Final submission NOT attempted.";
 
-                // Date picker interactions can trigger a React rerender and
-                // restore the uploaded filename. Recheck before final click.
-                if (!await TikTokFillVerifiedCaptionAsync(page,finalCaption,log,ct))
-                    return "TikTok: caption changed before submission. Final post NOT attempted.";
+                // CRITICAL: after scheduling, do NOT call the interactive
+                // caption fill routine again. It presses Escape + Tab and
+                // sends focus/scroll back to the Description at the top,
+                // which can dismiss the final Schedule action before clicking.
+                // Read back caption in place, without focusing or changing DOM.
+                if (!await TikTokVerifyCaptionReadOnlyAsync(page,finalCaption,log,ct))
+                {
+                    await SaveTikTokFinalSubmitEvidenceAsync(page,"Caption-Changed-After-Schedule",log);
+                    return "TikTok: caption changed after scheduling; final submission NOT attempted.";
+                }
                 if (scheduledAt.HasValue &&
                     !await VerifyTikTokScheduledFieldsAsync(page,scheduledAt.Value,log,ct))
                     return "TikTok: schedule changed after upload metadata update. Final post NOT attempted.";
