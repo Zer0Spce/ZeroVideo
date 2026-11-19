@@ -38,11 +38,61 @@ public sealed class MovieCheckpointItem
     public string SeoTitle { get; set; } = "";
     public string SeoCaption { get; set; } = "";
     public string SeoHashtags { get; set; } = "";
+    public double[]? Scores { get; set; }
+    public string ScoringMethod { get; set; } = "";
+    public bool HistoryRecorded { get; set; }
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+public sealed class MovieHistoryItem
+{
+    public int TmdbId { get; set; }
+    public string Title { get; set; } = "";
+    public string Year { get; set; } = "";
+    public string ExportPath { get; set; } = "";
+    public DateTimeOffset CompletedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 public sealed partial class MainViewModel
 {
+    private static readonly string MovieHistoryPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "ZeroVideo", "MovieClipper", "movie-history.json");
+    private List<MovieHistoryItem> _movieHistory = [];
+    public System.Collections.ObjectModel.ObservableCollection<MovieHistoryItem> MovieHistory { get; } = [];
+    public string MovieHistorySummary => MovieHistory.Count + " completed movies in history";
+
+    private void MovieLoadHistory()
+    {
+        try
+        {
+            if (File.Exists(MovieHistoryPath))
+                _movieHistory = JsonSerializer.Deserialize<List<MovieHistoryItem>>(
+                    File.ReadAllText(MovieHistoryPath)) ?? [];
+            MovieHistory.Clear();
+            foreach (var item in _movieHistory.OrderByDescending(x => x.CompletedAt)) MovieHistory.Add(item);
+            Raise(nameof(MovieHistorySummary));
+        }
+        catch (Exception ex) { Log("MovieClipper movie history: " + ex.Message); }
+    }
+
+    private void MovieRecordHistory(MovieClipperEntry movie, string export)
+    {
+        // TMDB ID, not title string, prevents duplicates across different spellings.
+        if (_movieHistory.Any(x => x.TmdbId == movie.TmdbId)) return;
+        _movieHistory.Add(new MovieHistoryItem
+        {
+            TmdbId = movie.TmdbId, Title = movie.Title, Year = movie.Year,
+            ExportPath = export
+        });
+        Directory.CreateDirectory(Path.GetDirectoryName(MovieHistoryPath)!);
+        var tmp = MovieHistoryPath + ".tmp";
+        File.WriteAllText(tmp, JsonSerializer.Serialize(_movieHistory,
+            new JsonSerializerOptions { WriteIndented = true }));
+        File.Move(tmp, MovieHistoryPath, overwrite: true);
+        MovieLoadHistory();
+    }
+
     private static readonly string MovieCheckpointPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "ZeroVideo", "MovieClipper", "last-run.checkpoint.json");
