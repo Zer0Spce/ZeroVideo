@@ -26,6 +26,11 @@ public partial class MainWindow : Window
         await _vm.InitializeAsync();
     }
 
+    private void MovieTmdbPassword_OnPasswordChanged(object sender, RoutedEventArgs e)
+    {
+        _vm.MovieTmdbToken = MovieTmdbPassword.Password;
+    }
+
     private void AnimateShellIn()
     {
         var easing = new QuadraticEase { EasingMode = EasingMode.EaseOut };
