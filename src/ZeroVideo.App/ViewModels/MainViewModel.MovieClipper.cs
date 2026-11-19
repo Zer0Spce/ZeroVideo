@@ -528,7 +528,7 @@ public sealed partial class MainViewModel
                 movie.VoteAverage.ToString("0.0", CultureInfo.InvariantCulture) +
                 "/10':fontsize=54:fontcolor=white:borderw=4:bordercolor=black:" +
                 "x=(w-text_w)/2:y=(h-text_h)/2:enable='gte(t,28.5)'";
-        filters.Add("[base]" + captions + "[v]");
+        filters.Add("[base]" + captions.TrimStart(',') + "[v]");
 
         if (customMusic || info.HasAudio)
         {
