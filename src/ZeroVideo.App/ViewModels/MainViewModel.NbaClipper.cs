@@ -456,11 +456,20 @@ public sealed partial class MainViewModel
             "concat=n="+count+":v=1:a=0[montage]");
         filters.Add("[montage]tpad=stop_mode=clone:stop_duration=1,"+
             "trim=duration="+MovieNumber(exact)+",setpts=PTS-STARTPTS[exact]");
-        var labels=new[]{"SHOOTING","FINISHING","HANDLES","PLAYMAKING",
-            "DEFENSE","BASKETBALL IQ","OVERALL"};
+        var ratingsMode=player.Mode=="Player Ratings";
+        var labels=ratingsMode
+            ?new[]{"SHOOTING","FINISHING","HANDLES","PLAYMAKING",
+                "DEFENSE","BASKETBALL IQ","OVERALL"}
+            :player.Mode=="Best Plays"
+                ?new[]{"PLAY 01","PLAY 02","PLAY 03","PLAY 04",
+                    "PLAY 05","PLAY 06","BEST PLAYS"}
+                :new[]{"THE PLAYER","CAREER HIGHLIGHTS","SIGNATURE SKILLS",
+                    "GREAT MOMENTS","THE JOURNEY","THE IMPACT","PLAYER LEGACY"};
         var values=player.Scores.Concat([Math.Round(player.Scores.Average(),1)]).ToArray();
+        var intro=ratingsMode?"PLAYER RATINGS":
+            player.Mode=="Best Plays"?"BEST PLAYS":"PLAYER LEGACY";
         var overlays=new List<string>{
-            "drawtext=text='NBA PLAYER':fontsize=95:fontcolor=white:"+
+            "drawtext=text='"+intro+"':fontsize=95:fontcolor=white:"+
             "borderw=5:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2:"+
             "enable='between(t,0,2)'",
             "drawtext=textfile=player-title.txt:fontsize=75:fontcolor=white:"+
@@ -473,15 +482,16 @@ public sealed partial class MainViewModel
             var from=froms[i];
             var to=i<labels.Length-1?froms[i+1]-.05:exact-.1;
             overlays.Add("drawtext=text='"+labels[i]+"'"+
-                ":fontsize="+(labels[i]=="BASKETBALL IQ"?70:95)+
+                ":fontsize="+(labels[i].Length>15?65:95)+
                 ":fontcolor=white:borderw=5:bordercolor=black:"+
                 "x=(w-text_w)/2:y=(h-text_h)/2-48:"+
                 "enable='between(t,"+MovieNumber(from)+","+MovieNumber(to)+")'");
-            overlays.Add("drawtext=text='"+values[i].ToString("0.0",CultureInfo.InvariantCulture)+
-                "/10':fontsize=78:fontcolor=white:borderw=4:bordercolor=black:"+
-                "x=(w-text_w)/2:y=(h-text_h)/2+75:"+
-                "enable='between(t,"+MovieNumber(from+Math.Min(.95,(to-from)*.4))+
-                ","+MovieNumber(to)+")'");
+            if(ratingsMode)
+                overlays.Add("drawtext=text='"+values[i].ToString("0.0",CultureInfo.InvariantCulture)+
+                    "/10':fontsize=78:fontcolor=white:borderw=4:bordercolor=black:"+
+                    "x=(w-text_w)/2:y=(h-text_h)/2+75:"+
+                    "enable='between(t,"+MovieNumber(from+Math.Min(.95,(to-from)*.4))+
+                    ","+MovieNumber(to)+")'");
         }
         filters.Add("[exact]"+string.Join(",",overlays)+"[v]");
         filters.Add("["+count+":a]atrim=duration="+MovieNumber(seconds)+
