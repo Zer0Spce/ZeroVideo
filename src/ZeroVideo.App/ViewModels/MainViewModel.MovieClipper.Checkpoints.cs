@@ -267,7 +267,7 @@ public sealed partial class MainViewModel
         // Stop auto-generated export IDs and timestamps from leaking into the
         // public title if they were saved in an older checkpoint.
         cp.SeoTitle = System.Text.RegularExpressions.Regex.Replace(
-            cp.SeoTitle ?? "", @"^\s*\d{5,12}_\d{14,19}\s*", "");
+            cp.SeoTitle ?? "", @"^\s*\d{5,12}_(?:\d{8}_\d{6,9}|\d{14,19})\s*", "");
         if (string.IsNullOrWhiteSpace(cp.SeoTitle) || cp.SeoTitle.Length > 120 ||
             !cp.SeoTitle.Contains(movie.Title, StringComparison.OrdinalIgnoreCase))
             cp.SeoTitle = movie.Label + " Review: Is It Worth Watching?";
