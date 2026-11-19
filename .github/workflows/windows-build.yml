@@ -92,6 +92,27 @@ jobs:
           if ($actual -ne $expected) { throw 'yt-dlp Windows binary checksum mismatch' }
           & $destination --version
           if ($LASTEXITCODE -ne 0) { throw 'Bundled yt-dlp failed startup test' }
+      - name: Bundle Deno runtime for YouTube format extraction
+        shell: pwsh
+        run: |
+          $download = 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip'
+          $checksum = "$download.sha256sum"
+          $zip = Join-Path $env:RUNNER_TEMP 'deno-windows.zip'
+          $sumFile = Join-Path $env:RUNNER_TEMP 'deno-windows.sha256sum'
+          Invoke-WebRequest -Uri $download -OutFile $zip -MaximumRedirection 8
+          Invoke-WebRequest -Uri $checksum -OutFile $sumFile -MaximumRedirection 8
+          $line = Get-Content $sumFile | Select-Object -First 1
+          $expected = ($line -split '\s+')[0].ToUpperInvariant()
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash
+          if ($actual -ne $expected) { throw 'Deno Windows download checksum mismatch' }
+          $dir = Join-Path $env:RUNNER_TEMP 'deno-unzip'
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $source = Join-Path $dir 'deno.exe'
+          if (!(Test-Path $source)) { throw 'Deno executable missing from release ZIP' }
+          $destination = Join-Path $env:GITHUB_WORKSPACE 'dist\ZeroVideo-win-x64\deno.exe'
+          Copy-Item $source $destination -Force
+          & $destination --version
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled Deno failed runtime smoke test' }
       - name: Smoke test real packaged ZeroVideo.exe startup
         shell: pwsh
         run: |
