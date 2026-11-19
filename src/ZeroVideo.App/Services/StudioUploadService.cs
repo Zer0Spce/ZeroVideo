@@ -1136,7 +1136,7 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         {
             log?.Invoke("TikTok: final " + (scheduled ? "Schedule" : "Post") +
                 " button missing/ambiguous (matches=" + count + "). No submission attempted.");
-            await SaveTikTokPickerEvidenceAsync(page, "Final-Button-Missing", log);
+            await SaveTikTokFinalSubmitEvidenceAsync(page,"Final-Button-Missing",log);
             return "TikTok: submission NOT attempted; final button missing or ambiguous. Review in Studio.";
         }
 
@@ -1144,6 +1144,23 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         await submit.ScrollIntoViewIfNeededAsync(new(){Timeout=8000});
         await Task.Delay(250, ct);
         var label = (await submit.InnerTextAsync()).Trim();
+        // A finished transfer isn't necessarily a processed TikTok video.
+        // Wait for the *actual final button* to be enabled. Do not click
+        // while TikTok still has a pending validation/processing state.
+        for (var poll = 0; poll < 20; poll++)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (await submit.IsEnabledAsync() &&
+                (await submit.GetAttributeAsync("aria-disabled")) != "true" &&
+                (await submit.GetAttributeAsync("data-disabled")) != "true")
+                break;
+            if (poll % 5 == 0)
+                log?.Invoke("TikTok: final Schedule/Post button not enabled yet; waiting for validation/processing.");
+            await Task.Delay(500, ct);
+        }
+        log?.Invoke("TikTok: final CTA label='" + label +
+            "', data-e2e='" + (await submit.GetAttributeAsync("data-e2e") ?? "") +
+            "', enabled=" + await submit.IsEnabledAsync());
         var validLabel = scheduled
             ? System.Text.RegularExpressions.Regex.IsMatch(label,
                 @"^\s*(Schedule|Post|Publish)\s*$",
@@ -1160,6 +1177,7 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                 "'. No submission attempted; CTA HTML: " +
                 (await submit.EvaluateAsync<string>("e=>e.outerHTML")).Substring(0,
                     Math.Min(800,(await submit.EvaluateAsync<string>("e=>e.outerHTML")).Length)));
+            await SaveTikTokFinalSubmitEvidenceAsync(page,"Final-Button-Not-Enabled",log);
             return "TikTok: submission NOT attempted; final " +
                 (scheduled ? "Schedule" : "Post") + " button not enabled.";
         }
@@ -1199,6 +1217,7 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         {
             log?.Invoke("TikTok: final CTA is not clickable: "+ex.Message.Split('\n')[0]);
             await SaveDiagnosticAsync(page,"TikTok-Final-CTA-Blocked",log);
+            await SaveTikTokFinalSubmitEvidenceAsync(page,"Final-CTA-Blocked",log);
             return "TikTok: submission NOT attempted; final button blocked. Inspect TikTok Studio.";
         }
 
@@ -1217,10 +1236,12 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             log?.Invoke("TikTok: final button click was attempted; outcome uncertain: " +
                 ex.Message.Split((char)10)[0]);
             await SaveDiagnosticAsync(page, "TikTok-Submit-Outcome-Uncertain", log);
+            await SaveTikTokFinalSubmitEvidenceAsync(page,"Submit-Outcome-Uncertain",log);
             return "TikTok: SUBMISSION_ATTEMPTED; result uncertain. Check TikTok Studio Posts before retrying.";
         }
 
         if (!attempted) return "TikTok: submission NOT attempted.";
+        await SaveTikTokFinalSubmitEvidenceAsync(page,"After-One-Submit-Click",log);
         // Only trust a post/schedule success message or the upload page
         // navigating away. An ambiguous outcome is NEVER a confirmed post.
         var originalUrl = address.AbsolutePath.TrimEnd('/');
@@ -1272,6 +1293,7 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         log?.Invoke("TikTok: final button was clicked once; no definitive receipt " +
             "was detected. Check TikTok Studio Posts before retrying.");
         await SaveDiagnosticAsync(page, "TikTok-Submit-Confirmation-Unknown", log);
+        await SaveTikTokFinalSubmitEvidenceAsync(page,"Submit-Confirmation-Unknown",log);
         return "TikTok: SUBMISSION_ATTEMPTED; confirmation unavailable. Check TikTok Studio Posts before retrying.";
     }
 
