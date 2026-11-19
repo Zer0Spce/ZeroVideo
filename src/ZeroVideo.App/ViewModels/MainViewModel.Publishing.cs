@@ -931,8 +931,21 @@ public sealed partial class MainViewModel
             var headline = attemptedItem.TikTokCaption.Split('\n')[0].Trim();
             PublishStatus = "Checking TikTok Studio Posts for previously submitted "+
                 attemptedItem.Title;
-            var confirmed=await uploader.VerifyExistingTikTokScheduledPostAsync(
-                Settings,headline,new DateTimeOffset(oldSlot),Log,_cts.Token);
+            bool confirmed;
+            try
+            {
+                confirmed=await uploader.VerifyExistingTikTokScheduledPostAsync(
+                    Settings,headline,new DateTimeOffset(oldSlot),Log,_cts.Token);
+            }
+            catch(OperationCanceledException){throw;}
+            catch(Exception ex)
+            {
+                PublishStatus="TikTok Studio Posts verification unavailable for '"+
+                    attemptedItem.Title+"': "+ex.Message+
+                    ". Queue unchanged; no second submission.";
+                Log(PublishStatus);
+                return;
+            }
             if(!confirmed)
             {
                 PublishStatus = "TikTok Studio Posts does not verify '"+attemptedItem.Title+
