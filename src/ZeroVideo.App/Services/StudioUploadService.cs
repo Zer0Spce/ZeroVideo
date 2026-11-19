@@ -1165,130 +1165,138 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         IPage origin, string expectedTitle, DateTimeOffset? slot,
         Action<string>? log, CancellationToken ct)
     {
-        if (!slot.HasValue || string.IsNullOrWhiteSpace(expectedTitle))
-            return false;
-        // TikTok truncates titles at a different width on every browser size.
-        // Match a distinctive, normalized opening (title and movie year),
-        // while requiring the EXACT date and clock time in the SAME post row.
-        var normalizedTitle=System.Text.RegularExpressions.Regex.Replace(
-            expectedTitle.Trim(),@"\s+"," ");
-        var prefix=normalizedTitle[..Math.Min(25,normalizedTitle.Length)];
+        if (!slot.HasValue || string.IsNullOrWhiteSpace(expectedTitle)) return false;
+        // A TikTok Posts row is the receipt, NOT a redirect from /upload.
+        // React splits/truncates the visible movie title and wraps the blue
+        // date badge. Identify *one physical row* holding BOTH the movie
+        // title prefix and its scheduled local date + clock.
+        var prefix=System.Text.RegularExpressions.Regex.Replace(
+            expectedTitle.Trim(), @"\s+", " ");
+        prefix=prefix[..Math.Min(prefix.Length,25)];
         var local=slot.Value.LocalDateTime;
-        var monthDay=local.ToString("MMM d",System.Globalization.CultureInfo.InvariantCulture);
-        var clock=local.ToString("h:mmtt",System.Globalization.CultureInfo.InvariantCulture);
-        var alreadyOnPosts=origin.Url.Contains("/tiktokstudio/content",
+        var monthDay=local.ToString("MMM d",
+            System.Globalization.CultureInfo.InvariantCulture);
+        var clock=local.ToString("h:mmtt",
+            System.Globalization.CultureInfo.InvariantCulture);
+        var onPosts=origin.Url.Contains("/tiktokstudio/content",
             StringComparison.OrdinalIgnoreCase);
-        var audit=alreadyOnPosts?origin:await origin.Context.NewPageAsync();
+        var audit=onPosts?origin:await origin.Context.NewPageAsync();
         try
         {
-            if(!alreadyOnPosts)
+            if(!onPosts)
                 await audit.GotoAsync("https://www.tiktok.com/tiktokstudio/content",
                     new(){WaitUntil=WaitUntilState.DOMContentLoaded,Timeout=45000});
-            // Wait for the React Posts table and attempt some scroll passes.
-            // Never search a whole page for title/date independently: they
-            // must coexist within the same small rendered post row.
-            for(var retry=0;retry<22;retry++)
+            for(var pass=0;pass<22;pass++)
             {
                 ct.ThrowIfCancellationRequested();
-                var found=await audit.EvaluateAsync<System.Text.Json.JsonElement>(
+                var result=await audit.EvaluateAsync<System.Text.Json.JsonElement>(
                     """
                     arg => {
-                      const norm=s=>(s||'').replace(/\s+/g,' ').trim().toLowerCase();
-                      const tight=s=>norm(s).replace(/\s/g,'');
-                      const targetTitle=norm(arg.prefix);
-                      const day=tight(arg.monthDay),clock=tight(arg.clock);
-                      const visible=e=>{
-                        const r=e.getBoundingClientRect(),css=getComputedStyle(e);
-                        return r.height>1&&r.width>1&&css.display!=='none'&&
-                          css.visibility!=='hidden';
+                      const norm=s=>(s||'').replace(/[\u200b-\u200f]/g,'')
+                        .replace(/\s+/g,' ').trim().toLowerCase();
+                      const key=s=>norm(s).replace(/[^a-z0-9]/g,'');
+                      const prefix=key(arg.prefix);
+                      const date=key(arg.monthDay),clock=key(arg.clock);
+                      const dateStart=date+clock;
+                      const text=e=>norm(e.innerText||e.textContent||'');
+                      const isVisible=e=>{
+                        const r=e.getBoundingClientRect();
+                        const css=getComputedStyle(e);
+                        return r.width>1 && r.height>1 &&
+                          css.display!=='none'&&css.visibility!=='hidden';
                       };
-                      // Date labels are concise and unique to a post. Starting
-                      // with them works when the title is split across nested
-                      // elements or visually truncated with an ellipsis.
-                      const dateCandidates=[...document.querySelectorAll(
-                        'span,div,p,time,a,[data-e2e]')].filter(e=>{
-                        if(!visible(e))return false;
-                        const t=tight(e.innerText||e.textContent||'');
-                        if(t.length>125||!t.includes(day)||!t.includes(clock))
-                          return false;
-                        return ![...e.children].some(c=>{
-                          const v=tight(c.innerText||c.textContent||'');
-                          return v.includes(day)&&v.includes(clock);
+                      // Parse the blue schedule badge first. A date anywhere
+                      // else on the Posts page must NOT confirm a movie.
+                      const badges=[...document.querySelectorAll('span,a,div,p,time')]
+                        .filter(e=>{
+                          if(!isVisible(e))return false;
+                          const own=key(text(e));
+                          if(own.length>110||!own.includes(dateStart))return false;
+                          return ![...e.children].some(c=>
+                            key(text(c)).includes(dateStart));
                         });
-                      });
-                      const matched=new Set();
-                      const observed=[];
-                      for(const badge of dateCandidates) {
-                        for(let p=badge,depth=0;p&&depth<9;p=p.parentElement,depth++){
+                      const matched=new Map(),samples=[];
+                      for(const badge of badges){
+                        const badgeRect=badge.getBoundingClientRect();
+                        const candidates=[];
+                        // TikTok uses flex rows, not always <tr>. A title may
+                        // occupy a sibling cell and can be split by <span>s.
+                        for(let p=badge.parentElement,depth=0;p&&depth<14;
+                            p=p.parentElement,depth++){
                           const r=p.getBoundingClientRect();
-                          // The full list contains MANY rows; never accept it.
-                          if(r.height>205)break;
-                          if(r.width<240||r.height<45)continue;
-                          const content=norm(p.innerText||p.textContent||'');
-                          if(!tight(content).includes(day)||!tight(content).includes(clock))
-                            continue;
-                          if(content.includes(targetTitle)){
-                            matched.add(p);
-                            observed.push({title:content.slice(0,125),
-                              rowHeight:Math.round(r.height)});
-                            break; // one match for this badge
-                          }
+                          if(r.height>310)break; // never accept the Posts table
+                          if(r.width<240||r.height<48)continue;
+                          if(!key(text(p)).includes(dateStart))continue;
+                          if(!key(text(p)).includes(prefix))continue;
+                          // A real row has a video thumbnail and several
+                          // action controls; avoid matching surrounding cards.
+                          const hasThumbnail=!!p.querySelector('img,video,canvas');
+                          const actions=p.querySelectorAll('button,[role="button"]').length;
+                          if(!hasThumbnail && actions<2)continue;
+                          candidates.push({el:p,area:r.width*r.height,top:Math.round(r.top)});
+                        }
+                        candidates.sort((a,b)=>a.area-b.area);
+                        if(candidates.length) {
+                          const chosen=candidates[0];
+                          // Deduplicate nested date badges from the same row.
+                          const rowKey=String(chosen.top);
+                          matched.set(rowKey,chosen);
                         }
                       }
-                      // Collapse nested matches by their individual date badge:
-                      // multiple nodes in one row must not count as two posts.
-                      const status={matches:matched.size,
-                        examples:observed.slice(0,2),
-                        dateBadges:dateCandidates.length,
-                        path:location.pathname};
-                      return status;
+                      // Observability: log safe row previews even when no
+                      // match, to distinguish a title mismatch from date parsing.
+                      const preview=badges.slice(0,5).map(e=>{
+                        const r=e.getBoundingClientRect();
+                        return {badge:text(e).slice(0,75),top:Math.round(r.top)};
+                      });
+                      return {matches:matched.size,badges:badges.length,
+                        preview,path:location.pathname,ready:
+                          !!document.querySelector('img,video')};
                     }
                     """,new{prefix,monthDay,clock});
-                var matches=found.GetProperty("matches").GetInt32();
-                if(matches==1)
+                var hits=result.GetProperty("matches").GetInt32();
+                if(hits==1)
                 {
-                    log?.Invoke("TikTok: VERIFIED scheduled post in Studio Posts: '"+
-                        prefix+"' at "+monthDay+" "+clock+
-                        "; continue to next queued upload.");
+                    log?.Invoke("TikTok: VERIFIED Studio Posts row for '"+prefix+
+                        "' at "+monthDay+" "+clock+
+                        ". Marking Scheduled and continuing to next queued video.");
                     return true;
                 }
-                if(matches>1)
+                if(hits>1)
                 {
-                    log?.Invoke("TikTok: multiple post rows matched title and time; "+
-                        "automatic continuation blocked to avoid duplicate detection.");
+                    log?.Invoke("TikTok: multiple distinct rows match title and "+
+                        "time; stopping to avoid a false confirmation. "+
+                        result.GetRawText());
                     return false;
                 }
-                if(retry is 5 or 11 or 17)
-                {
-                    var count=found.GetProperty("dateBadges").GetInt32();
-                    log?.Invoke("TikTok: Posts reconciliation still loading/searching "+
-                        "(matching schedule badges="+count+").");
+                if(pass is 2 or 8 or 15 or 21)
+                    log?.Invoke("TikTok: Studio Posts matching pass "+(pass+1)+
+                        "/22: "+result.GetRawText());
+                if(pass is 8 or 15)
                     await audit.EvaluateAsync(
-                        "() => {const el=[...document.querySelectorAll('*')].find(e=>"+
-                        "e.scrollHeight>e.clientHeight+150&&e.clientHeight>300&&"+
-                        "getComputedStyle(e).overflowY!=='visible');"+
-                        "if(el)el.scrollTop+=Math.max(250,el.clientHeight*.75);"+
-                        "else window.scrollBy(0,600);}");
-                }
-                await Task.Delay(700,ct);
+                        "() => { let list=[...document.querySelectorAll('*')]"+
+                        ".filter(e=>e.clientHeight>250 && e.scrollHeight>e.clientHeight+80)"+
+                        ".sort((a,b)=>b.clientHeight-a.clientHeight)[0];"+
+                        "if(list)list.scrollTop+=list.clientHeight*.8;"+
+                        "else window.scrollBy(0,500); }");
+                await Task.Delay(850,ct);
             }
-            log?.Invoke("TikTok: Studio Posts could not match '"+prefix+"' at "+
-                monthDay+" "+clock+" in a single row; no reupload attempted.");
+            log?.Invoke("TikTok: no unambiguous Studio Posts row for '"+prefix+
+                "' at "+monthDay+" "+clock+
+                ". No duplicate upload will be attempted.");
             return false;
         }
         catch(OperationCanceledException){throw;}
         catch(Exception ex)
         {
-            log?.Invoke("TikTok: read-only Posts verification failed: "+
+            log?.Invoke("TikTok: Studio Posts read-only verification error: "+
                 ex.Message.Split('\n')[0]);
             return false;
         }
         finally
         {
-            if(!alreadyOnPosts)
-            {
+            if(!onPosts)
                 try{await audit.CloseAsync();}catch(PlaywrightException){}
-            }
         }
     }
 
