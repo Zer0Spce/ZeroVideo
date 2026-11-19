@@ -350,9 +350,91 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         return locator.First;
     }
 
+    // Some TikTok accounts render the newer "When to post" toolbar as
+    // three adjacent controls: [calendar date] [clock time] [GMT timezone].
+    // Identify ONLY the date/time control beside that exact heading; do not
+    // interact with privacy, caption, or timezone dropdowns.
+    private static async Task<ILocator?> FindTikTokNewScheduleToolbarFieldAsync(
+        IPage page, bool date, Action<string>? log, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var kind=date?"date":"time";
+        var result=await page.EvaluateAsync<System.Text.Json.JsonElement>(
+            """
+            kind=>{
+              const marker='data-zerovideo-schedule-'+kind+'-trigger';
+              const visible=e=>{
+                if(!e)return false;
+                const r=e.getBoundingClientRect(),c=getComputedStyle(e);
+                return r.width>10&&r.height>10&&r.top>=0&&r.bottom<innerHeight+50&&
+                  c.display!=='none'&&c.visibility!=='hidden';
+              };
+              const text=e=>(e.value||e.innerText||e.textContent||'')
+                .replace(/\s+/g,' ').trim();
+              const datePattern=/^(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}|\d{4}-\d{2}-\d{2})$/i;
+              const timePattern=/^\d{1,2}:\d{2}(?:\s*[AP]M)?$/i;
+              const pattern=kind==='date'?datePattern:timePattern;
+              const heads=[...document.querySelectorAll('h1,h2,h3,h4,span,div,strong')]
+                .filter(e=>visible(e)&&text(e)==='When to post'&&
+                  ![...e.children].some(c=>text(c)==='When to post'));
+              if(heads.length!==1)return {ok:false,reason:'When to post heading ambiguous'};
+              const h=heads[0].getBoundingClientRect();
+              const nodes=[...document.querySelectorAll('input,button,[role="button"],[role="combobox"],span,div')]
+                .filter(e=>{
+                  if(!visible(e)||!pattern.test(text(e))||
+                    e.closest('[contenteditable="true"],[role="textbox"],[data-e2e="post_video_button"]'))return false;
+                  const r=e.getBoundingClientRect();
+                  return r.top>=h.bottom-5&&r.top<=h.bottom+180&&
+                    r.left>=h.left-25&&r.width<=340&&r.height<=85&&
+                    ![...e.children].some(c=>visible(c)&&text(c)===text(e));
+                });
+              const boxes=[];
+              for(const leaf of nodes) {
+                let chosen=leaf;
+                // Prefer the clickable enclosing tile rather than the icon
+                // or text span. Keep the tile short enough not to include
+                // the adjacent GMT+8 selector.
+                for(let p=leaf.parentElement,depth=0;p&&depth<4;p=p.parentElement,depth++){
+                  const r=p.getBoundingClientRect();
+                  if(r.width>360||r.width<90||r.height>75||r.height<30)continue;
+                  if(r.top<h.bottom-8||r.top>h.bottom+180)continue;
+                  if(/GMT|Local Time/i.test(text(p)))continue;
+                  chosen=p;
+                  if(p.matches('button,[role="button"],[role="combobox"],[tabindex]')||
+                    /picker|select|input/i.test(typeof p.className==='string'?p.className:''))break;
+                }
+                const rect=chosen.getBoundingClientRect();
+                boxes.push({el:chosen,center:rect.left+rect.width/2,label:text(leaf)});
+              }
+              const unique=[];
+              for(const b of boxes)if(!unique.some(x=>Math.abs(x.center-b.center)<24))unique.push(b);
+              if(unique.length!==1)return {ok:false,reason:'Expected one '+kind+' toolbar tile, found '+unique.length};
+              document.querySelectorAll('['+marker+']').forEach(e=>e.removeAttribute(marker));
+              unique[0].el.setAttribute(marker,'true');
+              return {ok:true,label:unique[0].label};
+            }
+            """,kind);
+        if(!result.GetProperty("ok").GetBoolean())
+        {
+            log?.Invoke("TikTok: new toolbar "+kind+" locator: "+
+                result.GetProperty("reason").GetString());
+            return null;
+        }
+        var marked=page.Locator("[data-zerovideo-schedule-"+kind+"-trigger='true']");
+        if(await marked.CountAsync()!=1||!await marked.IsVisibleAsync())return null;
+        log?.Invoke("TikTok: selected "+kind+" field in new When to post toolbar: "+
+            result.GetProperty("label").GetString());
+        return marked.First;
+    }
+
     private static async Task<ILocator?> FindTikTokScheduleDateTriggerAsync(
         IPage page, Action<string>? log, CancellationToken ct)
     {
+        // Prefer the newly positioned account-specific date tile; it can
+        // coexist with hidden legacy date widgets elsewhere in the document.
+        var newToolbar=await FindTikTokNewScheduleToolbarFieldAsync(
+            page,true,log,ct);
+        if(newToolbar is not null)return newToolbar;
         var preferred = page.Locator(".date-picker-input:visible");
         for(var poll=0;poll<20;poll++)
         {
@@ -919,7 +1001,9 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     {
         ct.ThrowIfCancellationRequested();
         var date=await FindTikTokScheduleDateTriggerAsync(page,log,ct);
-        var time=page.Locator(".time-picker-input:visible").First;
+        var time=await FindTikTokNewScheduleToolbarFieldAsync(
+            page,false,log,ct) ??
+            page.Locator(".time-picker-input:visible").First;
         if(await time.CountAsync()==0)
             time=await FindTikTokScheduleFieldNearHeadingAsync(
                 page,date:false,log,ct) ??
@@ -990,7 +1074,9 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
 
         // Date failure does not authorize any click outside the time field;
         // time is tested independently but inside its own verified popup.
-        var timeTrigger=page.Locator(".time-picker-input:visible").First;
+        var timeTrigger=await FindTikTokNewScheduleToolbarFieldAsync(
+            page,false,log,ct) ??
+            page.Locator(".time-picker-input:visible").First;
         if(await timeTrigger.CountAsync()==0)
             timeTrigger=await FindTikTokScheduleFieldNearHeadingAsync(
                 page, date: false, log, ct) ??
