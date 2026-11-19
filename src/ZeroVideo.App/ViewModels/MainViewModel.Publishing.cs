@@ -1002,17 +1002,16 @@ public sealed partial class MainViewModel
                 else if (result.StartsWith("TikTok: SUBMISSION_ATTEMPTED", StringComparison.Ordinal))
                 {
                     item.TikTokStatus = "Submission attempted - check Studio";
-                    submitted++;
-                    // #216 commonly navigates away after a successful submit
-                    // without a textual receipt. Allow the next DIFFERENT video
-                    // only when the upload form has been left. No retries.
-                    if (!result.Contains("left the upload page", StringComparison.OrdinalIgnoreCase))
-                    {
-                        SavePublishingQueue();
-                        PublishStatus = $"TikTok batch paused after {index + 1}/{prepared.Count}: " +
-                            result + " Verify the outcome before starting another batch.";
-                        return;
-                    }
+                    // Leaving the upload page does not prove that TikTok
+                    // scheduled the post: it may redirect to another upload
+                    // screen or restore a draft. Never proceed to video #2
+                    // solely on navigation, or retry the same video blindly.
+                    SavePublishingQueue();
+                    PublishStatus = $"TikTok batch paused after {index + 1}/{prepared.Count}: " +
+                        "submission status is uncertain. Check TikTok Studio > Posts " +
+                        "before resuming the remaining videos. " + result;
+                    Log(PublishStatus);
+                    return;
                 }
                 else
                 {
