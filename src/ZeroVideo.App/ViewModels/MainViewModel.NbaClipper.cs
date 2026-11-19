@@ -45,6 +45,13 @@ public sealed class NbaClipperState
     public string Niche { get; set; } = "";
     public string Format { get; set; } = "Player Ratings";
     public string ChatUrl { get; set; } = "";
+    public string SourceFolder { get; set; } = "";
+    public string SoundFile { get; set; } = "";
+    public string FirstSlot { get; set; } = "";
+    public bool AutoDownload { get; set; } = true;
+    public bool BrowserLogin { get; set; }
+    public bool Publish { get; set; } = true;
+    public double MusicLevel { get; set; } = .85;
     public List<NbaClipperEntry> Ideas { get; set; } = [];
     public List<NbaClipperHistoryItem> History { get; set; } = [];
 }
@@ -155,6 +162,10 @@ public sealed partial class MainViewModel
         var snapshot=new NbaClipperState{
             Niche=NbaNiche,Format=NbaFormat,
             ChatUrl=_nbaChat.ChatGptConversationUrl??"",
+            SourceFolder=NbaSourceFolder,SoundFile=NbaSoundFile,
+            FirstSlot=NbaFirstSlot,AutoDownload=NbaAutoDownload,
+            BrowserLogin=NbaBrowserLogin,Publish=NbaPublish,
+            MusicLevel=NbaMusicLevel,
             Ideas=NbaClipperIdeas.ToList(),
             History=_nbaHistory.ToList()
         };
@@ -176,6 +187,20 @@ public sealed partial class MainViewModel
             if(state is null)return;
             if(state.Niche.Length>0)NbaNiche=state.Niche;
             if(NbaFormats.Contains(state.Format))NbaFormat=state.Format;
+            if(!string.IsNullOrWhiteSpace(state.SourceFolder))
+                NbaSourceFolder=state.SourceFolder;
+            if(!string.IsNullOrWhiteSpace(state.SoundFile))
+                NbaSoundFile=state.SoundFile;
+            // Keep the future default slot instead of restoring a time in
+            // the past from a previous session.
+            if(DateTime.TryParseExact(state.FirstSlot,"yyyy-MM-dd HH:mm",
+                CultureInfo.InvariantCulture,DateTimeStyles.AssumeLocal,
+                out var restoredSlot)&&restoredSlot>DateTime.Now.AddMinutes(25))
+                NbaFirstSlot=state.FirstSlot;
+            NbaAutoDownload=state.AutoDownload;
+            NbaBrowserLogin=state.BrowserLogin;
+            NbaPublish=state.Publish;
+            NbaMusicLevel=state.MusicLevel;
             _nbaChat=new VideoProject{
                 Title="NBAClipper batch",Topic=NbaNiche,
                 ChatGptConversationUrl=string.IsNullOrWhiteSpace(state.ChatUrl)?null:state.ChatUrl};
