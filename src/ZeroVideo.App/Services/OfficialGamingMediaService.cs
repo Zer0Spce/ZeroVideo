@@ -630,7 +630,7 @@ public sealed class OfficialGamingMediaService
             normalizedTitle.Contains(normalizedSubject, StringComparison.Ordinal);
         if (!matchesGame) return false;
         if (Regex.IsMatch(title,
-            @"(?i)\b(?:reaction|reacts|top\s+\d+|all\s+games|best\s+games|fake\s+trailer|fan\s+made|concept\s+trailer|rumor\s+compilation)\b"))
+            @"(?i)\b(?:reaction|reacts|top\s+\d+|all\s+games|best\s+games|fake\s+trailer|fan[\s-]*made|concept\s+trailer|rumor\s+compilation|leaked\s+fake)\b"))
             return false;
         return true;
     }
@@ -1732,8 +1732,15 @@ public sealed class OfficialGamingMediaService
                 "rendering authentic screenshots only (never AI imagery).");
         var sourceNames = selectedShots.Select(MediaSourceHost)
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        var label = "Media: " + string.Join(" / ", sourceNames.Take(3)) +
-            (sourceNames.Count > 3 ? " +" + (sourceNames.Count - 3) : "");
+        var youtubeSources = selectedShots.Where(x => x.Url.Contains("youtube.com/watch",
+                StringComparison.OrdinalIgnoreCase)).Select(MediaSourceHost)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        // A YouTube clip's publisher/channel must appear in the small credit,
+        // not disappear after three unrelated image source websites.
+        var displayedSources = youtubeSources.Concat(sourceNames)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var label = "Media: " + string.Join(" / ", displayedSources.Take(3)) +
+            (displayedSources.Count > 3 ? " +" + (displayedSources.Count - 3) : "");
         var manifest = Path.Combine(project.ProjectDirectory, "official-media-credits.json");
         await File.WriteAllTextAsync(manifest, JsonSerializer.Serialize(new
         {
