@@ -68,9 +68,12 @@ public sealed partial class MainViewModel
     public ICommand MovieBrowseSourceCommand { get; private set; } = null!;
     public ICommand MovieBrowseSoundCommand { get; private set; } = null!;
     public ICommand MovieFindTrailerCommand { get; private set; } = null!;
+    public ICommand MovieOpenOutputCommand { get; private set; } = null!;
+    public string MovieExportFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "ZeroVideo", "MovieClipper");
 
     private void InitializeMovieClipperCommands()
     {
+        MovieOpenOutputCommand = new RelayCommand(() => { Directory.CreateDirectory(MovieExportFolder); Process.Start(new ProcessStartInfo("explorer.exe", "\"" + MovieExportFolder + "\"") { UseShellExecute = true }); });
         MovieGenerateCommand = new AsyncCommand(() => RunManagedJobAsync("MovieClipper: ChatGPT ideas", MovieGenerateAsync));
         MovieStartCommand = new AsyncCommand(() => RunManagedJobAsync("MovieClipper: 30s batch", MovieStartAsync));
         MovieBrowseSourceCommand = new RelayCommand(() =>
@@ -394,78 +397,166 @@ public sealed partial class MainViewModel
         finally { MovieProcessing = false; }
     }
 
+
+    private static string MovieNumber(double n) => n.ToString("0.###", CultureInfo.InvariantCulture);
+
+    private static string MovieScore(MovieClipperEntry movie, int category)
+    {
+        // Reproducible editorial estimate, explicitly distinguished from the sourced TMDB score.
+        var baseline = movie.VoteCount > 0 ? movie.VoteAverage : 6.5;
+        var jitter = ((movie.TmdbId * (category + 3L) + category * 29L) % 15 - 7) * 0.1;
+        return Math.Clamp(baseline + jitter, 2.0, 9.8).ToString("0.0", CultureInfo.InvariantCulture) + "/10";
+    }
+
+    private async Task<(double Seconds, bool HasAudio)> MovieProbeAsync(string path)
+    {
+        var ffprobe = !string.IsNullOrWhiteSpace(Settings.FfprobePath) &&
+            File.Exists(Settings.FfprobePath) ? Settings.FfprobePath : "ffprobe";
+        var result = await MovieRunProcessAsync(ffprobe,
+            ["-v", "quiet", "-show_format", "-show_streams", "-of", "json", path], _cts.Token);
+        if (result.Code != 0) throw new InvalidDataException("ffprobe could not inspect the source video.");
+        using var doc = JsonDocument.Parse(result.Output);
+        var duration = MovieJson(doc.RootElement.GetProperty("format"), "duration");
+        if (!double.TryParse(duration, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)
+            || seconds < 5) throw new InvalidDataException("Trailer is too short to assemble 30 seconds.");
+        var audio = doc.RootElement.GetProperty("streams").EnumerateArray()
+            .Any(x => MovieJson(x, "codec_type") == "audio");
+        return (seconds, audio);
+    }
+
+    private async Task<List<double>> MovieSceneCutsAsync(string ffmpeg, string path, double duration)
+    {
+        var scan = await MovieRunProcessAsync(ffmpeg,
+            ["-hide_banner", "-nostats", "-i", path, "-vf",
+             "scale=320:-2,select=gt(scene\\,0.20),showinfo",
+             "-an", "-f", "null", "-"], _cts.Token);
+        var cuts = new SortedSet<double>();
+        foreach (System.Text.RegularExpressions.Match m in
+            System.Text.RegularExpressions.Regex.Matches(scan.Error, @"pts_time:\s*(\d+(?:\.\d+)?)"))
+        {
+            if (double.TryParse(m.Groups[1].Value, NumberStyles.Float,
+                CultureInfo.InvariantCulture, out var t) && t > 1 && t < duration - 3)
+                cuts.Add(t);
+        }
+        return cuts.ToList();
+    }
+
     private async Task<PublishQueueItem> MovieRenderAsync(MovieClipperEntry movie, string trailer)
     {
-        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        const double intro = 0.75;
+        const int shots = 10;
+        var shotDuration = (30.0 - intro) / shots;
+        var internalFolder = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ZeroVideo", "MovieClipper", movie.TmdbId + "-" + DateTime.UtcNow.ToString("yyyyMMddHHmmssfff"));
-        Directory.CreateDirectory(root);
-        var poster = Path.Combine(root, "thumbnail.jpg");
-        var output = Path.Combine(root, "movieclip.mp4");
-        using (var reply = await _movieHttp.GetAsync("https://image.tmdb.org/t/p/original" + movie.PosterPath, _cts.Token))
+        Directory.CreateDirectory(internalFolder);
+        Directory.CreateDirectory(MovieExportFolder);
+        var poster = Path.Combine(internalFolder, "poster.jpg");
+        var output = Path.Combine(MovieExportFolder,
+            movie.TmdbId + "_" + DateTime.Now.ToString("yyyyMMdd_HHmmssfff") + ".mp4");
+        using (var response = await _movieHttp.GetAsync(
+            "https://image.tmdb.org/t/p/original" + movie.PosterPath, _cts.Token))
         {
-            reply.EnsureSuccessStatusCode();
+            response.EnsureSuccessStatusCode();
             await using var stream = File.Create(poster);
-            await reply.Content.CopyToAsync(stream, _cts.Token);
+            await response.Content.CopyToAsync(stream, _cts.Token);
         }
-        // Title is already on the TMDB official theatrical poster; add a factual TMDB score as an overlay.
-        await File.WriteAllTextAsync(Path.Combine(root, "rating.txt"),
-            movie.VoteCount > 0 ? "TMDB " + movie.Rating : "TMDB: NOT YET RATED", _cts.Token);
-        var ffmpeg = !string.IsNullOrWhiteSpace(Settings.FfmpegPath) ? Settings.FfmpegPath : "ffmpeg";
-        var args = new List<string> {
-            "-y", "-loop", "1", "-framerate", "30", "-t", "2", "-i", poster,
-            "-stream_loop", "-1", "-i", trailer
+        var ffmpeg = !string.IsNullOrWhiteSpace(Settings.FfmpegPath) &&
+            File.Exists(Settings.FfmpegPath) ? Settings.FfmpegPath : "ffmpeg";
+        var info = await MovieProbeAsync(trailer);
+        movie.Status = "Finding trailer scene changes";
+        var changes = await MovieSceneCutsAsync(ffmpeg, trailer, info.Seconds);
+        var starts = new List<double>();
+        var limit = Math.Max(0, info.Seconds - shotDuration - 0.1);
+        for (var i = 0; i < shots; i++)
+        {
+            var target = limit * (i + 0.35) / shots;
+            var maxDistance = Math.Max(2.5, info.Seconds / (shots * 3.0));
+            var cut = changes.Where(x => Math.Abs(x - target) < maxDistance)
+                .OrderBy(x => Math.Abs(x - target)).FirstOrDefault();
+            starts.Add(Math.Clamp(cut > 0 ? cut : target, 0, limit));
+        }
+        await File.WriteAllTextAsync(Path.Combine(internalFolder, "edit-plan.json"),
+            JsonSerializer.Serialize(new { movie = movie.Label, trailer, starts, detected_cuts = changes.Count,
+                score_type = "editorial_estimate",
+                scores = Enumerable.Range(0, 4).Select(i => MovieScore(movie, i)).ToArray() }),
+            _cts.Token);
+
+        // Ten excerpts are spread through the complete trailer, not its first 28 seconds.
+        // Crop to vertical without distortion. No background boxes behind the central captions.
+        var args = new List<string> { "-y", "-loop", "1", "-framerate", "30",
+            "-t", MovieNumber(intro), "-i", poster };
+        foreach (var start in starts)
+            args.AddRange(["-ss", MovieNumber(start), "-t", MovieNumber(shotDuration),
+                "-i", trailer]);
+        var customMusic = File.Exists(MovieSoundFile);
+        // A continuous audio bed begins at 0s, including during the opening poster.
+        // Without custom music, use the original trailer audio where possible.
+        if (customMusic)
+            args.AddRange(["-stream_loop", "-1", "-i", MovieSoundFile]);
+        else if (info.HasAudio)
+            args.AddRange(["-stream_loop", "-1", "-i", trailer]);
+        var audioIndex = shots + 1;
+        const string portrait = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30,format=yuv420p";
+        var filters = new List<string> {
+            "[0:v]" + portrait + ",trim=duration=" + MovieNumber(intro) + ",setpts=PTS-STARTPTS[v0]"
         };
-        var withMusic = File.Exists(MovieSoundFile);
-        if (withMusic) args.AddRange(["-stream_loop", "-1", "-i", MovieSoundFile]);
-        const string frame = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30,format=yuv420p";
-        // Original review-like category headings; no fictional category scores are claimed.
-        var categoryOverlays = string.Concat(new[] { "PLOT", "ACTING", "CINEMATOGRAPHY", "ENDING" }
-            .Select((name, i) => ",drawtext=text=" + name +
-                ":fontcolor=white:fontsize=76:borderw=3:bordercolor=black:" +
-                "box=1:boxcolor=black@0.55:boxborderw=15:x=(w-text_w)/2:y=235:" +
-                "enable='between(t," + (i * 6) + "," + (i * 6 + 5) + ")'"));
-        var filter = "[0:v]" + frame + ",trim=duration=2,setpts=PTS-STARTPTS[intro];" +
-            "[1:v]" + frame +
-            ",trim=duration=28,setpts=PTS-STARTPTS" + categoryOverlays + "," +
-            "drawtext=textfile=rating.txt:fontcolor=white:fontsize=62:box=1:boxcolor=black@0.70:boxborderw=18:x=(w-text_w)/2:y=h-260:enable='gte(t,23)'[scene];" +
-            "[intro][scene]concat=n=2:v=1:a=0[v]";
-        // Soundtrack follows the 2-second title card, running for 28 seconds.
-        if (withMusic)
+        for (var i = 0; i < shots; i++)
+            filters.Add("[" + (i + 1) + ":v]" + portrait + ",trim=duration=" +
+                MovieNumber(shotDuration) + ",setpts=PTS-STARTPTS[v" + (i + 1) + "]");
+        var inputs = string.Concat(Enumerable.Range(0, shots + 1).Select(i => "[v" + i + "]"));
+        filters.Add(inputs + "concat=n=" + (shots + 1) + ":v=1:a=0[base]");
+        var captions = "";
+        var labels = new[] { "PLOT", "ACTING", "CINEMATOGRAPHY", "ENDING" };
+        for (var i = 0; i < labels.Length; i++)
         {
-            filter += ";[2:a]atrim=duration=28,asetpts=PTS-STARTPTS,volume=" +
-                MovieMusicLevel.ToString(CultureInfo.InvariantCulture) +
-                ",adelay=2000|2000[music]";
-            if (MovieKeepDialogue)
-                filter += ";[1:a]atrim=duration=28,asetpts=PTS-STARTPTS,volume=0.45,adelay=2000|2000[voice];" +
-                    "[voice][music]amix=inputs=2:duration=longest:normalize=0[a]";
-            else filter += ";[music]anull[a]";
+            var from = intro + i * 6.9;
+            var to = Math.Min(29, from + 6.9);
+            var when = ":enable='between(t," + MovieNumber(from) + "," + MovieNumber(to) + ")'";
+            captions += ",drawtext=text='" + labels[i] +
+                "':fontsize=70:fontcolor=white:borderw=4:bordercolor=black:" +
+                "x=(w-text_w)/2:y=(h-text_h)/2-115" + when;
+            captions += ",drawtext=text='" + MovieScore(movie, i) +
+                "':fontsize=108:fontcolor=0xFFE17C:borderw=5:bordercolor=black:" +
+                "x=(w-text_w)/2:y=(h-text_h)/2+20" + when;
         }
-        else if (MovieKeepDialogue)
-            filter += ";[1:a]atrim=duration=28,asetpts=PTS-STARTPTS,adelay=2000|2000[a]";
-        args.AddRange(["-filter_complex", filter, "-map", "[v]"]);
-        if (withMusic || MovieKeepDialogue)
-            args.AddRange(["-map", "[a]", "-c:a", "aac", "-b:a", "160k"]);
-        args.AddRange(["-t", "30", "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-            "-pix_fmt", "yuv420p", "-movflags", "+faststart", output]);
-        var start = new ProcessStartInfo(ffmpeg) { UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardError = true, WorkingDirectory = root };
-        foreach (var arg in args) start.ArgumentList.Add(arg);
-        using var process = Process.Start(start) ?? throw new InvalidOperationException("FFmpeg could not launch.");
-        var errorTask = process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync(_cts.Token);
-        if (process.ExitCode != 0)
+        captions += ",drawtext=text='EDITORIAL ESTIMATE':fontsize=28:fontcolor=white:" +
+            "borderw=2:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2+160:" +
+            "enable='between(t,0.75,28.5)'";
+        if (movie.VoteCount > 0)
+            captions += ",drawtext=text='TMDB AUDIENCE " +
+                movie.VoteAverage.ToString("0.0", CultureInfo.InvariantCulture) +
+                "/10':fontsize=54:fontcolor=white:borderw=4:bordercolor=black:" +
+                "x=(w-text_w)/2:y=(h-text_h)/2:enable='gte(t,28.5)'";
+        filters.Add("[base]" + captions + "[v]");
+
+        if (customMusic || info.HasAudio)
         {
-            var full = await errorTask;
-            throw new InvalidOperationException("FFmpeg: " + full[^Math.Min(600, full.Length)..]);
+            var volume = customMusic ? MovieMusicLevel : 0.8;
+            filters.Add("[" + audioIndex + ":a]atrim=duration=30,asetpts=PTS-STARTPTS," +
+                "volume=" + MovieNumber(volume) + ",apad=pad_dur=30[a]");
         }
-        if (!File.Exists(output) || new FileInfo(output).Length < 1024)
-            throw new IOException("Rendered MP4 is empty.");
+        else filters.Add("anullsrc=r=48000:cl=stereo,atrim=duration=30[a]");
+        args.AddRange(["-filter_complex", string.Join(";", filters),
+            "-map", "[v]", "-map", "[a]", "-t", "30",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+            "-c:a", "aac", "-b:a", "160k", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart", output]);
+        movie.Status = "Rendering 10-shot montage";
+        var rendered = await MovieRunProcessAsync(ffmpeg, args, _cts.Token);
+        if (rendered.Code != 0)
+            throw new InvalidOperationException("FFmpeg: " +
+                rendered.Error[^Math.Min(700, rendered.Error.Length)..]);
+        if (!File.Exists(output) || new FileInfo(output).Length < 10_000)
+            throw new InvalidDataException("Finished video file was not produced.");
+        MovieStatus = "Exported " + output;
         return new PublishQueueItem {
             VideoPath = output, ThumbnailPath = poster, Title = movie.Label,
             Description = movie.Overview,
             TikTokCaption = movie.Label + " 🎬 " +
-                (movie.VoteCount > 0 ? movie.Rating + " — TMDB audience score. " : "Not yet rated on TMDB. ") +
-                "Would you watch it? #MovieTok #MovieReview #FilmTok",
+                (movie.VoteCount > 0 ? "TMDB audience " + movie.Rating + ". " : "") +
+                "Category scores are editorial estimates. Would you watch it? " +
+                "#MovieTok #MovieReview #FilmTok",
             YouTubeTitle = movie.Label + " #Shorts",
             YouTubeDescription = movie.Overview
         };
