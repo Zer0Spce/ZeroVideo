@@ -73,7 +73,7 @@ jobs:
       - name: Publish portable x64
         shell: pwsh
         run: .\tools\build-portable.ps1
-      - name: Bundle public YouTube clip downloader for Gaming News only
+      - name: Bundle YouTube clip downloader for Gaming News
         shell: pwsh
         run: |
           $destination = Join-Path $env:GITHUB_WORKSPACE 'dist\ZeroVideo-win-x64\yt-dlp.exe'
@@ -81,83 +81,17 @@ jobs:
           $checksums = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS'
           Invoke-WebRequest -Uri $download -OutFile $destination -MaximumRedirection 8
           if (!(Test-Path $destination) -or (Get-Item $destination).Length -lt 3000000) {
-            throw 'Failed to retrieve working yt-dlp Windows executable'
+            throw 'Unable to retrieve yt-dlp Windows binary'
           }
           $sumFile = Join-Path $env:RUNNER_TEMP 'yt-dlp-SHA2-256SUMS.txt'
           Invoke-WebRequest -Uri $checksums -OutFile $sumFile -MaximumRedirection 8
-          $line = Get-Content $sumFile | Where-Object { $_ -match 'yt-dlp\.exe
-        shell: pwsh
-        run: |
-          $exe = Join-Path $env:GITHUB_WORKSPACE 'dist\ZeroVideo-win-x64\ZeroVideo.exe'
-          if (!(Test-Path $exe)) { throw "Missing published ZeroVideo.exe: $exe" }
-          $marker = Join-Path $env:RUNNER_TEMP 'zerovideo-startup-smoke.ok'
-          Remove-Item $marker -Force -ErrorAction SilentlyContinue
-          $env:ZEROVIDEO_STARTUP_SMOKE_MARKER = $marker
-          $app = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) -PassThru
-          try {
-            for ($i = 0; $i -lt 50; $i++) {
-              if (Test-Path $marker) { break }
-              Start-Sleep -Milliseconds 400
-              $app.Refresh()
-              if ($app.HasExited) { break }
-            }
-            if (!(Test-Path $marker)) {
-              $exitStatus = if ($app.HasExited) { $app.ExitCode } else { 'still running' }
-              $diagnostics = Join-Path $env:LOCALAPPDATA 'ZeroVideo\diagnostics\startup-crash.log'
-              if (Test-Path $diagnostics) {
-                Write-Host 'ZeroVideo startup diagnostics:'
-                Get-Content $diagnostics -Tail 80
-              }
-              throw "ZeroVideo.exe failed the real Windows WPF startup smoke test (exit: $exitStatus)."
-            }
-            Get-Content $marker | Write-Host
-          }
-          finally {
-            if (!$app.HasExited) { Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue }
-            Remove-Item Env:ZEROVIDEO_STARTUP_SMOKE_MARKER -ErrorAction SilentlyContinue
-          }
-      - name: Smoke test Playwright driver from published ZeroVideo.exe
-        shell: pwsh
-        run: |
-          $exe = Join-Path $env:GITHUB_WORKSPACE 'dist\ZeroVideo-win-x64\ZeroVideo.exe'
-          $driver = Join-Path $env:GITHUB_WORKSPACE 'dist\ZeroVideo-win-x64\.playwright\node\win32_x64\node.exe'
-          if (!(Test-Path $driver)) { throw "Playwright driver not packaged at $driver" }
-          $marker = Join-Path $env:RUNNER_TEMP 'zerovideo-playwright-smoke.ok'
-          Remove-Item $marker -Force -ErrorAction SilentlyContinue
-          $env:ZEROVIDEO_PLAYWRIGHT_SMOKE_MARKER = $marker
-          $app = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) -PassThru
-          try {
-            for ($i = 0; $i -lt 75; $i++) {
-              if (Test-Path $marker) { break }
-              Start-Sleep -Milliseconds 400
-              $app.Refresh()
-              if ($app.HasExited) { break }
-            }
-            if (!(Test-Path $marker)) {
-              $diagnostics = Join-Path $env:LOCALAPPDATA 'ZeroVideo\diagnostics\startup-crash.log'
-              if (Test-Path $diagnostics) { Get-Content $diagnostics -Tail 80 }
-              throw "Playwright driver did not start from portable EXE."
-            }
-            Get-Content $marker | Write-Host
-          }
-          finally {
-            if (!$app.HasExited) { Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue }
-            Remove-Item Env:ZEROVIDEO_PLAYWRIGHT_SMOKE_MARKER -ErrorAction SilentlyContinue
-          }
-      - name: Upload runnable portable test folder
-        uses: actions/upload-artifact@v4
-        with:
-          name: ZeroVideo-win-x64-playwright-fixed
-          path: dist/ZeroVideo-win-x64/
-          if-no-files-found: error
-          include-hidden-files: true
- } | Select-Object -First 1
+          $line = Get-Content $sumFile | Where-Object { $_ -match 'yt-dlp\.exe$' } | Select-Object -First 1
           if (!$line) { throw 'Missing yt-dlp.exe SHA256 checksum in release manifest' }
           $expected = ($line -split '\s+')[0].ToUpperInvariant()
           $actual = (Get-FileHash $destination -Algorithm SHA256).Hash
-          if ($actual -ne $expected) { throw 'yt-dlp executable SHA256 mismatch' }
+          if ($actual -ne $expected) { throw 'yt-dlp Windows binary checksum mismatch' }
           & $destination --version
-          if ($LASTEXITCODE -ne 0) { throw 'Bundled yt-dlp.exe failed startup test' }
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled yt-dlp failed startup test' }
       - name: Smoke test real packaged ZeroVideo.exe startup
         shell: pwsh
         run: |
