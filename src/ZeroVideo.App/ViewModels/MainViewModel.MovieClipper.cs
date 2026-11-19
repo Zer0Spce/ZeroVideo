@@ -343,8 +343,9 @@ public sealed partial class MainViewModel
                 throw new InvalidDataException("Start time must be at least 25 minutes ahead and on a five-minute increment.");
             if (selected.Count > 20 * 24)
                 throw new InvalidDataException("Limit hourly TikTok scheduling to 20 days per batch.");
-            if (!string.IsNullOrWhiteSpace(MovieSoundFile) && !File.Exists(MovieSoundFile))
-                throw new FileNotFoundException("Custom soundtrack is missing.", MovieSoundFile);
+            if (string.IsNullOrWhiteSpace(MovieSoundFile) || !File.Exists(MovieSoundFile))
+                throw new FileNotFoundException(
+                    "Select a background-music file. MovieClipper now matches video length to that audio.", MovieSoundFile);
             var original = PublishingQueue.Where(x => x.IsChecked).ToList();
             var finished = new List<PublishQueueItem>();
             foreach (var movie in selected)
