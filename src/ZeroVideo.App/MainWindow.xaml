@@ -813,7 +813,10 @@
             <ScrollViewer VerticalScrollBarVisibility="Auto">
               <StackPanel>
                 <TextBlock Text="NBAClipper — Individual Player TikToks" FontSize="21" FontWeight="SemiBold"/>
-                <TextBlock Text="One-click individual NBA player ideas, six subjective skill ratings, player-specific highlight clips, music-beat editing and TikTok publishing.<Label Content="MOVIE NICHE"/>
+                <TextBlock Text="One-click individual NBA player ideas, six subjective skill ratings, player-specific highlight clips, music-beat editing and TikTok publishing." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,12"/>
+                <Label Content="NBA PLAYER NICHE"/>
+                <Label Content="VIDEO STYLE" Margin="0,7,0,0"/>
+                <ComboBox ItemsSource="{Binding NbaFormats}" SelectedItem="{Binding NbaFormat, Mode=TwoWay}" Margin="0,3,0,8"/>
                 <TextBox Text="{Binding NbaNiche, UpdateSourceTrigger=PropertyChanged}"/>
                 <Label Content="NUMBER OF PLAYERS" Margin="0,7,0,0"/>
                 <TextBox Text="{Binding NbaCount, UpdateSourceTrigger=LostFocus}"/>
@@ -827,10 +830,11 @@
                 <TextBlock Text="Optional. Allows yt-dlp to read your local Edge browser cookies; may require Edge to be closed. No cookies are stored in the ZeroVideo project." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,6"/>
                 <Button Style="{StaticResource SecondaryButton}" Content="Choose highlight cache folder..." Command="{Binding NbaBrowseSourceCommand}" HorizontalAlignment="Left"/>
                 <TextBlock Text="{Binding NbaSourceFolder}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
-                <Button Style="{StaticResource SecondaryButton}" Content="Preview Search for First Checked Nba" Command="{Binding NbaFindHighlightsCommand}" HorizontalAlignment="Left"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Preview Search for First Checked Player" Command="{Binding NbaFindHighlightsCommand}" HorizontalAlignment="Left"/>
                 <Separator Margin="0,13"/>
                 <TextBlock Text="Your background music / sound" FontWeight="SemiBold" FontSize="16"/>
-                <TextBlock Text="Moving individual-player highlights, name overlay, beat-synced cuts and subjective /10 skill ratings. Music plays from the first frame.<Button Style="{StaticResource SecondaryButton}" Content="Choose my audio..." Command="{Binding NbaBrowseSoundCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="Moving individual-player highlights, name overlay, beat-synced cuts and subjective /10 skill ratings. Music plays from the first frame." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose my audio..." Command="{Binding NbaBrowseSoundCommand}" HorizontalAlignment="Left"/>
                 <TextBlock Text="{Binding NbaSoundFile}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,8"/>
                 <Label Content="CUSTOM MUSIC VOLUME"/>
                 <Slider Minimum="0" Maximum="1" Value="{Binding NbaMusicLevel, Mode=TwoWay}"/>
@@ -859,7 +863,8 @@
             <DockPanel>
               <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
                 <TextBlock Text="ChatGPT NBA Player Idea Generator" FontSize="21" FontWeight="SemiBold"/>
-                <TextBlock Text="Player Ratings, Best Plays, or Player Legacy. Six subjective skills: Shooting, Finishing, Handles, Playmaking, Defense, Basketball IQ, plus Overall.</StackPanel>
+                <TextBlock Text="Player Ratings, Best Plays, or Player Legacy. Six subjective skills: Shooting, Finishing, Handles, Playmaking, Defense, Basketball IQ, plus Overall." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+              </StackPanel>
               <TabControl>
                 <TabItem Header="Ideas &amp; Progress">
               <DataGrid ItemsSource="{Binding NbaClipperIdeas}" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Single">
@@ -876,7 +881,7 @@
                     <TextBlock DockPanel.Dock="Top" Text="{Binding NbaHistorySummary}" Foreground="{StaticResource Muted}" Margin="0,6,0,8"/>
                     <DataGrid ItemsSource="{Binding NbaHistory}" AutoGenerateColumns="False" IsReadOnly="True">
                       <DataGrid.Columns>
-                        <DataGridTextColumn Header="Nba" Binding="{Binding Name}" Width="2*"/>
+                        <DataGridTextColumn Header="Player" Binding="{Binding Name}" Width="2*"/>
                         <DataGridTextColumn Header="Concept" Binding="{Binding Concept}" Width="2*"/>
                         <DataGridTextColumn Header="Completed" Binding="{Binding CompletedAt}" Width="170"/>
                         <DataGridTextColumn Header="Export" Binding="{Binding OutputPath}" Width="3*"/>
