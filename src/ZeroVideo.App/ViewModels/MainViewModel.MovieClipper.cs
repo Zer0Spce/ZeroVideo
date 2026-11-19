@@ -180,6 +180,7 @@ public sealed partial class MainViewModel
     {
         if (!Directory.Exists(folder)) return null;
         var expected = MovieClean(movie.Title);
+        if (expected.Length == 0) return null;
         return Directory.EnumerateFiles(folder)
             .Where(x => new[] { ".mp4", ".mov", ".mkv", ".webm" }.Contains(Path.GetExtension(x).ToLowerInvariant()))
             .FirstOrDefault(x =>
@@ -274,7 +275,7 @@ public sealed partial class MainViewModel
         var ffmpeg = !string.IsNullOrWhiteSpace(Settings.FfmpegPath) ? Settings.FfmpegPath : "ffmpeg";
         var args = new List<string> {
             "-y", "-loop", "1", "-framerate", "30", "-t", "2", "-i", poster,
-            "-i", trailer
+            "-stream_loop", "-1", "-i", trailer
         };
         var withMusic = File.Exists(MovieSoundFile);
         if (withMusic) args.AddRange(["-stream_loop", "-1", "-i", MovieSoundFile]);
