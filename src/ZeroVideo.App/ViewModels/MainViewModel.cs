@@ -60,6 +60,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         InitializeShortsCommands();
         InitializeIdeasCommands();
         InitializePublishingCommands();
+        InitializeMovieClipperCommands();
         BrowseMusicCommand = new RelayCommand(BrowseMusic);
     }
 
