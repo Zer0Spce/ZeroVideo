@@ -1163,6 +1163,20 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             return "TikTok: submission NOT attempted; final Schedule button not verified.";
         }
 
+        // Do not send a post while the hashtag suggestion menu is still open:
+        // TikTok may consume the button click as a suggestion selection.
+        var hashtagSuggestions=page.Locator(
+            "[role='listbox']:visible, [data-e2e='hashtag-suggestion-list']:visible");
+        if(await hashtagSuggestions.CountAsync()>0)
+        {
+            await page.Keyboard.PressAsync("Escape");
+            await Task.Delay(200,ct);
+            if(await hashtagSuggestions.CountAsync()>0)
+            {
+                log?.Invoke("TikTok: hashtag autocomplete still covers Studio controls.");
+                return "TikTok: submission NOT attempted; dismiss hashtag dropdown first.";
+            }
+        }
         log?.Invoke("TikTok: verified date/time and upload readiness; clicking final '" +
             label + "' button ONCE. Do not retry automatically.");
         // Mark the attempt BEFORE dispatching the click. If browser navigation
@@ -1259,6 +1273,11 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     private static async Task<bool> TikTokFillVerifiedCaptionAsync(
         IPage page, string wanted, Action<string>? log, CancellationToken ct)
     {
+        // TikTok presents a hashtag autocomplete dropdown when a
+        // contenteditable caption ends in #MovieReview etc. The dropdown can
+        // obscure scheduling fields and can restore focus after a React render.
+        // Verify existing text BEFORE FillAsync: rewriting an already-correct
+        // caption would needlessly reopen the autocomplete on every post.
         for (var attempt=1;attempt<=3;attempt++)
         {
             ct.ThrowIfCancellationRequested();
@@ -1268,28 +1287,37 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                 {
                     var editor = frame.Locator("[contenteditable='true']:visible").First;
                     if (await editor.CountAsync()!=1 || !await editor.IsVisibleAsync()) continue;
-                    await editor.FillAsync(wanted);
-                    await Task.Delay(900,ct); // TikTok's filename autofill may arrive later.
-                    var found = await editor.EvaluateAsync<string>(
+                    var found=await editor.EvaluateAsync<string>(
                         "el => (el.innerText||el.textContent||'').replace(/\\u200b/g,'').trim()");
-                    if (TikTokCaptionComparison(found) == TikTokCaptionComparison(wanted))
+                    if(TikTokCaptionComparison(found)!=TikTokCaptionComparison(wanted))
                     {
-                        log?.Invoke("TikTok: SEO caption verified after fill; no filename prefix or altered hashtags.");
+                        await editor.FillAsync(wanted);
+                        await Task.Delay(750,ct);
+                    }
+                    // Explicitly commit the caption and dismiss autocomplete.
+                    // Escape only affects the editor popup, not the form submit.
+                    await editor.PressAsync("Escape",new(){Timeout=4000});
+                    await editor.PressAsync("Tab",new(){Timeout=4000});
+                    await Task.Delay(600,ct);
+                    found=await editor.EvaluateAsync<string>(
+                        "el => (el.innerText||el.textContent||'').replace(/\\u200b/g,'').trim()");
+                    if(TikTokCaptionComparison(found)==TikTokCaptionComparison(wanted))
+                    {
+                        log?.Invoke("TikTok: SEO caption verified and hashtag autocomplete dismissed.");
                         return true;
                     }
-                    log?.Invoke("TikTok: caption changed after fill (attempt " + attempt +
-                        "/3); rewriting before scheduling. Expected " + wanted.Length +
-                        " characters; actual " + found.Length + ".");
+                    log?.Invoke("TikTok: caption changed after upload/focus switch ("+attempt+
+                        "/3); expected "+wanted.Length+", actual "+found.Length+".");
                 }
                 catch (PlaywrightException ex)
                 {
-                    log?.Invoke("TikTok: caption editor unavailable: " + ex.Message.Split('\n')[0]);
+                    log?.Invoke("TikTok: caption editor unavailable: "+ex.Message.Split('\n')[0]);
                 }
             }
             await Task.Delay(400,ct);
         }
         await SaveDiagnosticAsync(page,"TikTok-Caption-Mismatch",log);
-        log?.Invoke("TikTok: caption verification failed; final submit blocked to prevent filename/hashtag corruption.");
+        log?.Invoke("TikTok: caption verification failed; submission blocked.");
         return false;
     }
 
