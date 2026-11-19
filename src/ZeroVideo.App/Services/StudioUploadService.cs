@@ -1232,7 +1232,12 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                           // action controls; avoid matching surrounding cards.
                           const hasThumbnail=!!p.querySelector('img,video,canvas');
                           const actions=p.querySelectorAll('button,[role="button"]').length;
-                          if(!hasThumbnail && actions<2)continue;
+                          // New Studio cards sometimes use CSS background
+                          // thumbnails and icon-only div actions. A compact,
+                          // wide row with BOTH exact date/clock and title is
+                          // sufficient even when those markup tags are absent.
+                          const rowShape=r.width>=600&&r.height>=60&&r.height<=170;
+                          if(!hasThumbnail && actions<2 && !rowShape)continue;
                           candidates.push({el:p,area:r.width*r.height,top:Math.round(r.top)});
                         }
                         candidates.sort((a,b)=>a.area-b.area);
