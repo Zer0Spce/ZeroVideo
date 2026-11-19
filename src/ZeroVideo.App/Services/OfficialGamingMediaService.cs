@@ -87,6 +87,8 @@ public sealed class OfficialGamingMediaService
 
     private static string MediaSourceHost(OfficialAsset asset)
     {
+        if (asset.Source.EndsWith(" gameplay/trailer video", StringComparison.OrdinalIgnoreCase))
+            return asset.Source[..^" gameplay/trailer video".Length] + " (YouTube)";
         if (Uri.TryCreate(asset.StoreUrl, UriKind.Absolute, out var src))
             return src.Host.Replace("www.", "", StringComparison.OrdinalIgnoreCase);
         return asset.Source;
@@ -585,6 +587,35 @@ public sealed class OfficialGamingMediaService
         return File.Exists(appData) ? appData : null;
     }
 
+    // Search result labels are not enough to establish official origin.
+    // Accept publisher/platform channels and established outlets publishing
+    // explicitly titled official trailers or gameplay. Reject unknown
+    // fan channels even if they use "official" in a video title.
+    private static bool IsTrustedOfficialGameVideo(
+        string channel, string title, string subject)
+    {
+        if (!MatchingGameplayTitle(title, subject)) return false;
+        if (!Regex.IsMatch(title,
+            @"(?i)\b(?:official\s+(?:gameplay|trailer|teaser|announcement|reveal)|gameplay\s+(?:trailer|preview|footage|demo)|(?:launch|reveal|announcement|story)\s+trailer|gameplay|trailer)\b"))
+            return false;
+        var normalizedChannel = Normalize(channel);
+        var knownChannels = new[]
+        {
+            "playstation", "xbox", "nintendo of america",
+            "nintendo", "rockstar games", "rockstar games official",
+            "ign", "gamespot", "sega", "sega america",
+            "ubisoft", "ubisoft north america", "electronic arts",
+            "ea", "ea star wars", "activision", "bethesda softworks",
+            "capcom", "bandai namco entertainment america",
+            "square enix", "warner bros games", "wb games",
+            "devolver digital", "embark studios", "cd projekt red",
+            "disney dreamlight valley", "gameloft", "marvel games",
+            "2k", "take two interactive"
+        };
+        return knownChannels.Any(x =>
+            normalizedChannel.Equals(x, StringComparison.OrdinalIgnoreCase));
+    }
+
     private static bool MatchingGameplayTitle(string title, string mainSubject)
     {
         // Never take a different game, a reaction thumbnail, a random
@@ -617,8 +648,8 @@ public sealed class OfficialGamingMediaService
         var queries = new[]
         {
             subject + " official gameplay trailer",
-            subject + " gameplay IGN GameSpot",
-            subject + " official announcement trailer"
+            subject + " official trailer PlayStation Xbox Nintendo",
+            subject + " official gameplay IGN GameSpot"
         };
         var runner = new ProcessRunner();
         var leads = new List<YouTubeClipLead>();
@@ -649,6 +680,8 @@ public sealed class OfficialGamingMediaService
                         ? ch.GetString() ?? "" : "";
                     if (channel.Length == 0 && entry.TryGetProperty("uploader", out var up))
                         channel = up.GetString() ?? "";
+                    if (!IsTrustedOfficialGameVideo(channel, title, subject))
+                        continue;
                     var url = "https://www.youtube.com/watch?v=" + id;
                     if (!leads.Any(x => x.Url == url))
                         leads.Add(new YouTubeClipLead(url, title, channel));
@@ -667,8 +700,9 @@ public sealed class OfficialGamingMediaService
             project.Id + "|" + project.Title));
         var rng = new Random(BitConverter.ToInt32(seed, 0));
         leads = leads.OrderBy(_ => rng.Next()).ToList();
-        log?.Invoke("YouTube video search: " + leads.Count +
-            " matching gameplay/trailer candidates for '" + subject + "'.");
+        log?.Invoke("YouTube official footage: " + leads.Count +
+            " game-matched trailers/gameplay from trusted publisher, platform or " +
+            "editorial channels for '" + subject + "'.");
 
         // Only ordinary publicly accessible streams; no cookies, authentication,
         // geo-bypass, age-gate bypass or DRM circumvention.
