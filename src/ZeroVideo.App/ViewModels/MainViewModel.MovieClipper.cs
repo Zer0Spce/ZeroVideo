@@ -44,7 +44,7 @@ public sealed partial class MainViewModel
     private bool _movieProcessing;
     private double _movieMusicLevel = 0.85;
     private string _movieToken = "";
-    private const int MovieLengthSeconds = 30;
+    // Duration is read from the selected soundtrack at render time.
     private static readonly string MoviePrefsFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZeroVideo", "movieclipper.preferences.json");
     private void MovieSaveMediaPreferences()
     {
@@ -364,7 +364,7 @@ public sealed partial class MainViewModel
                     var output = await MovieRenderAsync(movie, trailer);
                     if (PublishingQueue.Any(x => x.VideoPath.Equals(output.VideoPath, StringComparison.OrdinalIgnoreCase)))
                         continue;
-                    var next = first.AddHours(finished.Count);
+                    var next = first.AddMinutes(SelectedPublishIntervalMinutes * finished.Count);
                     output.IsChecked = true;
                     output.IsScheduled = true;
                     output.ScheduleDateText = next.ToString("yyyy-MM-dd HH:mm");
@@ -381,7 +381,7 @@ public sealed partial class MainViewModel
             Raise(nameof(AllPublishItemsChecked));
             RefreshPublishingCalendar();
             RefreshVideoLibrary();
-            MovieStatus = $"Rendered {finished.Count}/{selected.Count} movies, exactly {MovieLengthSeconds} seconds each. " +
+            MovieStatus = $"Rendered {finished.Count}/{selected.Count} movies, matched to selected background-music length. " +
                 "MP4 files: " + MovieExportFolder + ". Click Open Exported Videos. " +
                 "Missing or failed sources remain visible in the list.";
             if (finished.Count == 0 || !MoviePublish) return;
@@ -499,15 +499,15 @@ public sealed partial class MainViewModel
     // Decode the chosen soundtrack to 8kHz mono PCM and find sudden increases
     // in short-window energy. Snap shot changes to those onsets rather than to
     // a constant interval. If no soundtrack is supplied, use trailer audio.
-    private async Task<List<double>> MovieBeatTimelineAsync(string ffmpeg, string sound)
+    private async Task<List<double>> MovieBeatTimelineAsync(string ffmpeg, string sound, double totalSeconds)
     {
         var start = new ProcessStartInfo(ffmpeg)
         {
             UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true
         };
-        foreach (var a in new[] { "-hide_banner", "-loglevel", "error", "-stream_loop", "-1",
-            "-i", sound, "-t", "30", "-vn", "-ac", "1", "-ar", "8000",
+        foreach (var a in new[] { "-hide_banner", "-loglevel", "error",
+            "-i", sound, "-t", MovieNumber(totalSeconds), "-vn", "-ac", "1", "-ar", "8000",
             "-f", "s16le", "pipe:1" }) start.ArgumentList.Add(a);
         using var proc = Process.Start(start) ?? throw new InvalidOperationException("Cannot decode soundtrack.");
         using var stream = new MemoryStream();
@@ -538,16 +538,16 @@ public sealed partial class MainViewModel
         }
         // Aim for ~15 different shots but allow music to shift boundaries.
         var timeline = new List<double> { 0 };
-        for (var target = 2.0; target < 29; target += 2.0)
+        for (var target = 2.0; target < totalSeconds - 1.1; target += 2.0)
         {
             var nearest = peaks.Where(p => Math.Abs(p.Time - target) <= 0.60)
                 .OrderByDescending(p => p.Strength).FirstOrDefault();
             var position = nearest.Time > 0 ? nearest.Time : target;
-            position = Math.Clamp(position, timeline[^1] + 1.25, Math.Min(target + 0.70, 28.8));
-            if (position < 29 && position - timeline[^1] >= 1.25)
+            position = Math.Clamp(position, timeline[^1] + 1.25, Math.Min(target + 0.70, totalSeconds - 0.65));
+            if (position < totalSeconds - 0.65 && position - timeline[^1] >= 1.25)
                 timeline.Add(Math.Round(position, 2));
         }
-        timeline.Add(30);
+        timeline.Add(totalSeconds);
         return timeline;
     }
 
@@ -578,7 +578,14 @@ public sealed partial class MainViewModel
 
     private async Task<PublishQueueItem> MovieRenderAsync(MovieClipperEntry movie, string trailer)
     {
-        const double totalSeconds = 30;
+        if (string.IsNullOrWhiteSpace(MovieSoundFile) || !File.Exists(MovieSoundFile))
+            throw new InvalidOperationException("Choose a background-music file first. The movie duration will match that audio file.");
+        var musicInfo = await MovieProbeAsync(MovieSoundFile);
+        var totalSeconds = musicInfo.Seconds;
+        if (!musicInfo.HasAudio || totalSeconds is < 8 or > 120)
+            throw new InvalidDataException("The selected soundtrack needs an audio stream lasting 8–120 seconds.");
+        var frameCount = Math.Max(1, (int)Math.Round(totalSeconds * 30, MidpointRounding.AwayFromZero));
+        var videoSeconds = frameCount / 30.0;
         var folder = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ZeroVideo", "MovieClipper", movie.TmdbId + "-" + DateTime.UtcNow.ToString("yyyyMMddHHmmssfff"));
@@ -599,10 +606,8 @@ public sealed partial class MainViewModel
         var source = await MovieProbeAsync(trailer);
         var score = await MovieGenerateScoresAsync(movie);
         movie.Status = "Analyzing musical beats and scene changes";
-        var soundtrack = File.Exists(MovieSoundFile) ? MovieSoundFile : trailer;
-        var beatTimeline = source.HasAudio || File.Exists(MovieSoundFile)
-            ? await MovieBeatTimelineAsync(ffmpeg, soundtrack)
-            : Enumerable.Range(0, 16).Select(i => i * 2.0).ToList();
+        var soundtrack = MovieSoundFile;
+        var beatTimeline = await MovieBeatTimelineAsync(ffmpeg, soundtrack, videoSeconds);
         var changes = await MovieSceneCutsAsync(ffmpeg, trailer, source.Seconds);
         var count = beatTimeline.Count - 1;
         var starts = new List<double>();
@@ -631,11 +636,10 @@ public sealed partial class MainViewModel
                 "-t", MovieNumber(beatTimeline[i + 1] - beatTimeline[i]), "-i", trailer]);
         var logoIndex = count;
         if (logo is not null)
-            args.AddRange(["-loop", "1", "-framerate", "30", "-t", "30", "-i", logo]);
+            args.AddRange(["-loop", "1", "-framerate", "30", "-t", MovieNumber(videoSeconds), "-i", logo]);
         var audioIndex = count + (logo is null ? 0 : 1);
-        var customMusic = File.Exists(MovieSoundFile);
-        if (customMusic || source.HasAudio)
-            args.AddRange(["-stream_loop", "-1", "-i", soundtrack]);
+        var customMusic = true;
+        args.AddRange(["-i", soundtrack]);
         const string frame = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30,format=yuv420p";
         var filters = new List<string>();
         for (var i = 0; i < count; i++)
@@ -646,7 +650,7 @@ public sealed partial class MainViewModel
             "concat=n=" + count + ":v=1:a=0[montage]");
         // Lock to exactly 30 seconds even if individual shot lengths round to video frames.
         filters.Add("[montage]tpad=stop_mode=clone:stop_duration=1," +
-            "trim=duration=30,setpts=PTS-STARTPTS[exact]");
+            "trim=duration=" + MovieNumber(videoSeconds) + ",setpts=PTS-STARTPTS[exact]");
         var baseInput = "[exact]";
         if (logo is not null)
         {
@@ -671,11 +675,12 @@ public sealed partial class MainViewModel
         var labels = new[] { "PLOT", "ACTING", "PACING", "CINEMATOGRAPHY",
             "WRITING", "ENDING", "OVERALL" };
         var values = score.Parts.Concat([score.Overall]).ToArray();
-        var froms = new[] { 5.3, 8.6, 11.9, 15.2, 18.5, 21.8, 25.1 };
+        var froms = new[] { 5.3, 8.6, 11.9, 15.2, 18.5, 21.8, 25.1 }
+            .Select(x => x / 30.0 * videoSeconds).ToArray();
         for (var i = 0; i < labels.Length; i++)
         {
             var from = froms[i];
-            var to = i < labels.Length - 1 ? froms[i + 1] - 0.05 : 29.9;
+            var to = i < labels.Length - 1 ? froms[i + 1] - 0.05 : videoSeconds - 0.1;
             var labelSize = labels[i] == "CINEMATOGRAPHY" ? 69 : 100;
             captions.Add("drawtext=text='" + labels[i] +
                 "':fontsize=" + labelSize + ":fontcolor=white:borderw=5:bordercolor=black:" +
@@ -684,18 +689,17 @@ public sealed partial class MainViewModel
             captions.Add("drawtext=text='" + values[i].ToString("0.0", CultureInfo.InvariantCulture) +
                 "/10':fontsize=76:fontcolor=white:borderw=4:bordercolor=black:" +
                 "x=(w-text_w)/2:y=(h-text_h)/2+75:" +
-                "enable='between(t," + MovieNumber(from + 0.95) + "," + MovieNumber(to) + ")'");
+                "enable='between(t," + MovieNumber(from + Math.Min(0.95, (to - from) * 0.4)) + "," + MovieNumber(to) + ")'");
         }
         filters.Add(baseInput + string.Join(",", captions) + "[v]");
 
         if (customMusic || source.HasAudio)
-            filters.Add("[" + audioIndex + ":a]atrim=duration=30,asetpts=PTS-STARTPTS," +
-                "volume=" + MovieNumber(customMusic ? MovieMusicLevel : 0.85) +
-                ",apad=pad_dur=30[a]");
-        else filters.Add("anullsrc=r=48000:cl=stereo,atrim=duration=30[a]");
+            filters.Add("[" + audioIndex + ":a]atrim=duration=" + MovieNumber(totalSeconds) +
+                ",asetpts=PTS-STARTPTS,volume=" + MovieNumber(MovieMusicLevel) + "[a]");
+        else filters.Add("anullsrc=r=48000:cl=stereo,atrim=duration=" + MovieNumber(totalSeconds) + "[a]");
 
         args.AddRange(["-filter_complex", string.Join(";", filters), "-map", "[v]",
-            "-map", "[a]", "-t", "30", "-frames:v", "900", "-c:v", "libx264", "-preset", "veryfast",
+            "-map", "[a]", "-t", MovieNumber(totalSeconds), "-frames:v", frameCount.ToString(CultureInfo.InvariantCulture), "-c:v", "libx264", "-preset", "veryfast",
             "-crf", "21", "-c:a", "aac", "-b:a", "160k", "-pix_fmt", "yuv420p",
             "-movflags", "+faststart", output]);
         movie.Status = "Beat-sync editing " + count + " distinct shots";
@@ -710,7 +714,7 @@ public sealed partial class MainViewModel
         {
             VideoPath = output, ThumbnailPath = poster, Title = movie.Label,
             Description = movie.Overview,
-            TikTokCaption = movie.Label + " - 30-second movie review. " +
+            TikTokCaption = movie.Label + " - quick movie review. " +
                 "Our scores: Plot " + MovieNumber(score.Plot) + ", Acting " +
                 MovieNumber(score.Acting) + ", Pacing " + MovieNumber(score.Pacing) +
                 ", Cinematography " + MovieNumber(score.Cinematography) +
