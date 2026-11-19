@@ -6,6 +6,8 @@ public sealed class ZeroVideoSettings : INotifyPropertyChanged
 {
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Notify(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    // Hidden tab preferences are local-only. Missing entries default to visible.
+    public Dictionary<string, bool> TabVisibility { get; set; } = new(StringComparer.Ordinal);
     public string ProjectsRoot { get; set; } = "";
     // Stored only in local user settings, never bundled into app builds or logs.
     public string PixabayApiKey { get; set; } = "";
