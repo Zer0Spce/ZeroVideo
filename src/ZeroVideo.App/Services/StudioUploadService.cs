@@ -266,6 +266,90 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     /// DESCRIPTION when the schedule controls weren't mounted. Never search
     /// the caption or arbitrary page text for a date.
     /// </summary>
+
+    // TikTok periodically renders the schedule controls without the old
+    // .date-picker-input / .time-picker-input classes. Identify a visible
+    // date/time value ONLY beneath the explicit "When to post" heading.
+    // Never search the caption, video description, sidebar, or the full page
+    // for a date to click. If ambiguous, stop before final submission.
+    private static async Task<ILocator?> FindTikTokScheduleFieldNearHeadingAsync(
+        IPage page, bool date, Action<string>? log, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var field = date ? "date" : "time";
+        var result = await page.EvaluateAsync<System.Text.Json.JsonElement>(
+            """
+            kind => {
+              const marker='data-zerovideo-schedule-'+kind+'-trigger';
+              document.querySelectorAll('['+marker+']').forEach(e=>e.removeAttribute(marker));
+              const visible=e=>{
+                if(!e)return false;
+                const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+                return r.width>4 && r.height>6 && r.top>=0 && r.bottom<=innerHeight+40 &&
+                  s.display!=='none' && s.visibility!=='hidden';
+              };
+              const text=e=>(e.value||e.innerText||e.textContent||'').trim()
+                .replace(/\s+/g,' ');
+              const heads=[...document.querySelectorAll('h1,h2,h3,h4,h5,div,span,label,strong')]
+                .filter(e=>visible(e)&&text(e)==='When to post'&&
+                  ![...e.children].some(c=>text(c)==='When to post'));
+              if(heads.length!==1)return {found:false,reason:'When to post heading absent/ambiguous'};
+              const head=heads[0].getBoundingClientRect();
+              const regex=kind==='date'
+                ?/^(?:\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})$/
+                :/^\d{1,2}:\d{2}(?:\s*[AP]M)?$/i;
+              const nodes=[...document.querySelectorAll('input,button,[role="button"],[role="combobox"],span,div')];
+              const leaves=nodes.filter(e=>{
+                if(!visible(e)||!regex.test(text(e)))return false;
+                if(e.closest('[contenteditable="true"],[role="textbox"],[data-e2e="post_video_button"]'))
+                  return false;
+                const r=e.getBoundingClientRect();
+                if(r.top<head.bottom-5 || r.top>head.bottom+175)return false;
+                // Do not allow a large container/description/sidebar as a target.
+                if(r.width>400 || r.height>90)return false;
+                return ![...e.children].some(c=>visible(c)&&text(c)===text(e));
+              });
+              const choices=[];
+              for(const e of leaves){
+                let chosen=e, best=0;
+                for(let a=e,depth=0;a&&depth<4;a=a.parentElement,depth++){
+                  const r=a.getBoundingClientRect();
+                  if(r.width<65||r.width>360||r.height<22||r.height>70)continue;
+                  if(r.top<head.bottom-6||r.top>head.bottom+175)continue;
+                  if(a.closest('[contenteditable="true"],[role="textbox"]'))continue;
+                  const cls=typeof a.className==='string'?a.className.toLowerCase():'';
+                  const isButton=a.matches('button,input,[role="button"],[role="combobox"],[tabindex]');
+                  const dateHint=/date|calendar/.test(cls+' '+(a.getAttribute('aria-label')||''));
+                  const timeHint=/time/.test(cls+' '+(a.getAttribute('aria-label')||''));
+                  const score=(isButton?12:0)+(kind==='date'&&dateHint?20:0)+
+                    (kind==='time'&&timeHint?20:0)+(r.height>=30?3:0)-depth;
+                  if(score>best){best=score;chosen=a;}
+                }
+                choices.push({el:chosen,label:text(e),area:chosen.getBoundingClientRect().width*
+                    chosen.getBoundingClientRect().height});
+              }
+              const unique=[];
+              for(const c of choices)if(!unique.some(v=>v.el===c.el))unique.push(c);
+              if(unique.length!==1)return {found:false,
+                reason:'Expected one '+kind+' field, found '+unique.length};
+              unique[0].el.setAttribute(marker,'true');
+              return {found:true,label:unique[0].label};
+            }
+            """, field);
+        if (!result.GetProperty("found").GetBoolean())
+        {
+            log?.Invoke("TikTok: scoped " + field + " fallback unavailable: " +
+                result.GetProperty("reason").GetString());
+            return null;
+        }
+        var locator = page.Locator("[data-zerovideo-schedule-" + field + "-trigger='true']");
+        if (await locator.CountAsync() != 1 || !await locator.First.IsVisibleAsync())
+            return null;
+        log?.Invoke("TikTok: schedule " + field + " identified under When to post: '" +
+            result.GetProperty("label").GetString() + "'.");
+        return locator.First;
+    }
+
     private static async Task<ILocator?> FindTikTokScheduleDateTriggerAsync(
         IPage page, Action<string>? log, CancellationToken ct)
     {
@@ -333,6 +417,9 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         var found=await page.EvaluateAsync<System.Text.Json.JsonElement>(inspect);
         if(!found.GetProperty("found").GetBoolean())
         {
+            var scoped = await FindTikTokScheduleFieldNearHeadingAsync(
+                page, date: true, log, ct);
+            if(scoped is not null) return scoped;
             log?.Invoke("TikTok: date widget NOT available after Schedule activation: " +
                 found.GetProperty("reason").GetString() +
                 ". Will not click dates in the video caption.");
@@ -368,7 +455,8 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                 ?el.parentElement.className:'',
               ariaLabel:el.getAttribute('aria-label')||'',
               placeholder:el.getAttribute('placeholder')||'',
-              testId:el.getAttribute('data-testid')||'',
+              testId:(el.getAttribute('data-testid')||'')+' '+
+                (el.getAttribute('data-zerovideo-schedule-date-trigger')?'date-calendar-trigger':''),
               visibleText:(el.innerText||el.value||'').trim().slice(0,200),
               insideEditor:!!el.closest('[contenteditable="true"],[role="textbox"]'),
               insideFinalSubmission:!!el.closest('[data-e2e="post_video_button"]')
@@ -390,7 +478,8 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
 
         await SaveTikTokDateTriggerDiagnosticAsync(
             page,dateTrigger,"Before-Click",target,log,subsequent);
-        var shown=(await dateTrigger.InnerTextAsync()).Trim();
+        var shown=(await dateTrigger.EvaluateAsync<string>(
+            "el => (el.value||el.innerText||el.textContent||'').trim()")).Trim();
         if(DateTime.TryParse(shown,culture,System.Globalization.DateTimeStyles.None,out var existing)
             && existing.Date==target.Date) return true;
 
@@ -738,12 +827,14 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         // time is tested independently but inside its own verified popup.
         var timeTrigger=page.Locator(".time-picker-input:visible").First;
         if(await timeTrigger.CountAsync()==0)
-            timeTrigger=page.GetByText(new System.Text.RegularExpressions.Regex(
-                @"^\s*\d{1,2}:\d{2}\s*$")).First;
+            timeTrigger=await FindTikTokScheduleFieldNearHeadingAsync(
+                page, date: false, log, ct) ??
+                page.Locator(".time-picker-input:visible").First;
         var timeOk=false;
         if(await timeTrigger.CountAsync()>0&&await timeTrigger.IsVisibleAsync())
         {
-            var current=(await timeTrigger.InnerTextAsync()).Trim();
+            var current=(await timeTrigger.EvaluateAsync<string>(
+                "el => (el.value||el.innerText||el.textContent||'').trim()")).Trim();
             var expected=target.ToString("HH:mm");
             timeOk=current==expected||current==target.ToString("H:mm");
             if(!timeOk)
@@ -765,7 +856,8 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                     await timeTrigger.ClickAsync(new(){Timeout=6000});
                     await Task.Delay(350,ct);
                 }
-                current=(await timeTrigger.InnerTextAsync()).Trim();
+                current=(await timeTrigger.EvaluateAsync<string>(
+                    "el => (el.value||el.innerText||el.textContent||'').trim()")).Trim();
                 timeOk=current==expected||current==target.ToString("H:mm");
                 log?.Invoke("TikTok: time requested="+expected+" displayed="+current+
                     " verified="+timeOk);
