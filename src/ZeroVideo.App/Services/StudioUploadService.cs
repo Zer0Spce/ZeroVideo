@@ -865,6 +865,55 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         return true;
     }
 
+    // The TUX time value may be held by a child INPUT or text node. Reading
+    // el.value || el.innerText from the outer wrapper can return an empty
+    // string, even while the UI visibly displays e.g. 23:00.
+    private static async Task<string> ReadTikTokTimeValueAsync(
+        ILocator timeTrigger, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var raw=await timeTrigger.EvaluateAsync<string>(
+            """
+            el => {
+              const options=[el];
+              options.push(...el.querySelectorAll('input,[role="combobox"],span'));
+              if(el.parentElement)
+                options.push(...el.parentElement.querySelectorAll('input'));
+              for(const n of options){
+                const value=(n.value||n.innerText||n.textContent||'')
+                  .replace(/[\u200b-\u200f\u202a-\u202e]/g,'')
+                  .trim();
+                const match=value.match(/(?:^|[^\d])(\d{1,2}):([0-5]\d)(?!\d)/);
+                if(match)return match[1].padStart(2,'0')+':'+match[2];
+              }
+              return '';
+            }
+            """);
+        return raw.Trim();
+    }
+
+    private static async Task<bool> WaitTikTokTimeValueAsync(
+        ILocator trigger, DateTime target, Action<string>? log,
+        CancellationToken ct)
+    {
+        var wanted=target.ToString("HH:mm",System.Globalization.CultureInfo.InvariantCulture);
+        string last="";
+        for(var poll=0;poll<14;poll++)
+        {
+            ct.ThrowIfCancellationRequested();
+            last=await ReadTikTokTimeValueAsync(trigger,ct);
+            if(last==wanted)
+            {
+                log?.Invoke("TikTok: committed time verified: "+last);
+                return true;
+            }
+            await Task.Delay(180,ct);
+        }
+        log?.Invoke("TikTok: time readback expected "+wanted+
+            ", actual '"+last+"'. No final submission.");
+        return false;
+    }
+
     private static async Task<bool> VerifyTikTokScheduledFieldsAsync(
         IPage page, DateTimeOffset requested, Action<string>? log, CancellationToken ct)
     {
@@ -882,8 +931,7 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         }
         var displayedDate=await date.EvaluateAsync<string>(
             "el => (el.value||el.innerText||el.textContent||'').trim()");
-        var displayedTime=await time.EvaluateAsync<string>(
-            "el => (el.value||el.innerText||el.textContent||'').trim()");
+        var displayedTime=await ReadTikTokTimeValueAsync(time,ct);
         var target=requested.LocalDateTime;
         var parsed=DateTime.TryParse(displayedDate,
             System.Globalization.CultureInfo.GetCultureInfo("en-US"),
@@ -950,49 +998,58 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         var timeOk=false;
         if(await timeTrigger.CountAsync()>0&&await timeTrigger.IsVisibleAsync())
         {
-            var current=(await timeTrigger.EvaluateAsync<string>(
-                "el => (el.value||el.innerText||el.textContent||'').trim()")).Trim();
-            var expected=target.ToString("HH:mm");
-            timeOk=current==expected||current==target.ToString("H:mm");
+            timeOk=await ReadTikTokTimeValueAsync(timeTrigger,ct)==
+                target.ToString("HH:mm",culture);
             if(!timeOk)
             {
                 await page.Keyboard.PressAsync("Escape");
                 await timeTrigger.ClickAsync(new(){Timeout=6000});
-                await Task.Delay(350,ct);
+                await Task.Delay(300,ct);
                 await SaveTikTokPickerEvidenceAsync(page,"Time-Open",log);
                 var popup=await GetTikTokTimePopupAsync(page,timeTrigger,log);
                 if(popup is not null)
                 {
                     var hour=await SelectTikTokTimeColumnAsync(
                         page,popup,target.Hour,true,log,ct);
-                    // Some TikTok builds dismiss or rebuild the popup after
-                    // selecting an hour. Re-identify only the active popup.
-                    var minutePopup=await GetTikTokTimePopupAsync(page,timeTrigger,log);
-                    if(minutePopup is null && hour)
+                    if(!hour)
                     {
-                        await timeTrigger.ClickAsync(new(){Timeout=6000});
-                        await Task.Delay(200,ct);
-                        minutePopup=await GetTikTokTimePopupAsync(page,timeTrigger,log);
+                        log?.Invoke("TikTok: hour could not be selected in active picker.");
                     }
-                    var minute=minutePopup is not null &&
-                        await SelectTikTokTimeColumnAsync(
-                            page,minutePopup,target.Minute,false,log,ct);
-                    log?.Invoke("TikTok: time option results hour="+hour+" minute="+minute);
-                    var activeAfter=page.Locator(
-                        ".tiktok-timepicker-time-picker-container:not(.tiktok-timepicker-invisible):visible");
-                    if(await activeAfter.CountAsync()>0)
+                    else
                     {
-                        // Only close an ACTUALLY OPEN time picker.
-                        await timeTrigger.ClickAsync(new(){Timeout=6000});
-                        await Task.Delay(250,ct);
+                        // The popup can close or re-render after the hour click.
+                        // If it already committed the requested clock, do NOT
+                        // toggle the trigger and accidentally reopen it.
+                        timeOk=await ReadTikTokTimeValueAsync(timeTrigger,ct)==
+                            target.ToString("HH:mm",culture);
+                        if(!timeOk)
+                        {
+                            var minutePopup=await GetTikTokTimePopupAsync(
+                                page,timeTrigger,log);
+                            if(minutePopup is null)
+                            {
+                                await timeTrigger.ClickAsync(new(){Timeout=6000});
+                                await Task.Delay(220,ct);
+                                minutePopup=await GetTikTokTimePopupAsync(
+                                    page,timeTrigger,log);
+                            }
+                            var minute=minutePopup is not null &&
+                                await SelectTikTokTimeColumnAsync(
+                                    page,minutePopup,target.Minute,false,log,ct);
+                            log?.Invoke("TikTok: time-picker selections hour="+hour+
+                                " minute="+minute);
+                        }
                     }
+                    // Picking the minute itself often closes the TUX popup.
+                    // Do not click the time trigger to close it: that may
+                    // toggle it back open or re-render an old clock state.
+                    timeOk=await WaitTikTokTimeValueAsync(
+                        timeTrigger,target,log,ct);
+                    if(timeOk)
+                        await page.Keyboard.PressAsync("Escape");
                 }
-                current=(await timeTrigger.EvaluateAsync<string>(
-                    "el => (el.value||el.innerText||el.textContent||'').trim()")).Trim();
-                timeOk=current==expected||current==target.ToString("H:mm");
-                log?.Invoke("TikTok: time requested="+expected+" displayed="+current+
-                    " verified="+timeOk);
-                if(!timeOk)await SaveTikTokPickerEvidenceAsync(page,"Time-Failed",log);
+                if(!timeOk)
+                    await SaveTikTokPickerEvidenceAsync(page,"Time-Failed",log);
             }
         }
         if(!dateOk||!timeOk)
