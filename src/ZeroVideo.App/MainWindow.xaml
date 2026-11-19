@@ -748,6 +748,7 @@
                 <Separator Margin="0,13"/>
                 <TextBlock Text="Publishing" FontSize="16" FontWeight="SemiBold"/>
                 <CheckBox Content="Auto-submit via ZeroVideo's existing TikTok publisher" IsChecked="{Binding MoviePublish}" Margin="0,8,0,0"/>
+                <CheckBox Content="I have rights to publish these trailers and I authorize this batch" IsChecked="{Binding PublishConsent, Mode=TwoWay}" Margin="0,5,0,8"/>
                 <TextBlock Text="FIRST POST (LOCAL YYYY-MM-DD HH:mm)" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
                 <TextBox Text="{Binding MovieFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
                 <TextBlock Text="Hourly schedule: 1 video every 60 minutes. TikTok account sign-in, publishing authorization and final batch confirmation use the existing working publisher." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
