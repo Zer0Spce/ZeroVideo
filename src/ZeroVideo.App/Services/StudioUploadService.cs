@@ -876,12 +876,13 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         var marked=await page.EvaluateAsync<bool>(@"
 ()=>{document.querySelectorAll('[data-zerovideo-time-popup]').forEach(
  e=>e.removeAttribute('data-zerovideo-time-popup'));
- const trigger=[...document.querySelectorAll('.time-picker-input')].find(e=>{
+ const trigger=[...document.querySelectorAll(
+   "[data-zerovideo-schedule-time-trigger='true'],.time-picker-input")].find(e=>{
  const r=e.getBoundingClientRect();return r.width>10&&r.height>10});
  if(!trigger)return false;
  const tr=trigger.getBoundingClientRect();
  let matches=[];
- for(const p of document.querySelectorAll('[role=dialog],[role=listbox],.Picker__panel,[class*=TimePicker]')){
+ for(const p of document.querySelectorAll('[role=dialog],[role=listbox],[role=menu],[class*=TimePicker],[class*=time-picker],[class*=timePicker]')){
   const r=p.getBoundingClientRect(),s=getComputedStyle(p);
   if(s.display==='none'||s.visibility==='hidden'||p.classList.contains('tiktok-timepicker-invisible')||r.width<180||
      r.width>520||r.height<180||r.height>650)continue;
