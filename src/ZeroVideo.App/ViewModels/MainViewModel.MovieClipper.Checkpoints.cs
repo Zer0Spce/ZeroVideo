@@ -76,6 +76,40 @@ public sealed partial class MainViewModel
         catch (Exception ex) { Log("MovieClipper movie history: " + ex.Message); }
     }
 
+    private void MovieImportPreviousExports()
+    {
+        // On upgrade, populate history from older MovieClipper exports instead of
+        // treating completed videos from builds #535-#544 as fresh ideas.
+        if (!Directory.Exists(MovieExportFolder)) return;
+        var added = false;
+        foreach (var file in Directory.EnumerateFiles(MovieExportFolder, "*.mp4"))
+        {
+            var prefix = Path.GetFileNameWithoutExtension(file).Split('_')[0];
+            if (!int.TryParse(prefix, out var id) || id <= 0 ||
+                _movieHistory.Any(x => x.TmdbId == id) || new FileInfo(file).Length < 100_000)
+                continue;
+            var prior = MovieClipperIdeas.FirstOrDefault(x => x.TmdbId == id);
+            var published = PublishingQueue.FirstOrDefault(x =>
+                x.VideoPath.Equals(file, StringComparison.OrdinalIgnoreCase));
+            _movieHistory.Add(new MovieHistoryItem
+            {
+                TmdbId = id,
+                Title = prior?.Title ?? published?.Title ?? "TMDB movie #" + id,
+                Year = prior?.Year ?? "",
+                ExportPath = file,
+                CompletedAt = new DateTimeOffset(File.GetLastWriteTime(file))
+            });
+            added = true;
+        }
+        if (!added) return;
+        Directory.CreateDirectory(Path.GetDirectoryName(MovieHistoryPath)!);
+        var tmp = MovieHistoryPath + ".tmp";
+        File.WriteAllText(tmp, JsonSerializer.Serialize(_movieHistory,
+            new JsonSerializerOptions { WriteIndented = true }));
+        File.Move(tmp, MovieHistoryPath, overwrite: true);
+        MovieLoadHistory();
+    }
+
     private void MovieRecordHistory(MovieClipperEntry movie, string export)
     {
         // TMDB ID, not title string, prevents duplicates across different spellings.
