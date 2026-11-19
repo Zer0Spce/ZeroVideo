@@ -635,163 +635,262 @@ public sealed class OfficialGamingMediaService
         return true;
     }
 
+    private static string ErrorSummary(string value)
+    {
+        var last = value.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .TakeLast(4).Select(x => x.Trim());
+        var text = string.Join(" | ", last);
+        return text.Length > 430 ? text[^430..] : text;
+    }
+
     private static async Task<List<OfficialAsset>> AcquireYouTubeGameplayAsync(
         VideoProject project, string focus, ZeroVideoSettings settings,
         string mediaDir, Action<string>? log, CancellationToken ct)
     {
-        var found = new List<OfficialAsset>();
+        var result = new List<OfficialAsset>();
         var downloader = FindYouTubeDownloader();
         if (downloader is null)
         {
-            log?.Invoke("YouTube clips: yt-dlp executable unavailable; using direct MP4 / Commons video sources.");
-            return found;
+            log?.Invoke("YouTube: yt-dlp.exe not present beside ZeroVideo.exe. " +
+                "Skipping YouTube and retaining direct publisher MP4 sources.");
+            return result;
         }
         var subject = CoreGameSubject(project, focus);
-        if (subject.Length < 3) return found;
+        if (subject.Length < 3) return result;
         var queries = new[]
         {
-            subject + " official gameplay trailer",
-            subject + " official trailer PlayStation Xbox Nintendo",
-            subject + " official gameplay IGN GameSpot"
+            subject + " official trailer",
+            subject + " official gameplay",
+            subject + " gameplay trailer IGN GameSpot"
         };
         var runner = new ProcessRunner();
-        var leads = new List<YouTubeClipLead>();
+        var searchCandidates = new List<YouTubeClipLead>();
         foreach (var query in queries)
         {
             ct.ThrowIfCancellationRequested();
             try
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                timeout.CancelAfter(TimeSpan.FromSeconds(35));
-                var args = "--ignore-config --flat-playlist --dump-single-json " +
-                    "--no-warnings --playlist-end 12 " +
-                    QuoteProcessArgument("ytsearch12:" + query);
-                var response = await runner.RunAsync(downloader, args, ct: timeout.Token);
-                if (response.ExitCode != 0) continue;
+                timeout.CancelAfter(TimeSpan.FromSeconds(55));
+                var arguments = "--ignore-config --flat-playlist " +
+                    "--dump-single-json --no-warnings --playlist-end 10 " +
+                    QuoteProcessArgument("ytsearch10:" + query);
+                var response = await runner.RunAsync(downloader, arguments, ct: timeout.Token);
+                if (response.ExitCode != 0)
+                {
+                    log?.Invoke("YouTube search failed (" + query + "): " +
+                        ErrorSummary(response.StdErr));
+                    continue;
+                }
                 using var json = JsonDocument.Parse(response.StdOut);
                 if (!json.RootElement.TryGetProperty("entries", out var entries) ||
                     entries.ValueKind != JsonValueKind.Array) continue;
+                var candidatesBefore = searchCandidates.Count;
                 foreach (var entry in entries.EnumerateArray())
                 {
-                    var title = entry.TryGetProperty("title", out var ti)
-                        ? ti.GetString() ?? "" : "";
+                    var title = entry.TryGetProperty("title", out var titleValue)
+                        ? titleValue.GetString() ?? "" : "";
                     if (!MatchingGameplayTitle(title, subject)) continue;
-                    var id = entry.TryGetProperty("id", out var vi)
-                        ? vi.GetString() ?? "" : "";
+                    var id = entry.TryGetProperty("id", out var videoId)
+                        ? videoId.GetString() ?? "" : "";
                     if (!Regex.IsMatch(id, @"^[A-Za-z0-9_-]{11}$")) continue;
-                    var channel = entry.TryGetProperty("channel", out var ch)
-                        ? ch.GetString() ?? "" : "";
-                    if (channel.Length == 0 && entry.TryGetProperty("uploader", out var up))
-                        channel = up.GetString() ?? "";
-                    if (!IsTrustedOfficialGameVideo(channel, title, subject))
-                        continue;
+                    var channel = entry.TryGetProperty("channel", out var channelValue)
+                        ? channelValue.GetString() ?? "" : "";
                     var url = "https://www.youtube.com/watch?v=" + id;
-                    if (!leads.Any(x => x.Url == url))
-                        leads.Add(new YouTubeClipLead(url, title, channel));
+                    if (!searchCandidates.Any(x => x.Url == url))
+                        searchCandidates.Add(new YouTubeClipLead(url, title, channel));
                 }
+                log?.Invoke("YouTube search '" + query + "': " +
+                    (searchCandidates.Count - candidatesBefore) +
+                    " game-matched candidate(s), pending full metadata.");
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                log?.Invoke("YouTube search timed out for '" + query + "'.");
-            }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex) { log?.Invoke("YouTube search unavailable: " + ex.Message); }
-        }
-        // Rotate between matches so consecutive news videos for the same
-        // game don't repeat the same trailer opening every time.
-        var seed = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
-            project.Id + "|" + project.Title));
-        var rng = new Random(BitConverter.ToInt32(seed, 0));
-        leads = leads.OrderBy(_ => rng.Next()).ToList();
-        log?.Invoke("YouTube official footage: " + leads.Count +
-            " game-matched trailers/gameplay from trusted publisher, platform or " +
-            "editorial channels for '" + subject + "'.");
-
-        // Only ordinary publicly accessible streams; no cookies, authentication,
-        // geo-bypass, age-gate bypass or DRM circumvention.
-        foreach (var lead in leads.Take(7))
-        {
-            ct.ThrowIfCancellationRequested();
-            if (found.Count >= 3) break;
-            var index = found.Count + 1;
-            var prefix = Path.Combine(mediaDir, "youtube-gameplay-" + index.ToString("00"));
-            var outputTemplate = prefix + ".%(ext)s";
-            try
-            {
-                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                timeout.CancelAfter(TimeSpan.FromSeconds(90));
-                var ffmpegDir = !string.IsNullOrWhiteSpace(settings.FfmpegPath)
-                    ? Path.GetDirectoryName(settings.FfmpegPath) : null;
-                var ffmpegArgument = !string.IsNullOrWhiteSpace(ffmpegDir)
-                    ? " --ffmpeg-location " + QuoteProcessArgument(ffmpegDir)
-                    : "";
-                // Download only an eight-second excerpt, no original sound.
-                // The user's offline narration and music stay unchanged.
-                var start = 8 + rng.Next(0, 30);
-                var end = start + 9;
-                var args = "--ignore-config --no-playlist --no-warnings " +
-                    "--no-progress --no-part --no-overwrites --max-filesize 100M " +
-                    "--download-sections " + QuoteProcessArgument(
-                        "*00:00:" + start.ToString("00") + "-00:00:" +
-                        end.ToString("00")) +
-                    " --force-keyframes-at-cuts -f " +
-                    QuoteProcessArgument("bv*[height<=720]+ba/b[height<=720]") +
-                    " --merge-output-format mp4" + ffmpegArgument +
-                    " -o " + QuoteProcessArgument(outputTemplate) + " " +
-                    QuoteProcessArgument(lead.Url);
-                var result = await runner.RunAsync(downloader, args, ct: timeout.Token);
-                if (result.ExitCode != 0)
-                {
-                    log?.Invoke("YouTube gameplay clip unavailable (" +
-                        lead.Title + "); trying next result.");
-                    continue;
-                }
-                var candidate = Directory.GetFiles(mediaDir, 
-                    "youtube-gameplay-" + index.ToString("00") + ".*")
-                    .FirstOrDefault(x => new[] { ".mp4", ".webm", ".mkv" }
-                        .Contains(Path.GetExtension(x), StringComparer.OrdinalIgnoreCase));
-                if (candidate is null || new FileInfo(candidate).Length < 32_000)
-                    continue;
-                var destination = prefix + ".mp4";
-                // Normalize to an H.264 MP4 for the proven Shorts renderer.
-                var ffmpeg = string.IsNullOrWhiteSpace(settings.FfmpegPath)
-                    ? "ffmpeg" : settings.FfmpegPath;
-                var converted = prefix + "-normalized.mp4";
-                var transcode = await runner.RunAsync(ffmpeg,
-                    "-hide_banner -loglevel error -y -i " +
-                    QuoteProcessArgument(candidate) +
-                    " -t 9 -an -vf " + QuoteProcessArgument(
-                        "fps=30,scale=1280:720:force_original_aspect_ratio=decrease:flags=lanczos," +
-                        "pad=1280:720:(ow-iw)/2:(oh-ih)/2") +
-                    " -c:v libx264 -preset veryfast -crf 22 -pix_fmt yuv420p " +
-                    QuoteProcessArgument(converted), ct: ct);
-                if (transcode.ExitCode != 0 ||
-                    !File.Exists(converted) || new FileInfo(converted).Length < 32_000)
-                    continue;
-                if (File.Exists(candidate)) File.Delete(candidate);
-                if (File.Exists(destination)) File.Delete(destination);
-                File.Move(converted, destination);
-                found.Add(new OfficialAsset(destination, lead.Url,
-                    subject, lead.Url,
-                    (lead.Channel.Length > 0 ? lead.Channel : "YouTube") +
-                    " gameplay/trailer video",
-                    "Public YouTube video excerpt; source credited. Confirm rights to reuse."));
-                log?.Invoke("Gaming News: acquired 9-second YouTube footage: " +
-                    lead.Title + " / " + lead.Channel);
-            }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-            {
-                log?.Invoke("YouTube clip timed out: " + lead.Title);
+                log?.Invoke("YouTube search timed out: " + query);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
-                log?.Invoke("YouTube clip skipped: " + ex.Message);
+                log?.Invoke("YouTube search error (" + query + "): " + ex.Message);
             }
         }
-        log?.Invoke("Gaming News YouTube: " + found.Count +
-            " real video clip(s) ready for screenshot/video mixing.");
-        return found;
+        if (searchCandidates.Count == 0)
+        {
+            log?.Invoke("YouTube: no game-matched search results for " + subject +
+                ". Direct MP4 sources remain available.");
+            return result;
+        }
+        // --flat-playlist does NOT reliably contain uploader/channel. Resolve
+        // full metadata for shortlisted videos before the trusted-origin check.
+        var verified = new List<(YouTubeClipLead Lead, double Duration)>();
+        foreach (var item in searchCandidates.Take(18))
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(35));
+                var args = "--ignore-config --no-playlist --skip-download " +
+                    "--dump-single-json --no-warnings " + QuoteProcessArgument(item.Url);
+                var info = await runner.RunAsync(downloader, args, ct: timeout.Token);
+                if (info.ExitCode != 0)
+                {
+                    log?.Invoke("YouTube metadata unavailable: " +
+                        ErrorSummary(info.StdErr));
+                    continue;
+                }
+                using var metadata = JsonDocument.Parse(info.StdOut);
+                var root = metadata.RootElement;
+                var title = root.TryGetProperty("title", out var ti)
+                    ? ti.GetString() ?? item.Title : item.Title;
+                var channel = root.TryGetProperty("channel", out var ch)
+                    ? ch.GetString() ?? "" : "";
+                if (channel.Length == 0 && root.TryGetProperty("uploader", out var up))
+                    channel = up.GetString() ?? "";
+                var length = root.TryGetProperty("duration", out var du) &&
+                    du.ValueKind == JsonValueKind.Number ? du.GetDouble() : 0;
+                var live = root.TryGetProperty("is_live", out var liveValue) &&
+                    liveValue.ValueKind == JsonValueKind.True;
+                if (live || length < 15 || length > 1200)
+                    continue;
+                if (!IsTrustedOfficialGameVideo(channel, title, subject))
+                {
+                    log?.Invoke("YouTube excluded non-official/mismatched footage: " +
+                        title + " (" + channel + ")");
+                    continue;
+                }
+                verified.Add((new YouTubeClipLead(item.Url, title, channel), length));
+                if (verified.Count >= 6) break;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                log?.Invoke("YouTube metadata timed out: " + item.Title);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("YouTube metadata error: " + ex.Message); }
+        }
+        log?.Invoke("YouTube: " + verified.Count + " official gameplay/trailer " +
+            "video(s) verified; downloading full source before clipping.");
+        var seedBytes = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            project.Id + "|" + project.Title + "|" + string.Join("|", project.Sources)));
+        var random = new Random(BitConverter.ToInt32(seedBytes, 0));
+        verified = verified.OrderBy(_ => random.Next()).ToList();
+        var ffmpeg = string.IsNullOrWhiteSpace(settings.FfmpegPath)
+            ? "ffmpeg" : settings.FfmpegPath;
+        // One full video may supply several distinct excerpts; use a small
+        // local cache to avoid redownloading it for every one of 48 news posts.
+        var cache = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ZeroVideo", "gaming-news-video-cache");
+        Directory.CreateDirectory(cache);
+        foreach (var (lead, length) in verified.Take(5))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (result.Count >= 6) break;
+            var id = lead.Url[(lead.Url.LastIndexOf('=') + 1)..];
+            var cached = Path.Combine(cache, id + ".mp4");
+            if (!File.Exists(cached) || new FileInfo(cached).Length < 50_000)
+            {
+                try
+                {
+                    var rawTemplate = Path.Combine(cache, id + ".%(ext)s");
+                    var directory = Path.GetDirectoryName(ffmpeg);
+                    var ffmpegArg = directory is not null && Directory.Exists(directory)
+                        ? " --ffmpeg-location " + QuoteProcessArgument(directory)
+                        : "";
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    timeout.CancelAfter(TimeSpan.FromMinutes(3));
+                    // Download first; extracting a --download-sections excerpt
+                    // often fails when YouTube's segmented stream does not
+                    // expose suitable keyframes. Full local file is reliable.
+                    var args = "--ignore-config --no-playlist --no-progress " +
+                        "--no-warnings --no-part --max-filesize 180M " +
+                        "-f " + QuoteProcessArgument(
+                            "bv*[height<=720]+ba/b[height<=720]/best[height<=720]") +
+                        " --merge-output-format mp4" + ffmpegArg +
+                        " -o " + QuoteProcessArgument(rawTemplate) + " " +
+                        QuoteProcessArgument(lead.Url);
+                    var download = await runner.RunAsync(downloader, args, ct: timeout.Token);
+                    if (download.ExitCode != 0)
+                    {
+                        log?.Invoke("YouTube source download failed (" + lead.Title +
+                            "): " + ErrorSummary(download.StdErr));
+                        continue;
+                    }
+                    var found = Directory.GetFiles(cache, id + ".*")
+                        .FirstOrDefault(x => new[] { ".mp4", ".webm", ".mkv" }
+                            .Contains(Path.GetExtension(x), StringComparer.OrdinalIgnoreCase) &&
+                            new FileInfo(x).Length >= 50_000);
+                    if (found is null)
+                    {
+                        log?.Invoke("YouTube source download finished but no video file was produced: " +
+                            lead.Title);
+                        continue;
+                    }
+                    // Keep source container as-is in cache; ffmpeg can decode
+                    // WEBM, MKV and MP4. Never rename a WEBM as MP4.
+                    cached = found;
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    log?.Invoke("YouTube download timeout: " + lead.Title);
+                    continue;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    log?.Invoke("YouTube source download error: " + ex.Message);
+                    continue;
+                }
+            }
+            // Each source may contribute two different 4-6 second clips.
+            // Do not bring over YouTube audio, only video behind our voiceover.
+            var maxStart = Math.Max(2, (int)Math.Floor(length - 8));
+            for (var excerpt = 0; excerpt < 2 && result.Count < 6; excerpt++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var start = Math.Min(maxStart, 5 + random.Next(Math.Max(1, maxStart - 4)));
+                var destination = Path.Combine(mediaDir,
+                    "youtube-gameplay-" + (result.Count + 1).ToString("00") + ".mp4");
+                try
+                {
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    timeout.CancelAfter(TimeSpan.FromSeconds(45));
+                    var args = "-hide_banner -loglevel error -y -ss " + start +
+                        " -i " + QuoteProcessArgument(cached) +
+                        " -t 6 -an -vf " + QuoteProcessArgument(
+                            "fps=30,scale=1280:720:force_original_aspect_ratio=decrease:flags=lanczos," +
+                            "pad=1280:720:(ow-iw)/2:(oh-ih)/2") +
+                        " -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p " +
+                        QuoteProcessArgument(destination);
+                    var clip = await runner.RunAsync(ffmpeg, args, ct: timeout.Token);
+                    if (clip.ExitCode != 0 || !File.Exists(destination) ||
+                        new FileInfo(destination).Length < 32_000)
+                    {
+                        log?.Invoke("YouTube excerpt extraction failed: " +
+                            ErrorSummary(clip.StdErr));
+                        continue;
+                    }
+                    result.Add(new OfficialAsset(destination, lead.Url, subject,
+                        lead.Url, lead.Channel + " gameplay/trailer video",
+                        "Six-second excerpt from official trailer/gameplay; channel and URL credited. Confirm reuse rights."));
+                    log?.Invoke("YouTube: extracted 6s gameplay from " +
+                        lead.Channel + " / " + lead.Title + " at " + start + "s.");
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    log?.Invoke("YouTube excerpt extraction timeout: " + lead.Title);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    log?.Invoke("YouTube excerpt extraction error: " + ex.Message);
+                }
+            }
+        }
+        log?.Invoke("Gaming News YouTube: " + result.Count +
+            " playable official gameplay/trailer clips for the mixed 24-shot edit.");
+        return result;
     }
 
     private sealed record VideoLead(string SourceName, string Channel, string Url,
