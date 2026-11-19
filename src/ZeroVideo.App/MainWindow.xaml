@@ -806,6 +806,90 @@
         </Grid>
       </TabItem>
 
+      <TabItem Header="NBAClipper">
+        <Grid Margin="0,12,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="390"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Border Style="{StaticResource CardBorder}">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel>
+                <TextBlock Text="NBAClipper — Individual Player TikToks" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="One-click individual NBA player ideas, six subjective skill ratings, player-specific highlight clips, music-beat editing and TikTok publishing.<Label Content="MOVIE NICHE"/>
+                <TextBox Text="{Binding NbaNiche, UpdateSourceTrigger=PropertyChanged}"/>
+                <Label Content="NUMBER OF PLAYERS" Margin="0,7,0,0"/>
+                <TextBox Text="{Binding NbaCount, UpdateSourceTrigger=LostFocus}"/>
+                <CheckBox Content="New Chat (otherwise reuse this NbaClipper chat)" IsChecked="{Binding NbaNewChat, Mode=TwoWay}" Margin="0,8,0,4"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Generate Ideas + Scores + SEO (One ChatGPT Request)" Command="{Binding NbaGenerateCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="YouTube individual-player highlights" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Checks local NBA highlight cache, then finds individual-player YouTube videos. Use only clips you have the rights to edit and publish." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
+                <CheckBox Content="Automatically find and download NBA player highlights" IsChecked="{Binding NbaAutoDownload, Mode=TwoWay}" Margin="0,6,0,7"/>
+                <CheckBox Content="Use my signed-in Edge YouTube session if downloads need authentication" IsChecked="{Binding NbaBrowserLogin, Mode=TwoWay}" Margin="0,0,0,5"/>
+                <TextBlock Text="Optional. Allows yt-dlp to read your local Edge browser cookies; may require Edge to be closed. No cookies are stored in the ZeroVideo project." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,6"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Choose highlight cache folder..." Command="{Binding NbaBrowseSourceCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding NbaSourceFolder}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Preview Search for First Checked Nba" Command="{Binding NbaFindHighlightsCommand}" HorizontalAlignment="Left"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Your background music / sound" FontWeight="SemiBold" FontSize="16"/>
+                <TextBlock Text="Moving individual-player highlights, name overlay, beat-synced cuts and subjective /10 skill ratings. Music plays from the first frame.<Button Style="{StaticResource SecondaryButton}" Content="Choose my audio..." Command="{Binding NbaBrowseSoundCommand}" HorizontalAlignment="Left"/>
+                <TextBlock Text="{Binding NbaSoundFile}" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,8"/>
+                <Label Content="CUSTOM MUSIC VOLUME"/>
+                <Slider Minimum="0" Maximum="1" Value="{Binding NbaMusicLevel, Mode=TwoWay}"/>
+                <Separator Margin="0,13"/>
+                <TextBlock Text="Publishing" FontSize="16" FontWeight="SemiBold"/>
+                <CheckBox Content="Auto-submit via ZeroVideo's existing TikTok publisher" IsChecked="{Binding NbaPublish}" Margin="0,8,0,0"/>
+                <CheckBox Content="I have the rights to publish this highlight footage and authorize this batch" IsChecked="{Binding PublishConsent, Mode=TwoWay}" Margin="0,5,0,8"/>
+                <TextBlock Text="Uses the existing working TikTok publisher and your Publishing tab interval." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,7"/>
+                <TextBlock Text="FIRST POST (LOCAL YYYY-MM-DD HH:mm)" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
+                <TextBox Text="{Binding NbaFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Text="Schedule videos 30 minutes or more apart using the Publishing interval selector. TikTok sign-in, authorization and final batch confirmation use the existing working publisher." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
+                <WrapPanel>
+                  <Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK MOVIECLIPPER" Command="{Binding NbaStartCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Resume Workflow" Command="{Binding NbaResumeCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Retry Failed" Command="{Binding NbaRetryFailedCommand}" Margin="0,0,8,8"/>
+                  <Button Content="Force Stop" Command="{Binding NbaForceStopCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Open Exported Videos" Command="{Binding NbaOpenOutputCommand}" Margin="0,0,8,8"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding NbaCheckpointStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,3"/>
+                <TextBlock Text="Output folder: Videos\\ZeroVideo\\NbaClipper" Foreground="{StaticResource Muted}" Margin="0,7,0,0"/>
+                <TextBlock Text="{Binding NbaStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+              </StackPanel>
+            </ScrollViewer>
+          </Border>
+          <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                <TextBlock Text="ChatGPT NBA Player Idea Generator" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="Player Ratings, Best Plays, or Player Legacy. Six subjective skills: Shooting, Finishing, Handles, Playmaking, Defense, Basketball IQ, plus Overall.</StackPanel>
+              <TabControl>
+                <TabItem Header="Ideas &amp; Progress">
+              <DataGrid ItemsSource="{Binding NbaClipperIdeas}" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Single">
+                <DataGrid.Columns>
+                  <DataGridCheckBoxColumn Header="✓" Binding="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="44"/>
+                  <DataGridTextColumn Header="Player / Concept" Binding="{Binding Label}" IsReadOnly="True" Width="2*"/>
+                  <DataGridTextColumn Header="Style" Binding="{Binding Mode}" IsReadOnly="True" Width="110"/>
+                  <DataGridTextColumn Header="Status" Binding="{Binding Status}" IsReadOnly="True" Width="2*"/>
+                </DataGrid.Columns>
+              </DataGrid>
+                </TabItem>
+                <TabItem Header="Player History">
+                  <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding NbaHistorySummary}" Foreground="{StaticResource Muted}" Margin="0,6,0,8"/>
+                    <DataGrid ItemsSource="{Binding NbaHistory}" AutoGenerateColumns="False" IsReadOnly="True">
+                      <DataGrid.Columns>
+                        <DataGridTextColumn Header="Nba" Binding="{Binding Name}" Width="2*"/>
+                        <DataGridTextColumn Header="Concept" Binding="{Binding Concept}" Width="2*"/>
+                        <DataGridTextColumn Header="Completed" Binding="{Binding CompletedAt}" Width="170"/>
+                        <DataGridTextColumn Header="Export" Binding="{Binding OutputPath}" Width="3*"/>
+                      </DataGrid.Columns>
+                    </DataGrid>
+                  </DockPanel>
+                </TabItem>
+              </TabControl>
+            </DockPanel>
+          </Border>
+        </Grid>
+      </TabItem>
+
       <TabItem Header="Idea Generation">
         <DockPanel>
           <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,7,4,4">
