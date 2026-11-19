@@ -1239,7 +1239,7 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         // Strip a leftover file-name prefix only when it is clearly a generated
         // MovieClipper export identifier followed by a long timestamp.
         value = System.Text.RegularExpressions.Regex.Replace(value,
-            @"^\s*\d{5,12}_\d{14,19}\s*",
+            @"^\s*\d{5,12}_(?:\d{8}_\d{6,9}|\d{14,19})\s*",
             "", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
         return value;
     }
