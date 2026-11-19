@@ -296,10 +296,16 @@ public sealed partial class MainViewModel
         var withMusic = File.Exists(MovieSoundFile);
         if (withMusic) args.AddRange(["-stream_loop", "-1", "-i", MovieSoundFile]);
         const string frame = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30,format=yuv420p";
+        // Original review-like category headings; no fictional category scores are claimed.
+        var categoryOverlays = string.Concat(new[] { "PLOT", "ACTING", "CINEMATOGRAPHY", "ENDING" }
+            .Select((name, i) => ",drawtext=text=" + name +
+                ":fontcolor=white:fontsize=76:borderw=3:bordercolor=black:" +
+                "box=1:boxcolor=black@0.55:boxborderw=15:x=(w-text_w)/2:y=235:" +
+                "enable='between(t," + (i * 6) + "," + (i * 6 + 5) + ")'"));
         var filter = "[0:v]" + frame + ",trim=duration=2,setpts=PTS-STARTPTS[intro];" +
             "[1:v]" + frame +
-            ",trim=duration=28,setpts=PTS-STARTPTS," +
-            "drawtext=textfile=rating.txt:fontcolor=white:fontsize=50:box=1:boxcolor=black@0.70:boxborderw=18:x=(w-text_w)/2:y=h-260[scene];" +
+            ",trim=duration=28,setpts=PTS-STARTPTS" + categoryOverlays + "," +
+            "drawtext=textfile=rating.txt:fontcolor=white:fontsize=62:box=1:boxcolor=black@0.70:boxborderw=18:x=(w-text_w)/2:y=h-260:enable='gte(t,23)'[scene];" +
             "[intro][scene]concat=n=2:v=1:a=0[v]";
         // Soundtrack follows the 2-second title card, running for 28 seconds.
         if (withMusic)
