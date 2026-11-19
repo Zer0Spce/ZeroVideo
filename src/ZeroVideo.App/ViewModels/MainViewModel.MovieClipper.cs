@@ -176,9 +176,11 @@ public sealed partial class MainViewModel
                     filter += ";[2:a]volume=" + MovieMusicVolume.ToString(CultureInfo.InvariantCulture) +
                         ",atrim=duration=" + MovieDuration + "[a]";
             }
+            if (!addMusic && MovieKeepTrailerAudio)
+                filter += ";[1:a]adelay=2000|2000,apad=pad_dur=2[a]";
             args.AddRange(["-filter_complex", filter, "-map", "[v]"]);
-            // When music isn't provided, output video-only (rather than fail on a trailer without audio).
-            if (addMusic) args.AddRange(["-map", "[a]", "-c:a", "aac", "-b:a", "160k"]);
+            if (addMusic || MovieKeepTrailerAudio)
+                args.AddRange(["-map", "[a]", "-c:a", "aac", "-b:a", "160k"]);
             args.AddRange(["-t", MovieDuration.ToString(CultureInfo.InvariantCulture),
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", output]);
