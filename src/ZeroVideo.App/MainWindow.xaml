@@ -815,9 +815,9 @@
                 <TextBlock Text="NBAClipper — Individual Player TikToks" FontSize="21" FontWeight="SemiBold"/>
                 <TextBlock Text="One-click individual NBA player ideas, six subjective skill ratings, player-specific highlight clips, music-beat editing and TikTok publishing." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,12"/>
                 <Label Content="NBA PLAYER NICHE"/>
+                <TextBox Text="{Binding NbaNiche, UpdateSourceTrigger=PropertyChanged}"/>
                 <Label Content="VIDEO STYLE" Margin="0,7,0,0"/>
                 <ComboBox ItemsSource="{Binding NbaFormats}" SelectedItem="{Binding NbaFormat, Mode=TwoWay}" Margin="0,3,0,8"/>
-                <TextBox Text="{Binding NbaNiche, UpdateSourceTrigger=PropertyChanged}"/>
                 <Label Content="NUMBER OF PLAYERS" Margin="0,7,0,0"/>
                 <TextBox Text="{Binding NbaCount, UpdateSourceTrigger=LostFocus}"/>
                 <CheckBox Content="New Chat (otherwise reuse this NbaClipper chat)" IsChecked="{Binding NbaNewChat, Mode=TwoWay}" Margin="0,8,0,4"/>
@@ -847,14 +847,14 @@
                 <TextBox Text="{Binding NbaFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
                 <TextBlock Text="Schedule videos 30 minutes or more apart using the Publishing interval selector. TikTok sign-in, authorization and final batch confirmation use the existing working publisher." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
                 <WrapPanel>
-                  <Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK MOVIECLIPPER" Command="{Binding NbaStartCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK NBACLIPPER" Command="{Binding NbaStartCommand}" Margin="0,0,8,8"/>
                   <Button Style="{StaticResource SecondaryButton}" Content="Resume Workflow" Command="{Binding NbaResumeCommand}" Margin="0,0,8,8"/>
                   <Button Style="{StaticResource SecondaryButton}" Content="Retry Failed" Command="{Binding NbaRetryFailedCommand}" Margin="0,0,8,8"/>
                   <Button Content="Force Stop" Command="{Binding NbaForceStopCommand}" Margin="0,0,8,8"/>
                   <Button Style="{StaticResource SecondaryButton}" Content="Open Exported Videos" Command="{Binding NbaOpenOutputCommand}" Margin="0,0,8,8"/>
                 </WrapPanel>
                 <TextBlock Text="{Binding NbaCheckpointStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,3"/>
-                <TextBlock Text="Output folder: Videos\\ZeroVideo\\NbaClipper" Foreground="{StaticResource Muted}" Margin="0,7,0,0"/>
+                <TextBlock Text="Output folder: Videos\\ZeroVideo\\NBAClipper" Foreground="{StaticResource Muted}" Margin="0,7,0,0"/>
                 <TextBlock Text="{Binding NbaStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
               </StackPanel>
             </ScrollViewer>
