@@ -736,6 +736,8 @@
                 <TextBlock Text="YouTube trailer auto-download" FontWeight="SemiBold" FontSize="16"/>
                 <TextBlock Text="MovieClipper first checks the local cache, then automatically searches and downloads a matching official trailer using bundled yt-dlp. Available local trailer files are reused." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
                 <CheckBox Content="Automatically find and download trailers from YouTube" IsChecked="{Binding MovieAutoDownload, Mode=TwoWay}" Margin="0,6,0,7"/>
+                <CheckBox Content="Use my signed-in Edge YouTube session if downloads need authentication" IsChecked="{Binding MovieUseBrowserYouTubeLogin, Mode=TwoWay}" Margin="0,0,0,5"/>
+                <TextBlock Text="Optional. Allows yt-dlp to read your local Edge browser cookies; may require Edge to be closed. No cookies are stored in the ZeroVideo project." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,6"/>
                 <Button Style="{StaticResource SecondaryButton}" Content="Choose trailer cache folder..." Command="{Binding MovieBrowseSourceCommand}" HorizontalAlignment="Left"/>
                 <TextBlock Text="{Binding MovieSourceFolder}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,8"/>
                 <Button Style="{StaticResource SecondaryButton}" Content="Preview Search for First Checked Movie" Command="{Binding MovieFindTrailerCommand}" HorizontalAlignment="Left"/>
