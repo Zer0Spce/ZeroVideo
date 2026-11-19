@@ -326,77 +326,131 @@ public sealed partial class MainViewModel
     {
         Directory.CreateDirectory(MovieSourceFolder);
         var downloader = MovieDownloaderPath();
-        var searchText = movie.Label + " official movie trailer";
-        var search = await MovieRunProcessAsync(downloader,
-            ["--no-playlist", "--dump-single-json", "--skip-download", "--no-warnings",
-             "ytsearch8:" + searchText], _cts.Token);
-        if (search.Code != 0)
-            throw new InvalidOperationException("YouTube search failed: " +
-                search.Error[^Math.Min(300, search.Error.Length)..]);
-        using var listing = JsonDocument.Parse(search.Output);
-        if (!listing.RootElement.TryGetProperty("entries", out var entries) ||
-            entries.ValueKind != JsonValueKind.Array)
-            throw new InvalidDataException("YouTube did not return trailer search results.");
-        var candidates = new List<(string Url, int Score)>();
-        foreach (var item in entries.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.Object) continue;
-            var title = MovieJson(item, "title");
-            var channel = MovieJson(item, "channel");
-            var url = MovieJson(item, "webpage_url");
-            if (string.IsNullOrWhiteSpace(url))
-            {
-                var id = MovieJson(item, "id");
-                if (id.Length == 11) url = "https://www.youtube.com/watch?v=" + id;
-            }
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
-                !new[] { "youtube.com", "www.youtube.com", "youtu.be" }.Contains(uri.Host, StringComparer.OrdinalIgnoreCase))
-                continue;
-            var duration = item.TryGetProperty("duration", out var durationNode) &&
-                durationNode.ValueKind == JsonValueKind.Number ? durationNode.GetDouble() : 0;
-            if (duration is < 30 or > 360) continue;
-            var lower = title.ToLowerInvariant();
-            if (!lower.Contains("trailer", StringComparison.OrdinalIgnoreCase) ||
-                lower.Contains("reaction") || lower.Contains("fan made") ||
-                lower.Contains("fanmade") || lower.Contains("breakdown") ||
-                lower.Contains("review") || lower.Contains("concept trailer"))
-                continue;
-            var expected = MovieClean(movie.Title);
-            if (!MovieClean(title).Contains(expected, StringComparison.Ordinal)) continue;
-            var score = 0;
-            if (lower.Contains("official trailer")) score += 15;
-            if (lower.Contains(movie.Year)) score += 2;
-            var source = channel.ToLowerInvariant();
-            if (new[] { "warner bros", "universal pictures", "paramount pictures",
-                "sony pictures", "a24", "lionsgate", "20th century studios",
-                "netflix", "disney", "focus features", "neon", "searchlight pictures",
-                "movieclips trailers", "filmselect trailer" }.Any(source.Contains))
-                score += 10;
-            if (duration >= 55 && duration <= 190) score += 3;
-            candidates.Add((url, score));
-        }
-        if (candidates.Count == 0)
-            throw new InvalidDataException("No matching official movie trailer found on YouTube.");
-        var chosen = candidates.OrderByDescending(x => x.Score).First().Url;
         var target = Path.Combine(MovieSourceFolder, movie.TmdbId + ".mp4");
+        if (File.Exists(target) && new FileInfo(target).Length > 10_000)
+            return target;
+
+        // Preferred source: TMDB's verified movie page includes YouTube trailer
+        // IDs. This avoids relying on yt-dlp YouTube Search (frequently login gated).
+        var candidates = new List<(string Url, int Score)>();
+        try
+        {
+            using var videos = await MovieTmdbAsync(
+                "movie/" + movie.TmdbId + "/videos?language=en-US");
+            if (videos.RootElement.TryGetProperty("results", out var results))
+            {
+                foreach (var video in results.EnumerateArray())
+                {
+                    if (!string.Equals(MovieJson(video, "site"), "YouTube",
+                        StringComparison.OrdinalIgnoreCase)) continue;
+                    var id = MovieJson(video, "key");
+                    if (id.Length != 11 || !id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_'))
+                        continue;
+                    var type = MovieJson(video, "type");
+                    if (!type.Equals("Trailer", StringComparison.OrdinalIgnoreCase) &&
+                        !type.Equals("Teaser", StringComparison.OrdinalIgnoreCase)) continue;
+                    var name = MovieJson(video, "name").ToLowerInvariant();
+                    if (name.Contains("fanmade") || name.Contains("fan made") ||
+                        name.Contains("reaction") || name.Contains("concept")) continue;
+                    var official = video.TryGetProperty("official", out var o) &&
+                        o.ValueKind == JsonValueKind.True;
+                    candidates.Add(("https://www.youtube.com/watch?v=" + id,
+                        (official ? 50 : 0) + (type == "Trailer" ? 20 : 0) +
+                        (name.Contains("official") ? 10 : 0)));
+                }
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { Log("MovieClipper: TMDB trailer lookup unavailable: " + ex.Message); }
+
+        var errors = new List<string>();
+        if (candidates.Count == 0)
+        {
+            // Fallback only: yt-dlp search can fail with sign-in or bot checks.
+            var searchText = movie.Label + " official movie trailer";
+            var search = await MovieRunProcessAsync(downloader,
+                ["--no-playlist", "--flat-playlist", "--dump-single-json",
+                 "--skip-download", "--no-warnings", "ytsearch8:" + searchText],
+                _cts.Token);
+            if (search.Code != 0)
+            {
+                errors.Add("YouTube search: " + MovieDownloaderError(search.Error));
+            }
+            else
+            {
+                try
+                {
+                    using var listing = JsonDocument.Parse(search.Output);
+                    if (listing.RootElement.TryGetProperty("entries", out var entries) &&
+                        entries.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var item in entries.EnumerateArray())
+                        {
+                            if (item.ValueKind != JsonValueKind.Object) continue;
+                            var title = MovieJson(item, "title");
+                            var lower = title.ToLowerInvariant();
+                            var id = MovieJson(item, "id");
+                            if (!title.Contains(movie.Title, StringComparison.OrdinalIgnoreCase) ||
+                                !lower.Contains("trailer") ||
+                                lower.Contains("review") || lower.Contains("fanmade") ||
+                                lower.Contains("fan made") || lower.Contains("reaction") ||
+                                lower.Contains("concept") || id.Length != 11) continue;
+                            candidates.Add(("https://www.youtube.com/watch?v=" + id,
+                                lower.Contains("official") ? 10 : 0));
+                        }
+                    }
+                }
+                catch (JsonException ex) { errors.Add("YouTube search JSON: " + ex.Message); }
+            }
+        }
+
+        if (candidates.Count == 0)
+            throw new InvalidOperationException(
+                "No official trailer could be discovered for " + movie.Label +
+                ". " + string.Join(" | ", errors) +
+                ". Use the trailer cache folder for a local source if YouTube requires sign-in.");
+
         var pattern = Path.Combine(MovieSourceFolder, movie.TmdbId + ".%(ext)s");
-        var arguments = new List<string> {
-            "--no-playlist", "--no-warnings", "--no-progress",
-            "--retries", "3", "--fragment-retries", "3",
-            "-f", "bv*+ba/b", "-S", "res:1080,ext:mp4",
-            "--merge-output-format", "mp4", "--recode-video", "mp4",
-            "-o", pattern, chosen
-        };
-        if (!string.IsNullOrWhiteSpace(Settings.FfmpegPath) &&
-            File.Exists(Settings.FfmpegPath))
-            arguments.InsertRange(0, ["--ffmpeg-location", Settings.FfmpegPath]);
-        var download = await MovieRunProcessAsync(downloader, arguments, _cts.Token);
-        if (download.Code != 0)
-            throw new InvalidOperationException("YouTube trailer download failed: " +
-                download.Error[^Math.Min(450, download.Error.Length)..]);
-        if (!File.Exists(target) || new FileInfo(target).Length < 10_000)
-            throw new IOException("YouTube download did not create a usable MP4.");
-        return target;
+        foreach (var candidate in candidates.OrderByDescending(x => x.Score)
+            .Select(x => x.Url).Distinct().Take(4))
+        {
+            _cts.Token.ThrowIfCancellationRequested();
+            movie.Status = "Downloading TMDB-linked official YouTube trailer";
+            var arguments = new List<string> {
+                "--no-playlist", "--no-warnings", "--no-progress",
+                "--retries", "2", "--fragment-retries", "2",
+                "-f", "bv*+ba/b", "-S", "res:1080,ext:mp4",
+                "--merge-output-format", "mp4", "--recode-video", "mp4",
+                "-o", pattern, candidate
+            };
+            if (!string.IsNullOrWhiteSpace(Settings.FfmpegPath) &&
+                File.Exists(Settings.FfmpegPath))
+                arguments.InsertRange(0, ["--ffmpeg-location", Settings.FfmpegPath]);
+            var download = await MovieRunProcessAsync(downloader, arguments, _cts.Token);
+            if (download.Code == 0 && File.Exists(target) &&
+                new FileInfo(target).Length > 10_000)
+                return target;
+            errors.Add(MovieDownloaderError(download.Error));
+        }
+        var last = errors.LastOrDefault() ?? "No playable trailer could be downloaded.";
+        throw new InvalidOperationException(
+            "Trailer download unavailable for " + movie.Label + ": " + last +
+            ". TMDB trailer lookup succeeded, but YouTube may require account verification. " +
+            "You can place an authorized MP4 in the trailer cache folder and press Retry Failed.");
+    }
+
+    private static string MovieDownloaderError(string message)
+    {
+        var lines = (message ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => x.Trim()).Where(x => x.Contains("ERROR:", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (lines.Any(x => x.Contains("Sign in to confirm", StringComparison.OrdinalIgnoreCase) ||
+                           x.Contains("cookies", StringComparison.OrdinalIgnoreCase) ||
+                           x.Contains("authentication", StringComparison.OrdinalIgnoreCase)))
+            return "YouTube requires sign-in/account verification; the download was not authorized.";
+        return (lines.LastOrDefault() ?? (message ?? "").Trim()) is var line
+            ? line[^Math.Min(350, line.Length)..]
+            : "Unknown yt-dlp error";
     }
 
     private async Task MovieStartAsync()
