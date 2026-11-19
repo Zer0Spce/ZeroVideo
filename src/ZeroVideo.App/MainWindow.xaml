@@ -724,7 +724,7 @@
           <Border Style="{StaticResource CardBorder}">
             <ScrollViewer VerticalScrollBarVisibility="Auto">
               <StackPanel>
-                <TextBlock Text="MovieClipper — 30 Second TikToks" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="MovieClipper — Music-Length TikToks" FontSize="21" FontWeight="SemiBold"/>
                 <TextBlock Text="One-click ChatGPT movie ideas and scores, TMDB title logo, YouTube trailer highlights, music-beat scene cuts, clean centered ratings and TikTok publishing." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,5,0,12"/>
                 <Label Content="MOVIE NICHE"/>
                 <TextBox Text="{Binding MovieNiche, UpdateSourceTrigger=PropertyChanged}"/>
@@ -750,9 +750,10 @@
                 <TextBlock Text="Publishing" FontSize="16" FontWeight="SemiBold"/>
                 <CheckBox Content="Auto-submit via ZeroVideo's existing TikTok publisher" IsChecked="{Binding MoviePublish}" Margin="0,8,0,0"/>
                 <CheckBox Content="I have rights to publish these trailers and I authorize this batch" IsChecked="{Binding PublishConsent, Mode=TwoWay}" Margin="0,5,0,8"/>
+                <TextBlock Text="MovieClipper batch uses the interval selected on the Publishing tab." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,7"/>
                 <TextBlock Text="FIRST POST (LOCAL YYYY-MM-DD HH:mm)" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
                 <TextBox Text="{Binding MovieFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
-                <TextBlock Text="Hourly schedule: 1 video every 60 minutes. TikTok account sign-in, publishing authorization and final batch confirmation use the existing working publisher." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
+                <TextBlock Text="Schedule videos 30 minutes or more apart using the Publishing interval selector. TikTok sign-in, authorization and final batch confirmation use the existing working publisher." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
                 <WrapPanel><Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK MOVIECLIPPER" Command="{Binding MovieStartCommand}"/><Button Style="{StaticResource SecondaryButton}" Content="Open Exported Videos" Command="{Binding MovieOpenOutputCommand}" Margin="8,0,0,0"/></WrapPanel>
                 <TextBlock Text="Output folder: Videos\\ZeroVideo\\MovieClipper" Foreground="{StaticResource Muted}" Margin="0,7,0,0"/>
                 <TextBlock Text="{Binding MovieStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
@@ -763,7 +764,7 @@
             <DockPanel>
               <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
                 <TextBlock Text="ChatGPT Movie Idea Generator" FontSize="21" FontWeight="SemiBold"/>
-                <TextBlock Text="Reference-style review: Plot, Acting, Pacing, Cinematography, Writing, Ending, Overall. Large, centered white /10 scores, no caption backgrounds." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                <TextBlock Text="Reference-style review: Plot, Acting, Pacing, Cinematography, Writing, Ending, Overall. Video length follows your background music (no looping). Large centered white /10 scores, no caption backgrounds." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
               </StackPanel>
               <DataGrid ItemsSource="{Binding MovieClipperIdeas}" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Single">
                 <DataGrid.Columns>
@@ -1874,9 +1875,9 @@
               <StackPanel Orientation="Horizontal">
                 <TextBox Width="220" Text="{Binding PublishFirstSlot, UpdateSourceTrigger=PropertyChanged}"
                          ToolTip="YYYY-MM-DD HH:MM"/>
-                <ComboBox Width="110" Margin="10,0,0,0" ItemsSource="{Binding PublishIntervals}"
-                          SelectedItem="{Binding PublishIntervalHours}"/>
-                <TextBlock Text="hours apart" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                <ComboBox Width="145" Margin="10,0,0,0" ItemsSource="{Binding PublishIntervalChoices}"
+                          SelectedItem="{Binding PublishIntervalChoice}"/>
+                <TextBlock Text="apart" VerticalAlignment="Center" Margin="6,0,0,0"/>
               </StackPanel>
               <StackPanel Orientation="Horizontal" Margin="0,9,0,4">
                 <Button Style="{StaticResource SecondaryButton}" Content="Apply Bulk Schedule"
