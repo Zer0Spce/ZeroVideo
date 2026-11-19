@@ -1108,6 +1108,13 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             return "TikTok: submission NOT attempted; browser is not on TikTok Studio upload.";
         }
 
+        // The final Schedule/Post CTA is below the fold on TikTok Studio.
+        // Its presence on the page is not enough: scroll to the real upload
+        // footer and let React finish any pending editor/schedule rerender.
+        await page.EvaluateAsync("() => window.scrollTo({top: document.documentElement.scrollHeight, behavior: 'instant'})");
+        await Task.Delay(500, ct);
+        log?.Invoke("TikTok: locating the FINAL publishing CTA at the bottom of the upload page.");
+
         // The upload footer's stable data-e2e selector is more specific than
         // the Schedule radio label and avoids privacy/music controls.
         var button = page.Locator("button[data-e2e='post_video_button']:visible");
@@ -1134,6 +1141,8 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         }
 
         var submit = button.First;
+        await submit.ScrollIntoViewIfNeededAsync(new(){Timeout=8000});
+        await Task.Delay(250, ct);
         var label = (await submit.InnerTextAsync()).Trim();
         var validLabel = scheduled
             ? System.Text.RegularExpressions.Regex.IsMatch(label,
@@ -1148,7 +1157,9 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
             (await submit.GetAttributeAsync("data-disabled")) == "true")
         {
             log?.Invoke("TikTok: final action disabled or unexpected label: '" + label +
-                "'. No submission attempted.");
+                "'. No submission attempted; CTA HTML: " +
+                (await submit.EvaluateAsync<string>("e=>e.outerHTML")).Substring(0,
+                    Math.Min(800,(await submit.EvaluateAsync<string>("e=>e.outerHTML")).Length)));
             return "TikTok: submission NOT attempted; final " +
                 (scheduled ? "Schedule" : "Post") + " button not enabled.";
         }
@@ -1177,6 +1188,20 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                 return "TikTok: submission NOT attempted; dismiss hashtag dropdown first.";
             }
         }
+        // Playwright trial click checks actionability without dispatching a
+        // second publish. It detects obstructing overlays, disabled buttons,
+        // sticky controls and incomplete React rerenders before the one click.
+        try
+        {
+            await submit.ClickAsync(new(){Timeout=9000,Trial=true});
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
+        {
+            log?.Invoke("TikTok: final CTA is not clickable: "+ex.Message.Split('\n')[0]);
+            await SaveDiagnosticAsync(page,"TikTok-Final-CTA-Blocked",log);
+            return "TikTok: submission NOT attempted; final button blocked. Inspect TikTok Studio.";
+        }
+
         log?.Invoke("TikTok: verified date/time and upload readiness; clicking final '" +
             label + "' button ONCE. Do not retry automatically.");
         // Mark the attempt BEFORE dispatching the click. If browser navigation
