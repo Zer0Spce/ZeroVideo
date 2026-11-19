@@ -156,6 +156,9 @@ public sealed partial class MainViewModel
     {
         try
         {
+            if (string.IsNullOrWhiteSpace(_movieToken))
+                throw new InvalidOperationException(
+                    "TMDB credential not loaded. Launch the private portable package or install movieclipper.local.json in %LOCALAPPDATA%\\ZeroVideo.");
             MovieStatus = "ChatGPT is choosing niche-specific movies...";
             var prompt = $"List exactly {MovieCount} REAL feature movies suited to short-form TikTok film reviews in this niche: {MovieNiche}. " +
                 "Make a diverse list of confirmed titles (no invented films), with release years. Do not include TV shows, duplicates or generic ideas. " +
@@ -302,12 +305,17 @@ public sealed partial class MainViewModel
         var chosen = candidates.OrderByDescending(x => x.Score).First().Url;
         var target = Path.Combine(MovieSourceFolder, movie.TmdbId + ".mp4");
         var pattern = Path.Combine(MovieSourceFolder, movie.TmdbId + ".%(ext)s");
-        var download = await MovieRunProcessAsync(downloader,
-            ["--no-playlist", "--no-warnings", "--no-progress",
-             "--retries", "3", "--fragment-retries", "3",
-             "-f", "bv*+ba/b", "-S", "res:1080,ext:mp4",
-             "--merge-output-format", "mp4", "--recode-video", "mp4",
-             "-o", pattern, chosen], _cts.Token);
+        var arguments = new List<string> {
+            "--no-playlist", "--no-warnings", "--no-progress",
+            "--retries", "3", "--fragment-retries", "3",
+            "-f", "bv*+ba/b", "-S", "res:1080,ext:mp4",
+            "--merge-output-format", "mp4", "--recode-video", "mp4",
+            "-o", pattern, chosen
+        };
+        if (!string.IsNullOrWhiteSpace(Settings.FfmpegPath) &&
+            File.Exists(Settings.FfmpegPath))
+            arguments.InsertRange(0, ["--ffmpeg-location", Settings.FfmpegPath]);
+        var download = await MovieRunProcessAsync(downloader, arguments, _cts.Token);
         if (download.Code != 0)
             throw new InvalidOperationException("YouTube trailer download failed: " +
                 download.Error[^Math.Min(450, download.Error.Length)..]);
