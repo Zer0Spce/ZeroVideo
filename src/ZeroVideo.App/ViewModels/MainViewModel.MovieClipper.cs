@@ -44,6 +44,12 @@ public sealed partial class MainViewModel
     private double _movieMusicLevel = 0.85;
     private string _movieToken = "";
     private const int MovieLengthSeconds = 30;
+    private static readonly string MoviePrefsFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZeroVideo", "movieclipper.preferences.json");
+    private void MovieSaveMediaPreferences()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(MoviePrefsFile)!);
+        File.WriteAllText(MoviePrefsFile, JsonSerializer.Serialize(new { source_folder = MovieSourceFolder, sound_file = MovieSoundFile }));
+    }
     public ObservableCollection<MovieClipperEntry> MovieClipperIdeas { get; } = [];
     public string MovieNiche { get => _movieNiche; set => Set(ref _movieNiche, value); }
     public int MovieCount { get => _movieCount; set => Set(ref _movieCount, Math.Clamp(value, 1, 20)); }
@@ -68,12 +74,12 @@ public sealed partial class MainViewModel
         MovieBrowseSourceCommand = new RelayCommand(() =>
         {
             var picker = new OpenFolderDialog { Title = "Folder containing licensed movie trailer files" };
-            if (picker.ShowDialog() == true) MovieSourceFolder = picker.FolderName;
+            if (picker.ShowDialog() == true) { MovieSourceFolder = picker.FolderName; MovieSaveMediaPreferences(); }
         });
         MovieBrowseSoundCommand = new RelayCommand(() =>
         {
             var picker = new OpenFileDialog { Filter = "Audio files|*.mp3;*.m4a;*.wav;*.aac;*.flac", CheckFileExists = true };
-            if (picker.ShowDialog() == true) MovieSoundFile = picker.FileName;
+            if (picker.ShowDialog() == true) { MovieSoundFile = picker.FileName; MovieSaveMediaPreferences(); }
         });
         MovieFindTrailerCommand = new RelayCommand(() =>
         {
@@ -103,6 +109,16 @@ public sealed partial class MainViewModel
             }
         }
         catch (Exception ex) { MovieStatus = "Private MovieClipper configuration could not be read: " + ex.Message; }
+        try
+        {
+            if (File.Exists(MoviePrefsFile))
+            {
+                using var prefs = JsonDocument.Parse(File.ReadAllText(MoviePrefsFile));
+                MovieSourceFolder = MovieJson(prefs.RootElement, "source_folder") is var folder && !string.IsNullOrWhiteSpace(folder) ? folder : MovieSourceFolder;
+                MovieSoundFile = MovieJson(prefs.RootElement, "sound_file") is var sound && !string.IsNullOrWhiteSpace(sound) ? sound : MovieSoundFile;
+            }
+        }
+        catch (Exception ex) { MovieStatus = "MovieClipper media preferences: " + ex.Message; }
         if (string.IsNullOrWhiteSpace(_movieToken))
             _movieToken = Environment.GetEnvironmentVariable("ZEROVIDEO_TMDB_READ_TOKEN") ?? "";
     }
