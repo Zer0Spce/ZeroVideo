@@ -832,44 +832,70 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         Action<string>? log, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        // DOM evidence shows two columns of .tiktok-timepicker-option-item
-        // containing .tiktok-timepicker-left and .tiktok-timepicker-right.
-        // Only interact with the ACTIVE popup, never an invisible picker.
-        var column = hour ? "left" : "right";
-        var exact = value.ToString("00",System.Globalization.CultureInfo.InvariantCulture);
-        var activePopup = page.Locator(
-            ".tiktok-timepicker-time-picker-container:not(.tiktok-timepicker-invisible):visible").First;
-        if(await activePopup.CountAsync()!=1 || !await activePopup.IsVisibleAsync())
+        // Second and later uploads often leave an old, inactive time picker
+        // mounted in the DOM. Work exclusively inside the active TUX container.
+        var col = hour ? "left" : "right";
+        var target = value.ToString("00",System.Globalization.CultureInfo.InvariantCulture);
+        var active = page.Locator(
+            ".tiktok-timepicker-time-picker-container:not(.tiktok-timepicker-invisible):visible");
+        if (await active.CountAsync() != 1)
         {
-            log?.Invoke("TikTok: no active time picker for "+column+" column.");
+            log?.Invoke("TikTok: expected one active time popup, found " +
+                await active.CountAsync() + "; will not click another video's picker.");
             return false;
         }
-        var options=activePopup.Locator(".tiktok-timepicker-option-item")
-            .Filter(new(){Has=page.Locator(
-                ".tiktok-timepicker-option-text.tiktok-timepicker-"+column)});
-        // Avoid Has filter relying on a page-global locator: identify the
-        // unique matching option directly within the active picker instead.
-        var exactOptions=activePopup.Locator(".tiktok-timepicker-option-item")
+        var exact = active.Locator(
+            ".tiktok-timepicker-option-text.tiktok-timepicker-" + col)
             .Filter(new(){HasTextRegex=new System.Text.RegularExpressions.Regex(
-                @"^\s*"+exact+@"\s*$")});
-        var chosen=exactOptions.Filter(new(){Has=page.Locator(
-            ".tiktok-timepicker-option-text.tiktok-timepicker-"+column)}).First;
-        if(await chosen.CountAsync()!=1)
+                @"^\s*" + target + @"\s*$")});
+        if (await exact.CountAsync() != 1)
         {
-            log?.Invoke("TikTok: target "+column+" option "+exact+" missing in active time picker.");
+            log?.Invoke("TikTok: expected one " + col + " time option " + target +
+                ", found " + await exact.CountAsync());
             return false;
         }
-        if(!await chosen.IsVisibleAsync())
-        {
-            log?.Invoke("TikTok: target "+column+" option "+exact+" hidden.");
+        var choice=exact.First.Locator("xpath=..");
+        if(!await choice.IsVisibleAsync() || !await choice.IsEnabledAsync())
             return false;
-        }
-        await chosen.ScrollIntoViewIfNeededAsync(new(){Timeout=5000});
-        await chosen.ClickAsync(new(){Timeout=5000});
-        log?.Invoke("TikTok: selected "+(hour?"hour ":"minute ")+exact+
-            " from active time picker.");
-        await Task.Delay(180,ct);
+        await choice.ScrollIntoViewIfNeededAsync(new(){Timeout=5000});
+        await choice.ClickAsync(new(){Timeout=5000});
+        log?.Invoke("TikTok: selected " + (hour?"hour ":"minute ") + target +
+            " from unique ACTIVE time picker.");
+        await Task.Delay(200,ct);
         return true;
+    }
+
+    private static async Task<bool> VerifyTikTokScheduledFieldsAsync(
+        IPage page, DateTimeOffset requested, Action<string>? log, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var date=await FindTikTokScheduleDateTriggerAsync(page,log,ct);
+        var time=page.Locator(".time-picker-input:visible").First;
+        if(await time.CountAsync()==0)
+            time=await FindTikTokScheduleFieldNearHeadingAsync(
+                page,date:false,log,ct) ??
+                page.Locator(".time-picker-input:visible").First;
+        if(date is null||await time.CountAsync()!=1)
+        {
+            log?.Invoke("TikTok: date or time field missing during final schedule readback.");
+            return false;
+        }
+        var displayedDate=await date.EvaluateAsync<string>(
+            "el => (el.value||el.innerText||el.textContent||'').trim()");
+        var displayedTime=await time.EvaluateAsync<string>(
+            "el => (el.value||el.innerText||el.textContent||'').trim()");
+        var target=requested.LocalDateTime;
+        var parsed=DateTime.TryParse(displayedDate,
+            System.Globalization.CultureInfo.GetCultureInfo("en-US"),
+            System.Globalization.DateTimeStyles.None,out var day);
+        var valid=parsed&&day.Date==target.Date&&
+            (displayedTime==target.ToString("HH:mm")||
+             displayedTime==target.ToString("H:mm"));
+        log?.Invoke("TikTok: FINAL readback expected " +
+            target.ToString("yyyy-MM-dd HH:mm") + " displayed " +
+            displayedDate + " " + displayedTime + " valid=" + valid);
+        if(!valid)await SaveTikTokPickerEvidenceAsync(page,"Final-Readback-Mismatch",log);
+        return valid;
     }
 
     private static async Task<bool> SetTikTokScheduleAsync(
@@ -1413,6 +1439,9 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                 // restore the uploaded filename. Recheck before final click.
                 if (!await TikTokFillVerifiedCaptionAsync(page,finalCaption,log,ct))
                     return "TikTok: caption changed before submission. Final post NOT attempted.";
+                if (scheduledAt.HasValue &&
+                    !await VerifyTikTokScheduledFieldsAsync(page,scheduledAt.Value,log,ct))
+                    return "TikTok: schedule changed after upload metadata update. Final post NOT attempted.";
                 return await SubmitTikTokOnceAsync(page, scheduledAt.HasValue, log, ct);
             }
             catch (Exception ex) when (ex is PlaywrightException or TimeoutException or InvalidOperationException)
