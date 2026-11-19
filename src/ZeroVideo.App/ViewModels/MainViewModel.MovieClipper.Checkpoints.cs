@@ -280,6 +280,9 @@ public sealed partial class MainViewModel
         var validTags = System.Text.RegularExpressions.Regex.Matches(
             cp.SeoHashtags ?? "", @"(?<!\S)#[A-Za-z][A-Za-z0-9_]{1,23}(?=\s|$)")
             .Select(x => x.Value)
+            // Reject merged year+word glitches such as #horrorthriller2025ller.
+            .Where(tag => !System.Text.RegularExpressions.Regex.IsMatch(
+                tag, @"20\d{2}[A-Za-z]{3,}$"))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(5).ToList();
         if (validTags.Count < 3)
