@@ -782,9 +782,12 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
     private static async Task<ILocator?> GetTikTokTimePopupAsync(
         IPage page, ILocator timeTrigger, Action<string>? log)
     {
+        // TikTok keeps inactive picker copies mounted with nonzero geometry.
+        // Playwright :visible alone does not exclude .tiktok-timepicker-invisible.
         var popup=page.Locator(
-            ".tiktok-timepicker-time-picker-container:visible, .TimePicker__panel:visible").First;
-        if(await popup.CountAsync()>0)return popup;
+            ".tiktok-timepicker-time-picker-container:not(.tiktok-timepicker-invisible):visible, " +
+            ".TimePicker__panel:visible").First;
+        if(await popup.CountAsync()>0 && await popup.IsVisibleAsync())return popup;
         // Current TikTok CSS may differ. A candidate must be a small visible
         // popup containing at least 10 short numeric option texts in TWO
         // distinct horizontal columns, adjacent to the time trigger.
@@ -798,7 +801,7 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
  let matches=[];
  for(const p of document.querySelectorAll('[role=dialog],[role=listbox],.Picker__panel,[class*=TimePicker]')){
   const r=p.getBoundingClientRect(),s=getComputedStyle(p);
-  if(s.display==='none'||s.visibility==='hidden'||r.width<180||
+  if(s.display==='none'||s.visibility==='hidden'||p.classList.contains('tiktok-timepicker-invisible')||r.width<180||
      r.width>520||r.height<180||r.height>650)continue;
   if(Math.abs((r.left+r.width/2)-(tr.left+tr.width/2))>310||
      Math.min(Math.abs(r.bottom-tr.top),Math.abs(r.top-tr.bottom))>200)continue;
@@ -828,76 +831,45 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         IPage page, ILocator popup, int value, bool hour,
         Action<string>? log, CancellationToken ct)
     {
-        var direct=popup.Locator(hour?
-            "span[class*='tiktok-timepicker-left']":
-            "span[class*='tiktok-timepicker-right']")
+        ct.ThrowIfCancellationRequested();
+        // DOM evidence shows two columns of .tiktok-timepicker-option-item
+        // containing .tiktok-timepicker-left and .tiktok-timepicker-right.
+        // Only interact with the ACTIVE popup, never an invisible picker.
+        var column = hour ? "left" : "right";
+        var exact = value.ToString("00",System.Globalization.CultureInfo.InvariantCulture);
+        var activePopup = page.Locator(
+            ".tiktok-timepicker-time-picker-container:not(.tiktok-timepicker-invisible):visible").First;
+        if(await activePopup.CountAsync()!=1 || !await activePopup.IsVisibleAsync())
+        {
+            log?.Invoke("TikTok: no active time picker for "+column+" column.");
+            return false;
+        }
+        var options=activePopup.Locator(".tiktok-timepicker-option-item")
+            .Filter(new(){Has=page.Locator(
+                ".tiktok-timepicker-option-text.tiktok-timepicker-"+column)});
+        // Avoid Has filter relying on a page-global locator: identify the
+        // unique matching option directly within the active picker instead.
+        var exactOptions=activePopup.Locator(".tiktok-timepicker-option-item")
             .Filter(new(){HasTextRegex=new System.Text.RegularExpressions.Regex(
-                @"^\s*0?"+value+@"\s*$")}).First;
-        if(await direct.CountAsync()>0)
+                @"^\s*"+exact+@"\s*$")});
+        var chosen=exactOptions.Filter(new(){Has=page.Locator(
+            ".tiktok-timepicker-option-text.tiktok-timepicker-"+column)}).First;
+        if(await chosen.CountAsync()!=1)
         {
-            await direct.ScrollIntoViewIfNeededAsync(new(){Timeout=5000});
-            await direct.ClickAsync(new(){Timeout=5000});
-            log?.Invoke("TikTok: selected "+(hour?"hour ":"minute ")+value+" via popup option.");
-            return true;
+            log?.Invoke("TikTok: target "+column+" option "+exact+" missing in active time picker.");
+            return false;
         }
-        // For newer markup, mark ONLY a numeric leaf inside the verified
-        // time popup, in the correct left/right column.
-        const string inspect=@"
-(root,args)=>{
- root.querySelectorAll('[data-zerovideo-option]').forEach(
- e=>e.removeAttribute('data-zerovideo-option'));
- const b=root.getBoundingClientRect(),mid=b.left+b.width/2;
- const nums=[];
- for(const e of root.querySelectorAll('span,button,div,li')){
-   const t=(e.textContent||'').trim();
-   if(!/^\d{1,2}$/.test(t))continue;
-   if([...e.children].some(c=>(c.textContent||'').trim()===t))continue;
-   const r=e.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2;
-   if(r.width<3||r.height<3||r.width>130||r.height>75)continue;
-   if(args.hour?x>=mid:x<=mid)continue;
-   if(y<b.top+5||y>b.bottom-5)continue;
-   nums.push({e,n:Number(t),y});
- }
- const candidates=nums.filter(n=>n.n===args.value);
- candidates.sort((a,b)=>Math.abs(a.y-(b.top+b.height/2))-
-  Math.abs(b.y-(b.top+b.height/2)));
- if(candidates.length)candidates[0].e.setAttribute('data-zerovideo-option','true');
- return {found:candidates.length>0,
-  min:nums.length?Math.min(...nums.map(x=>x.n)):-1,
-  max:nums.length?Math.max(...nums.map(x=>x.n)):-1,
-  count:nums.length};
-}";
-        for(var i=0;i<22;i++)
+        if(!await chosen.IsVisibleAsync())
         {
-            ct.ThrowIfCancellationRequested();
-            var probe=await popup.EvaluateAsync<System.Text.Json.JsonElement>(
-                inspect,new {value,hour});
-            if(probe.GetProperty("found").GetBoolean())
-            {
-                var marked=popup.Locator("[data-zerovideo-option='true']");
-                if(await marked.CountAsync()!=1)return false;
-                await marked.ClickAsync(new(){Timeout=5000});
-                log?.Invoke("TikTok: selected "+(hour?"hour ":"minute ")+value+
-                    " in isolated popup.");
-                return true;
-            }
-            var count=probe.GetProperty("count").GetInt32();
-            if(count==0){log?.Invoke("TikTok: no values in "+(hour?"hour":"minute")+" column.");return false;}
-            var min=probe.GetProperty("min").GetInt32();
-            var max=probe.GetProperty("max").GetInt32();
-            var direction=value<min?-1:1;
-            if(value>max)direction=1;
-            // Scrolling only inside verified popup. No click outside it.
-            var bb=await popup.BoundingBoxAsync();
-            if(bb is null)return false;
-            await page.Mouse.MoveAsync(bb.X+bb.Width*(hour?.25f:.75f),
-                bb.Y+bb.Height*.5f);
-            await page.Mouse.WheelAsync(0,direction*130);
-            await Task.Delay(180,ct);
+            log?.Invoke("TikTok: target "+column+" option "+exact+" hidden.");
+            return false;
         }
-        log?.Invoke("TikTok: "+(hour?"hour":"minute")+" "+value+
-            " not reachable safely in time popup.");
-        return false;
+        await chosen.ScrollIntoViewIfNeededAsync(new(){Timeout=5000});
+        await chosen.ClickAsync(new(){Timeout=5000});
+        log?.Invoke("TikTok: selected "+(hour?"hour ":"minute ")+exact+
+            " from active time picker.");
+        await Task.Delay(180,ct);
+        return true;
     }
 
     private static async Task<bool> SetTikTokScheduleAsync(
@@ -967,13 +939,27 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                 {
                     var hour=await SelectTikTokTimeColumnAsync(
                         page,popup,target.Hour,true,log,ct);
-                    var minute=await SelectTikTokTimeColumnAsync(
-                        page,popup,target.Minute,false,log,ct);
+                    // Some TikTok builds dismiss or rebuild the popup after
+                    // selecting an hour. Re-identify only the active popup.
+                    var minutePopup=await GetTikTokTimePopupAsync(page,timeTrigger,log);
+                    if(minutePopup is null && hour)
+                    {
+                        await timeTrigger.ClickAsync(new(){Timeout=6000});
+                        await Task.Delay(200,ct);
+                        minutePopup=await GetTikTokTimePopupAsync(page,timeTrigger,log);
+                    }
+                    var minute=minutePopup is not null &&
+                        await SelectTikTokTimeColumnAsync(
+                            page,minutePopup,target.Minute,false,log,ct);
                     log?.Invoke("TikTok: time option results hour="+hour+" minute="+minute);
-                    // Toggle ONLY the dedicated time trigger to close popup;
-                    // never click anywhere else on the upload form.
-                    await timeTrigger.ClickAsync(new(){Timeout=6000});
-                    await Task.Delay(350,ct);
+                    var activeAfter=page.Locator(
+                        ".tiktok-timepicker-time-picker-container:not(.tiktok-timepicker-invisible):visible");
+                    if(await activeAfter.CountAsync()>0)
+                    {
+                        // Only close an ACTUALLY OPEN time picker.
+                        await timeTrigger.ClickAsync(new(){Timeout=6000});
+                        await Task.Delay(250,ct);
+                    }
                 }
                 current=(await timeTrigger.EvaluateAsync<string>(
                     "el => (el.value||el.innerText||el.textContent||'').trim()")).Trim();
