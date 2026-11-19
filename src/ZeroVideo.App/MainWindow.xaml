@@ -730,7 +730,8 @@
                 <TextBox Text="{Binding MovieNiche, UpdateSourceTrigger=PropertyChanged}"/>
                 <Label Content="NUMBER OF MOVIES" Margin="0,7,0,0"/>
                 <TextBox Text="{Binding MovieCount, UpdateSourceTrigger=LostFocus}"/>
-                <Button Style="{StaticResource SecondaryButton}" Content="Generate Niche Movie List with ChatGPT" Command="{Binding MovieGenerateCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                <CheckBox Content="New Chat (otherwise reuse this MovieClipper chat)" IsChecked="{Binding MovieNewChat, Mode=TwoWay}" Margin="0,8,0,4"/>
+                <Button Style="{StaticResource SecondaryButton}" Content="Generate Ideas + Scores + SEO (One ChatGPT Request)" Command="{Binding MovieGenerateCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"/>
                 <Separator Margin="0,13"/>
                 <TextBlock Text="YouTube trailer auto-download" FontWeight="SemiBold" FontSize="16"/>
                 <TextBlock Text="MovieClipper first checks the local cache, then automatically searches and downloads a matching official trailer using bundled yt-dlp. Available local trailer files are reused." TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,6,0,7"/>
@@ -754,7 +755,14 @@
                 <TextBlock Text="FIRST POST (LOCAL YYYY-MM-DD HH:mm)" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
                 <TextBox Text="{Binding MovieFirstSlot, UpdateSourceTrigger=PropertyChanged}"/>
                 <TextBlock Text="Schedule videos 30 minutes or more apart using the Publishing interval selector. TikTok sign-in, authorization and final batch confirmation use the existing working publisher." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,7,0,12"/>
-                <WrapPanel><Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK MOVIECLIPPER" Command="{Binding MovieStartCommand}"/><Button Style="{StaticResource SecondaryButton}" Content="Open Exported Videos" Command="{Binding MovieOpenOutputCommand}" Margin="8,0,0,0"/></WrapPanel>
+                <WrapPanel>
+                  <Button Style="{StaticResource PrimaryButton}" Content="START ONE-CLICK MOVIECLIPPER" Command="{Binding MovieStartCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Resume Workflow" Command="{Binding MovieResumeCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Retry Failed" Command="{Binding MovieRetryFailedCommand}" Margin="0,0,8,8"/>
+                  <Button Content="Force Stop" Command="{Binding MovieForceStopCommand}" Margin="0,0,8,8"/>
+                  <Button Style="{StaticResource SecondaryButton}" Content="Open Exported Videos" Command="{Binding MovieOpenOutputCommand}" Margin="0,0,8,8"/>
+                </WrapPanel>
+                <TextBlock Text="{Binding MovieCheckpointStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,8,0,3"/>
                 <TextBlock Text="Output folder: Videos\\ZeroVideo\\MovieClipper" Foreground="{StaticResource Muted}" Margin="0,7,0,0"/>
                 <TextBlock Text="{Binding MovieStatus}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
               </StackPanel>
@@ -766,6 +774,8 @@
                 <TextBlock Text="ChatGPT Movie Idea Generator" FontSize="21" FontWeight="SemiBold"/>
                 <TextBlock Text="Reference-style review: Plot, Acting, Pacing, Cinematography, Writing, Ending, Overall. Video length follows your background music (no looping). Large centered white /10 scores, no caption backgrounds." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,0"/>
               </StackPanel>
+              <TabControl>
+                <TabItem Header="Ideas &amp; Progress">
               <DataGrid ItemsSource="{Binding MovieClipperIdeas}" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Single">
                 <DataGrid.Columns>
                   <DataGridCheckBoxColumn Header="✓" Binding="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="44"/>
@@ -774,6 +784,21 @@
                   <DataGridTextColumn Header="Status" Binding="{Binding Status}" IsReadOnly="True" Width="2*"/>
                 </DataGrid.Columns>
               </DataGrid>
+                </TabItem>
+                <TabItem Header="Movie History">
+                  <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding MovieHistorySummary}" Foreground="{StaticResource Muted}" Margin="0,6,0,8"/>
+                    <DataGrid ItemsSource="{Binding MovieHistory}" AutoGenerateColumns="False" IsReadOnly="True">
+                      <DataGrid.Columns>
+                        <DataGridTextColumn Header="Movie" Binding="{Binding Title}" Width="2*"/>
+                        <DataGridTextColumn Header="Year" Binding="{Binding Year}" Width="70"/>
+                        <DataGridTextColumn Header="Completed" Binding="{Binding CompletedAt}" Width="170"/>
+                        <DataGridTextColumn Header="Export" Binding="{Binding ExportPath}" Width="3*"/>
+                      </DataGrid.Columns>
+                    </DataGrid>
+                  </DockPanel>
+                </TabItem>
+              </TabControl>
             </DockPanel>
           </Border>
         </Grid>
