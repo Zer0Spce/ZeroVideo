@@ -101,10 +101,14 @@ jobs:
           $sumFile = Join-Path $env:RUNNER_TEMP 'deno-windows.sha256sum'
           Invoke-WebRequest -Uri $download -OutFile $zip -MaximumRedirection 8
           Invoke-WebRequest -Uri $checksum -OutFile $sumFile -MaximumRedirection 8
-          $line = Get-Content $sumFile | Select-Object -First 1
-          $expected = ($line -split '\s+')[0].ToUpperInvariant()
-          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash
-          if ($actual -ne $expected) { throw 'Deno Windows download checksum mismatch' }
+          $sumContents = Get-Content $sumFile -Raw
+          $match = [regex]::Match($sumContents, '(?i)[0-9a-f]{64}')
+          if (!$match.Success) { throw 'Deno release checksum file is malformed' }
+          $expected = $match.Value.ToUpperInvariant()
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToUpperInvariant()
+          if ($actual -ne $expected) {
+            throw "Deno Windows download checksum mismatch: expected $expected actual $actual"
+          }
           $dir = Join-Path $env:RUNNER_TEMP 'deno-unzip'
           Expand-Archive -Path $zip -DestinationPath $dir -Force
           $source = Join-Path $dir 'deno.exe'
