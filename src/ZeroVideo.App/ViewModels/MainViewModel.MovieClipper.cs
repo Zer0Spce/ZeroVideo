@@ -36,10 +36,11 @@ public sealed partial class MainViewModel
     private int _movieCount = 10;
     private string _movieSourceFolder = "";
     private string _movieSoundFile = "";
-    private string _movieStatus = "Set an authorized trailer folder and optional 28-second audio, then run a batch.";
+    private string _movieStatus = "Ready: ChatGPT ideas → TMDB artwork → automatic YouTube trailer → 30-second edit → TikTok queue.";
     private string _movieFirstSlot = DateTime.Now.AddHours(2).ToString("yyyy-MM-dd HH:00", CultureInfo.InvariantCulture);
     private bool _moviePublish = true;
     private bool _movieKeepDialogue;
+    private bool _movieAutoDownload = true;
     private bool _movieProcessing;
     private double _movieMusicLevel = 0.85;
     private string _movieToken = "";
@@ -59,6 +60,7 @@ public sealed partial class MainViewModel
     public string MovieFirstSlot { get => _movieFirstSlot; set => Set(ref _movieFirstSlot, value); }
     public bool MoviePublish { get => _moviePublish; set => Set(ref _moviePublish, value); }
     public bool MovieKeepDialogue { get => _movieKeepDialogue; set => Set(ref _movieKeepDialogue, value); }
+    public bool MovieAutoDownload { get => _movieAutoDownload; set => Set(ref _movieAutoDownload, value); }
     public bool MovieProcessing { get => _movieProcessing; private set => Set(ref _movieProcessing, value); }
     public double MovieMusicLevel { get => _movieMusicLevel; set => Set(ref _movieMusicLevel, Math.Clamp(value, 0, 1)); }
     public ICommand MovieGenerateCommand { get; private set; } = null!;
@@ -73,7 +75,7 @@ public sealed partial class MainViewModel
         MovieStartCommand = new AsyncCommand(() => RunManagedJobAsync("MovieClipper: 30s batch", MovieStartAsync));
         MovieBrowseSourceCommand = new RelayCommand(() =>
         {
-            var picker = new OpenFolderDialog { Title = "Folder containing licensed movie trailer files" };
+            var picker = new OpenFolderDialog { Title = "Trailer download/cache folder" };
             if (picker.ShowDialog() == true) { MovieSourceFolder = picker.FolderName; MovieSaveMediaPreferences(); }
         });
         MovieBrowseSoundCommand = new RelayCommand(() =>
@@ -91,11 +93,18 @@ public sealed partial class MainViewModel
         });
         MovieSourceFolder = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "ZeroVideo", "Trailers");
-        // Local private config only. Never embed supplied TMDB credentials in this public repository.
+        // Load private config from local user settings, or a private portable bundle next to the EXE.
+        // Never embed supplied TMDB credentials in the public repository.
         var cfg = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ZeroVideo", "movieclipper.local.json");
         try
         {
+            var portableCfg = Path.Combine(AppContext.BaseDirectory, "MovieClipper_Private_Setup", "movieclipper.local.json");
+            if (!File.Exists(cfg) && File.Exists(portableCfg))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(cfg)!);
+                File.Copy(portableCfg, cfg, overwrite: false);
+            }
             if (File.Exists(cfg))
             {
                 using var doc = JsonDocument.Parse(File.ReadAllText(cfg));
@@ -195,6 +204,8 @@ public sealed partial class MainViewModel
     private static string? MovieFindFile(string folder, MovieClipperEntry movie)
     {
         if (!Directory.Exists(folder)) return null;
+        var exactCache = Path.Combine(folder, movie.TmdbId + ".mp4");
+        if (File.Exists(exactCache) && new FileInfo(exactCache).Length > 10_000) return exactCache;
         var expected = MovieClean(movie.Title);
         if (expected.Length == 0) return null;
         return Directory.EnumerateFiles(folder)
@@ -205,6 +216,104 @@ public sealed partial class MainViewModel
                 return file.Contains(expected, StringComparison.Ordinal) &&
                     (movie.Year.Length != 4 || !file.Any(char.IsDigit) || file.Contains(movie.Year));
             });
+    }
+
+
+    private static async Task<(int Code, string Output, string Error)> MovieRunProcessAsync(
+        string executable, IEnumerable<string> arguments, CancellationToken ct)
+    {
+        var start = new ProcessStartInfo(executable)
+        {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        using var proc = Process.Start(start) ??
+            throw new InvalidOperationException("Unable to launch " + Path.GetFileName(executable));
+        var stdout = proc.StandardOutput.ReadToEndAsync(ct);
+        var stderr = proc.StandardError.ReadToEndAsync(ct);
+        await proc.WaitForExitAsync(ct);
+        return (proc.ExitCode, await stdout, await stderr);
+    }
+
+    private static string MovieDownloaderPath()
+    {
+        var bundled = Path.Combine(AppContext.BaseDirectory, "yt-dlp.exe");
+        if (File.Exists(bundled)) return bundled;
+        // This is an optional fallback for developer builds.
+        return "yt-dlp";
+    }
+
+    private async Task<string> MovieDownloadTrailerAsync(MovieClipperEntry movie)
+    {
+        Directory.CreateDirectory(MovieSourceFolder);
+        var downloader = MovieDownloaderPath();
+        var searchText = movie.Label + " official movie trailer";
+        var search = await MovieRunProcessAsync(downloader,
+            ["--no-playlist", "--dump-single-json", "--skip-download", "--no-warnings",
+             "ytsearch8:" + searchText], _cts.Token);
+        if (search.Code != 0)
+            throw new InvalidOperationException("YouTube search failed: " +
+                search.Error[^Math.Min(300, search.Error.Length)..]);
+        using var listing = JsonDocument.Parse(search.Output);
+        if (!listing.RootElement.TryGetProperty("entries", out var entries) ||
+            entries.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("YouTube did not return trailer search results.");
+        var candidates = new List<(string Url, int Score)>();
+        foreach (var item in entries.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object) continue;
+            var title = MovieJson(item, "title");
+            var channel = MovieJson(item, "channel");
+            var url = MovieJson(item, "webpage_url");
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                var id = MovieJson(item, "id");
+                if (id.Length == 11) url = "https://www.youtube.com/watch?v=" + id;
+            }
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+                !new[] { "youtube.com", "www.youtube.com", "youtu.be" }.Contains(uri.Host, StringComparer.OrdinalIgnoreCase))
+                continue;
+            var duration = item.TryGetProperty("duration", out var durationNode) &&
+                durationNode.ValueKind == JsonValueKind.Number ? durationNode.GetDouble() : 0;
+            if (duration is < 30 or > 360) continue;
+            var lower = title.ToLowerInvariant();
+            if (!lower.Contains("trailer", StringComparison.OrdinalIgnoreCase) ||
+                lower.Contains("reaction") || lower.Contains("fan made") ||
+                lower.Contains("fanmade") || lower.Contains("breakdown") ||
+                lower.Contains("review") || lower.Contains("concept trailer"))
+                continue;
+            var expected = MovieClean(movie.Title);
+            if (!MovieClean(title).Contains(expected, StringComparison.Ordinal)) continue;
+            var score = 0;
+            if (lower.Contains("official trailer")) score += 15;
+            if (lower.Contains(movie.Year)) score += 2;
+            var source = channel.ToLowerInvariant();
+            if (new[] { "warner bros", "universal pictures", "paramount pictures",
+                "sony pictures", "a24", "lionsgate", "20th century studios",
+                "netflix", "disney", "focus features", "neon", "searchlight pictures",
+                "movieclips trailers", "filmselect trailer" }.Any(source.Contains))
+                score += 10;
+            if (duration >= 55 && duration <= 190) score += 3;
+            candidates.Add((url, score));
+        }
+        if (candidates.Count == 0)
+            throw new InvalidDataException("No matching official movie trailer found on YouTube.");
+        var chosen = candidates.OrderByDescending(x => x.Score).First().Url;
+        var target = Path.Combine(MovieSourceFolder, movie.TmdbId + ".mp4");
+        var pattern = Path.Combine(MovieSourceFolder, movie.TmdbId + ".%(ext)s");
+        var download = await MovieRunProcessAsync(downloader,
+            ["--no-playlist", "--no-warnings", "--no-progress",
+             "--retries", "3", "--fragment-retries", "3",
+             "-f", "bv*+ba/b", "-S", "res:1080,ext:mp4",
+             "--merge-output-format", "mp4", "--recode-video", "mp4",
+             "-o", pattern, chosen], _cts.Token);
+        if (download.Code != 0)
+            throw new InvalidOperationException("YouTube trailer download failed: " +
+                download.Error[^Math.Min(450, download.Error.Length)..]);
+        if (!File.Exists(target) || new FileInfo(target).Length < 10_000)
+            throw new IOException("YouTube download did not create a usable MP4.");
+        return target;
     }
 
     private async Task MovieStartAsync()
@@ -229,12 +338,17 @@ public sealed partial class MainViewModel
             foreach (var movie in selected)
             {
                 _cts.Token.ThrowIfCancellationRequested();
-                var trailer = MovieFindFile(MovieSourceFolder, movie);
-                if (trailer is null) { movie.Status = "Source needed: authorized trailer file not found"; continue; }
                 if (string.IsNullOrWhiteSpace(movie.PosterPath)) { movie.Status = "No TMDB poster"; continue; }
-                movie.Status = "Rendering";
                 try
                 {
+                    var trailer = MovieFindFile(MovieSourceFolder, movie);
+                    if (trailer is null && MovieAutoDownload)
+                    {
+                        movie.Status = "Searching and downloading YouTube official trailer";
+                        trailer = await MovieDownloadTrailerAsync(movie);
+                    }
+                    if (trailer is null) { movie.Status = "Trailer not available"; continue; }
+                    movie.Status = "Rendering";
                     var output = await MovieRenderAsync(movie, trailer);
                     if (PublishingQueue.Any(x => x.VideoPath.Equals(output.VideoPath, StringComparison.OrdinalIgnoreCase)))
                         continue;
