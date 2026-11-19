@@ -226,13 +226,14 @@ public sealed partial class MainViewModel
 
 
     private static async Task<(int Code, string Output, string Error)> MovieRunProcessAsync(
-        string executable, IEnumerable<string> arguments, CancellationToken ct)
+        string executable, IEnumerable<string> arguments, CancellationToken ct, string? workingDirectory = null)
     {
         var start = new ProcessStartInfo(executable)
         {
             UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true
         };
+        if (!string.IsNullOrWhiteSpace(workingDirectory)) start.WorkingDirectory = workingDirectory;
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         using var proc = Process.Start(start) ??
             throw new InvalidOperationException("Unable to launch " + Path.GetFileName(executable));
@@ -698,7 +699,7 @@ public sealed partial class MainViewModel
             "-crf", "21", "-c:a", "aac", "-b:a", "160k", "-pix_fmt", "yuv420p",
             "-movflags", "+faststart", output]);
         movie.Status = "Beat-sync editing " + count + " distinct shots";
-        var result = await MovieRunProcessAsync(ffmpeg, args, _cts.Token);
+        var result = await MovieRunProcessAsync(ffmpeg, args, _cts.Token, folder);
         if (result.Code != 0)
             throw new InvalidOperationException("FFmpeg: " +
                 result.Error[^Math.Min(900, result.Error.Length)..]);
