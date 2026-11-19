@@ -1495,6 +1495,18 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
                 if (scheduledAt.HasValue &&
                     !await VerifyTikTokScheduledFieldsAsync(page,scheduledAt.Value,log,ct))
                     return "TikTok: schedule changed after upload metadata update. Final post NOT attempted.";
+                // The upload/editor can take minutes. A slot that was valid
+                // at batch start can become too close before TikTok accepts it.
+                // Do not silently change a user-approved schedule.
+                if (scheduledAt.HasValue &&
+                    scheduledAt.Value <= DateTimeOffset.Now.AddMinutes(20))
+                {
+                    log?.Invoke("TikTok: scheduling slot expired during upload: " +
+                        scheduledAt.Value.ToString("yyyy-MM-dd HH:mm zzz") +
+                        ". Move it 30+ minutes later and resume.");
+                    return "TikTok: submission NOT attempted; schedule is now less than " +
+                        "20 minutes away. Choose a later slot.";
+                }
                 return await SubmitTikTokOnceAsync(page, scheduledAt.HasValue, log, ct);
             }
             catch (Exception ex) when (ex is PlaywrightException or TimeoutException or InvalidOperationException)
