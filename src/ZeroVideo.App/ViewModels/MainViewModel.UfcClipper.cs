@@ -355,9 +355,10 @@ public sealed partial class MainViewModel
             if(videoId.Length!=11||
                 !videoId.All(c=>char.IsAsciiLetterOrDigit(c)||c=='-'||c=='_')||
                 !names.All(n=>title.Contains(n,StringComparison.OrdinalIgnoreCase))||
-                !(lower.Contains("highlight")||lower.Contains("best plays")||lower.Contains("mix"))||
-                new[]{"interview","reaction","podcast","breakdown","2k","gameplay",
-                    "simulation","fan made","fanmade"}.Any(lower.Contains))continue;
+                !new[]{"highlight","knockout","submission","best fights","fight moments"}
+                    .Any(lower.Contains)||
+                new[]{"interview","reaction","podcast","breakdown","2k","gameplay","simulation","fan made","fanmade"}
+                    .Any(lower.Contains))continue;
             sources.Add(("https://www.youtube.com/watch?v="+videoId,
                 (lower.Contains("nba")?10:0)+(lower.Contains("official")?5:0)));
         }
