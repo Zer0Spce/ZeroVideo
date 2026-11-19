@@ -107,17 +107,15 @@ public partial class MainWindow : Window
     {
         if (_allTabs is null) return;
         foreach (var tab in _allTabs)
-            if (MainTabs.Items.Contains(tab))
-                MainTabs.Items.Remove(tab);
-        foreach (var tab in _allTabs)
         {
             var name = tab.Header?.ToString() ?? "";
-            if (name == "Settings" || !_tabVisibilityChecks.TryGetValue(name, out var check) || check.IsChecked == true)
-                MainTabs.Items.Add(tab);
+            var isVisible = name == "Settings" ||
+                !_tabVisibilityChecks.TryGetValue(name, out var check) || check.IsChecked == true;
+            tab.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
         }
-        // Keep an accessible, visible tab selected after hiding the current one.
-        if (MainTabs.SelectedItem is null && MainTabs.Items.Count > 0)
-            MainTabs.SelectedIndex = 0;
+        // If the current tab was hidden, select Settings so the controls remain accessible.
+        if (MainTabs.SelectedItem is TabItem selected && selected.Visibility != Visibility.Visible)
+            MainTabs.SelectedItem = _allTabs.First(x => (x.Header?.ToString() ?? "") == "Settings");
     }
 
     private async void TabVisibilityChanged(object sender, RoutedEventArgs e)
