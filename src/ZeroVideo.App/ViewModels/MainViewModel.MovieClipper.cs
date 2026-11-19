@@ -84,7 +84,8 @@ public sealed partial class MainViewModel
     {
         MovieOpenOutputCommand = new RelayCommand(() => { Directory.CreateDirectory(MovieExportFolder); Process.Start(new ProcessStartInfo("explorer.exe", "\"" + MovieExportFolder + "\"") { UseShellExecute = true }); });
         MovieGenerateCommand = new AsyncCommand(() => RunManagedJobAsync("MovieClipper: ChatGPT ideas", MovieGenerateAsync));
-        MovieStartCommand = new AsyncCommand(() => RunManagedJobAsync("MovieClipper: music-length batch", MovieStartAsync));
+        MovieStartCommand = new AsyncCommand(() => RunManagedJobAsync(
+            "MovieClipper: music-length batch", MovieStartAsync, publishing: MoviePublish));
         MovieResumeCommand = new AsyncCommand(() => RunManagedJobAsync("MovieClipper: resume checkpoint", async () =>
         {
             MovieLoadHistory();
