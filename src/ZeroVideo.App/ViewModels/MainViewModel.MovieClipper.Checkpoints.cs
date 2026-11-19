@@ -256,7 +256,8 @@ public sealed partial class MainViewModel
     private static string MovieAssembleCaption(MovieCheckpointItem cp, MovieClipperEntry movie)
     {
         if (!string.IsNullOrWhiteSpace(cp.SeoCaption))
-            return (cp.SeoCaption.Trim() + " " + cp.SeoHashtags.Trim()).Trim();
+            return (cp.SeoTitle.Trim() + "\n" + cp.SeoCaption.Trim() + "\n" +
+                cp.SeoHashtags.Trim()).Trim();
         return movie.Label + " | Plot, acting, pacing, cinematography, writing and ending rated out of 10. " +
             "Which score would you change? #MovieReview #FilmTok #MovieTok";
     }
