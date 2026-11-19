@@ -622,10 +622,13 @@ public sealed class OfficialGamingMediaService
         // compilation or an unrelated listicle just because it mentions PS5.
         var normalizedTitle = Normalize(title);
         var normalizedSubject = Normalize(mainSubject);
-        if (normalizedSubject.Length < 3 ||
-            !normalizedTitle.Contains(normalizedSubject, StringComparison.Ordinal))
-            return false;
-        if (IsGtaSix(mainSubject) && IsGtaFive(title)) return false;
+        if (normalizedSubject.Length < 3) return false;
+        var isGtaVi = IsGtaSix(mainSubject);
+        var isGtaV = IsGtaFive(mainSubject) && !isGtaVi;
+        var matchesGame = isGtaVi ? IsGtaSix(title) && !IsGtaFive(title) :
+            isGtaV ? IsGtaFive(title) && !IsGtaSix(title) :
+            normalizedTitle.Contains(normalizedSubject, StringComparison.Ordinal);
+        if (!matchesGame) return false;
         if (Regex.IsMatch(title,
             @"(?i)\b(?:reaction|reacts|top\s+\d+|all\s+games|best\s+games|fake\s+trailer|fan\s+made|concept\s+trailer|rumor\s+compilation)\b"))
             return false;
