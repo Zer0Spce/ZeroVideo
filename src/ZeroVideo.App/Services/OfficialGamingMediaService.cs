@@ -569,6 +569,194 @@ public sealed class OfficialGamingMediaService
         return pages;
     }
 
+    private sealed record YouTubeClipLead(string Url, string Title, string Channel);
+
+    private static string QuoteProcessArgument(string value) =>
+        "\"" + value.Replace("\"", "\\\"") + "\"";
+
+    private static string? FindYouTubeDownloader()
+    {
+        var local = Path.Combine(AppContext.BaseDirectory, "yt-dlp.exe");
+        if (File.Exists(local)) return local;
+        // Other installs may provide their own, but bundled exe is preferred.
+        var appData = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ZeroVideo", "bin", "yt-dlp.exe");
+        return File.Exists(appData) ? appData : null;
+    }
+
+    private static bool MatchingGameplayTitle(string title, string mainSubject)
+    {
+        // Never take a different game, a reaction thumbnail, a random
+        // compilation or an unrelated listicle just because it mentions PS5.
+        var normalizedTitle = Normalize(title);
+        var normalizedSubject = Normalize(mainSubject);
+        if (normalizedSubject.Length < 3 ||
+            !normalizedTitle.Contains(normalizedSubject, StringComparison.Ordinal))
+            return false;
+        if (IsGtaSix(mainSubject) && IsGtaFive(title)) return false;
+        if (Regex.IsMatch(title,
+            @"(?i)\b(?:reaction|reacts|top\s+\d+|all\s+games|best\s+games|fake\s+trailer|fan\s+made|concept\s+trailer|rumor\s+compilation)\b"))
+            return false;
+        return true;
+    }
+
+    private static async Task<List<OfficialAsset>> AcquireYouTubeGameplayAsync(
+        VideoProject project, string focus, ZeroVideoSettings settings,
+        string mediaDir, Action<string>? log, CancellationToken ct)
+    {
+        var found = new List<OfficialAsset>();
+        var downloader = FindYouTubeDownloader();
+        if (downloader is null)
+        {
+            log?.Invoke("YouTube clips: yt-dlp executable unavailable; using direct MP4 / Commons video sources.");
+            return found;
+        }
+        var subject = CoreGameSubject(project, focus);
+        if (subject.Length < 3) return found;
+        var queries = new[]
+        {
+            subject + " official gameplay trailer",
+            subject + " gameplay IGN GameSpot",
+            subject + " official announcement trailer"
+        };
+        var runner = new ProcessRunner();
+        var leads = new List<YouTubeClipLead>();
+        foreach (var query in queries)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(35));
+                var args = "--ignore-config --flat-playlist --dump-single-json " +
+                    "--no-warnings --playlist-end 12 " +
+                    QuoteProcessArgument("ytsearch12:" + query);
+                var response = await runner.RunAsync(downloader, args, ct: timeout.Token);
+                if (response.ExitCode != 0) continue;
+                using var json = JsonDocument.Parse(response.StdOut);
+                if (!json.RootElement.TryGetProperty("entries", out var entries) ||
+                    entries.ValueKind != JsonValueKind.Array) continue;
+                foreach (var entry in entries.EnumerateArray())
+                {
+                    var title = entry.TryGetProperty("title", out var ti)
+                        ? ti.GetString() ?? "" : "";
+                    if (!MatchingGameplayTitle(title, subject)) continue;
+                    var id = entry.TryGetProperty("id", out var vi)
+                        ? vi.GetString() ?? "" : "";
+                    if (!Regex.IsMatch(id, @"^[A-Za-z0-9_-]{11}$")) continue;
+                    var channel = entry.TryGetProperty("channel", out var ch)
+                        ? ch.GetString() ?? "" : "";
+                    if (channel.Length == 0 && entry.TryGetProperty("uploader", out var up))
+                        channel = up.GetString() ?? "";
+                    var url = "https://www.youtube.com/watch?v=" + id;
+                    if (!leads.Any(x => x.Url == url))
+                        leads.Add(new YouTubeClipLead(url, title, channel));
+                }
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                log?.Invoke("YouTube search timed out for '" + query + "'.");
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("YouTube search unavailable: " + ex.Message); }
+        }
+        // Rotate between matches so consecutive news videos for the same
+        // game don't repeat the same trailer opening every time.
+        var seed = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            project.Id + "|" + project.Title));
+        var rng = new Random(BitConverter.ToInt32(seed, 0));
+        leads = leads.OrderBy(_ => rng.Next()).ToList();
+        log?.Invoke("YouTube video search: " + leads.Count +
+            " matching gameplay/trailer candidates for '" + subject + "'.");
+
+        // Only ordinary publicly accessible streams; no cookies, authentication,
+        // geo-bypass, age-gate bypass or DRM circumvention.
+        foreach (var lead in leads.Take(7))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (found.Count >= 3) break;
+            var index = found.Count + 1;
+            var prefix = Path.Combine(mediaDir, "youtube-gameplay-" + index.ToString("00"));
+            var outputTemplate = prefix + ".%(ext)s";
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(90));
+                var ffmpegDir = !string.IsNullOrWhiteSpace(settings.FfmpegPath)
+                    ? Path.GetDirectoryName(settings.FfmpegPath) : null;
+                var ffmpegArgument = !string.IsNullOrWhiteSpace(ffmpegDir)
+                    ? " --ffmpeg-location " + QuoteProcessArgument(ffmpegDir)
+                    : "";
+                // Download only an eight-second excerpt, no original sound.
+                // The user's offline narration and music stay unchanged.
+                var start = 8 + rng.Next(0, 30);
+                var end = start + 9;
+                var args = "--ignore-config --no-playlist --no-warnings " +
+                    "--no-progress --no-part --no-overwrites --max-filesize 100M " +
+                    "--download-sections " + QuoteProcessArgument(
+                        "*00:00:" + start.ToString("00") + "-00:00:" +
+                        end.ToString("00")) +
+                    " --force-keyframes-at-cuts -f " +
+                    QuoteProcessArgument("bv*[height<=720]+ba/b[height<=720]") +
+                    " --merge-output-format mp4" + ffmpegArgument +
+                    " -o " + QuoteProcessArgument(outputTemplate) + " " +
+                    QuoteProcessArgument(lead.Url);
+                var result = await runner.RunAsync(downloader, args, ct: timeout.Token);
+                if (result.ExitCode != 0)
+                {
+                    log?.Invoke("YouTube gameplay clip unavailable (" +
+                        lead.Title + "); trying next result.");
+                    continue;
+                }
+                var candidate = Directory.GetFiles(mediaDir, 
+                    "youtube-gameplay-" + index.ToString("00") + ".*")
+                    .FirstOrDefault(x => new[] { ".mp4", ".webm", ".mkv" }
+                        .Contains(Path.GetExtension(x), StringComparer.OrdinalIgnoreCase));
+                if (candidate is null || new FileInfo(candidate).Length < 32_000)
+                    continue;
+                var destination = prefix + ".mp4";
+                // Normalize to an H.264 MP4 for the proven Shorts renderer.
+                var ffmpeg = string.IsNullOrWhiteSpace(settings.FfmpegPath)
+                    ? "ffmpeg" : settings.FfmpegPath;
+                var converted = prefix + "-normalized.mp4";
+                var transcode = await runner.RunAsync(ffmpeg,
+                    "-hide_banner -loglevel error -y -i " +
+                    QuoteProcessArgument(candidate) +
+                    " -t 9 -an -vf " + QuoteProcessArgument(
+                        "fps=30,scale=1280:720:force_original_aspect_ratio=decrease:flags=lanczos," +
+                        "pad=1280:720:(ow-iw)/2:(oh-ih)/2") +
+                    " -c:v libx264 -preset veryfast -crf 22 -pix_fmt yuv420p " +
+                    QuoteProcessArgument(converted), ct: ct);
+                if (transcode.ExitCode != 0 ||
+                    !File.Exists(converted) || new FileInfo(converted).Length < 32_000)
+                    continue;
+                if (File.Exists(candidate)) File.Delete(candidate);
+                if (File.Exists(destination)) File.Delete(destination);
+                File.Move(converted, destination);
+                found.Add(new OfficialAsset(destination, lead.Url,
+                    subject, lead.Url,
+                    (lead.Channel.Length > 0 ? lead.Channel : "YouTube") +
+                    " gameplay/trailer video",
+                    "Public YouTube video excerpt; source credited. Confirm rights to reuse."));
+                log?.Invoke("Gaming News: acquired 9-second YouTube footage: " +
+                    lead.Title + " / " + lead.Channel);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                log?.Invoke("YouTube clip timed out: " + lead.Title);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                log?.Invoke("YouTube clip skipped: " + ex.Message);
+            }
+        }
+        log?.Invoke("Gaming News YouTube: " + found.Count +
+            " real video clip(s) ready for screenshot/video mixing.");
+        return found;
+    }
+
     private sealed record VideoLead(string SourceName, string Channel, string Url,
         string Title, bool VerifiedGameMatch);
 
@@ -1280,6 +1468,12 @@ public sealed class OfficialGamingMediaService
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { log?.Invoke("Official gameplay video skipped: " + ex.Message); }
         }
+        // Collect short public YouTube gameplay/trailer clips as actual
+        // files, rather than counting YouTube search results as media.
+        // These are mixed with photos in the existing 24-shot sequence.
+        var youtubeClips = await AcquireYouTubeGameplayAsync(
+            project, focus, settings, mediaDir, log, ct);
+        videos.AddRange(youtubeClips);
         // If the official gallery relies on client-side rendering, do not
         // fall back to a single PC Gamer photo. Read genuine GTA VI gallery
         // images through ZeroVideo's existing Edge browser instead.
