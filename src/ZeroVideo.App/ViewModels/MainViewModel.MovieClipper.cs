@@ -267,7 +267,8 @@ public sealed partial class MainViewModel
             MovieCheckpointIdeas();
             MovieStatus = MovieClipperIdeas.Count + " movies verified in TMDB and ready for soundtrack-length rendering.";
         }
-        catch (Exception ex) { MovieStatus = "Movie ideas failed: " + ex.Message; Log(MovieStatus); }
+        catch (OperationCanceledException) { MovieSaveCheckpoint(); throw; }
+        catch (Exception ex) { MovieSaveCheckpoint(); MovieStatus = "Movie ideas failed: " + ex.Message; Log(MovieStatus); }
     }
 
     private static string? MovieFindFile(string folder, MovieClipperEntry movie)
@@ -300,6 +301,11 @@ public sealed partial class MainViewModel
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         using var proc = Process.Start(start) ??
             throw new InvalidOperationException("Unable to launch " + Path.GetFileName(executable));
+        using var stop = ct.Register(() =>
+        {
+            try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); }
+            catch (Exception) { }
+        });
         var stdout = proc.StandardOutput.ReadToEndAsync(ct);
         var stderr = proc.StandardError.ReadToEndAsync(ct);
         await proc.WaitForExitAsync(ct);
@@ -401,7 +407,7 @@ public sealed partial class MainViewModel
             if (MovieClipperIdeas.Count == 0) await MovieGenerateAsync(); // One click from niche to queue.
             var selected = MovieClipperIdeas.Where(x => x.IsChecked &&
                 (!_movieRetryFailedOnly || MovieCheckpointItem(x).Stage == "Failed")).ToList();
-            if (selected.Count == 0) { MovieStatus = "No verified movies selected."; return; }
+            if (selected.Count == 0) { MovieStatus = "No pending movies selected. Generate ideas for a new batch."; return; }
             if (!DateTime.TryParseExact(MovieFirstSlot, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture,
                     DateTimeStyles.AssumeLocal, out var first) ||
                 first <= DateTime.Now.AddMinutes(25) || first.Minute % 5 != 0)
@@ -423,6 +429,7 @@ public sealed partial class MainViewModel
                     if (!string.IsNullOrWhiteSpace(saved.OutputPath) && File.Exists(saved.OutputPath) &&
                         PublishingQueue.Any(x => x.VideoPath.Equals(saved.OutputPath, StringComparison.OrdinalIgnoreCase)))
                     {
+                        MovieRecordHistory(movie, saved.OutputPath);
                         movie.Status = "Already queued (resumed safely)";
                         continue;
                     }
@@ -439,7 +446,15 @@ public sealed partial class MainViewModel
                     var output = !string.IsNullOrWhiteSpace(saved.OutputPath) && File.Exists(saved.OutputPath)
                         ? MovieQueuedItemFromCheckpoint(movie, saved) : await MovieRenderAsync(movie, trailer);
                     saved.OutputPath = output.VideoPath;
+                    saved.ThumbnailPath = output.ThumbnailPath;
                     MovieCheckpointStage(movie, "Rendered");
+                    // The one idea-generation request already includes scores and SEO.
+                    MovieEnsureSeoFallback(movie, saved);
+                    output.Title = saved.SeoTitle;
+                    output.TikTokCaption = MovieAssembleCaption(saved, movie);
+                    output.YouTubeTitle = saved.SeoTitle;
+                    output.YouTubeDescription = saved.SeoCaption;
+                    MovieCheckpointStage(movie, "MetadataReady");
                     if (PublishingQueue.Any(x => x.VideoPath.Equals(output.VideoPath, StringComparison.OrdinalIgnoreCase)))
                         continue;
                     var next = first.AddMinutes(SelectedPublishIntervalMinutes * finished.Count);
@@ -454,6 +469,7 @@ public sealed partial class MainViewModel
                     MovieCheckpointStage(movie, "Queued");
                     movie.Status = "Queued " + output.ScheduleDateText;
                     SavePublishingQueue();
+                    MovieRecordHistory(movie, output.VideoPath);
                 }
                 catch (OperationCanceledException) { MovieCheckpointStage(movie, "Stopped"); throw; }
                 catch (Exception ex) { MovieCheckpointStage(movie, "Failed", ex.Message); Log("MovieClipper: " + movie.Label + ": " + ex.Message); }
@@ -500,61 +516,19 @@ public sealed partial class MainViewModel
         return new MovieReviewScores(S(0), S(1), S(2), S(3), S(4), S(5));
     }
 
-    private async Task<MovieReviewScores> MovieGenerateScoresAsync(MovieClipperEntry movie)
+    private Task<MovieReviewScores> MovieGenerateScoresAsync(MovieClipperEntry movie)
     {
+        var checkpoint = MovieCheckpointItem(movie);
+        if (checkpoint.Scores is { Length: 6 } values &&
+            values.All(v => double.IsFinite(v) && v >= 0 && v <= 10))
+            return Task.FromResult(new MovieReviewScores(values[0], values[1], values[2],
+                values[3], values[4], values[5]));
+        // Legacy checkpoints: no second ChatGPT generation.
         var fallback = MovieFallbackScores(movie);
-        var cached = MovieCheckpointItem(movie);
-        if (cached.Scores is { Length: 6 } scores &&
-            scores.All(v => double.IsFinite(v) && v >= 0 && v <= 10))
-            return new MovieReviewScores(scores[0], scores[1], scores[2],
-                scores[3], scores[4], scores[5]);
-        // Legacy checkpoint fallback; no further ChatGPT calls needed when ideas already include scores.
-        try
-        {
-            movie.Status = "ChatGPT is generating six review scores";
-            var prompt = "Generate film-review style numeric ratings for this movie. " +
-                "These are YOUR subjective AI review scores, NOT TMDB category scores or quotations from critics. " +
-                "Use public knowledge of the actual film when available, and this synopsis. " +
-                "If you are uncertain about a story detail, do not invent it. " +
-                "Rate each dimension 0.0 to 10.0 using exactly one decimal: " +
-                "PLOT, ACTING, PACING, CINEMATOGRAPHY, WRITING, ENDING. " +
-                "MOVIE: " + movie.Label + "\nSYNOPSIS: " + movie.Overview + "\n" +
-                "TMDB audience vote average (calibration only): " + MovieNumber(movie.VoteAverage) + "/10. " +
-                "Return ONLY a JSON object inside a fenced json code block. " +
-                "Schema: {\"plot\":8.0,\"acting\":8.0,\"pacing\":8.0," +
-                "\"cinematography\":8.0,\"writing\":8.0,\"ending\":8.0}.";
-            var raw = await _chat.GenerateTextAsync(
-                _movieChatProject, Settings, prompt, Log, _cts.Token);
-            MovieSaveCheckpoint();
-            var open = raw.IndexOf('{');
-            var close = raw.LastIndexOf('}');
-            if (open < 0 || close <= open) throw new InvalidDataException("No scoring JSON.");
-            using var doc = JsonDocument.Parse(raw.Substring(open, close - open + 1));
-            double N(string name)
-            {
-                if (!doc.RootElement.TryGetProperty(name, out var n) ||
-                    n.ValueKind != JsonValueKind.Number) throw new InvalidDataException("Missing " + name);
-                var v = n.GetDouble();
-                if (!double.IsFinite(v) || v < 0 || v > 10)
-                    throw new InvalidDataException("Score out of range: " + name);
-                return Math.Round(v, 1);
-            }
-            var made = new MovieReviewScores(N("plot"), N("acting"), N("pacing"),
-                N("cinematography"), N("writing"), N("ending"));
-            cached.Scores = made.Parts;
-            cached.ScoringMethod = "ChatGPT subjective review score";
-            MovieSaveCheckpoint();
-            return made;
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
-        {
-            Log("MovieClipper scoring fallback for " + movie.Label + ": " + ex.Message);
-            cached.Scores = fallback.Parts;
-            cached.ScoringMethod = "Deterministic fallback estimate";
-            MovieSaveCheckpoint();
-            return fallback;
-        }
+        checkpoint.Scores = fallback.Parts;
+        checkpoint.ScoringMethod = "Deterministic fallback for legacy idea";
+        MovieSaveCheckpoint();
+        return Task.FromResult(fallback);
     }
 
     private async Task<(double Seconds, bool HasAudio)> MovieProbeAsync(string path)
@@ -608,6 +582,11 @@ public sealed partial class MainViewModel
             "-i", sound, "-t", MovieNumber(totalSeconds), "-vn", "-ac", "1", "-ar", "8000",
             "-f", "s16le", "pipe:1" }) start.ArgumentList.Add(a);
         using var proc = Process.Start(start) ?? throw new InvalidOperationException("Cannot decode soundtrack.");
+        using var stop = _cts.Token.Register(() =>
+        {
+            try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); }
+            catch (Exception) { }
+        });
         using var stream = new MemoryStream();
         var errors = proc.StandardError.ReadToEndAsync(_cts.Token);
         await proc.StandardOutput.BaseStream.CopyToAsync(stream, _cts.Token);
