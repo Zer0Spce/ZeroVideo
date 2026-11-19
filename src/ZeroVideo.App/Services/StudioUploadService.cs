@@ -1224,6 +1224,63 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         return "TikTok: SUBMISSION_ATTEMPTED; confirmation unavailable. Check TikTok Studio Posts before retrying.";
     }
 
+
+    // TikTok may asynchronously prefill the contenteditable caption with the
+    // uploaded file name (e.g. 1226578_20261119_142908085...). Always verify
+    // the editor AFTER upload processing, not merely after FillAsync returns.
+    private static string TikTokCaptionComparison(string text)
+        => System.Text.RegularExpressions.Regex.Replace(
+            (text ?? "").Replace("\u200B", "").Replace("\uFEFF", ""),
+            @"\s+", " ").Trim();
+
+    private static string TikTokCleanCaption(string caption)
+    {
+        var value = (caption ?? "").Trim();
+        // Strip a leftover file-name prefix only when it is clearly a generated
+        // MovieClipper export identifier followed by a long timestamp.
+        value = System.Text.RegularExpressions.Regex.Replace(value,
+            @"^\s*\d{5,12}_\d{14,19}\s*",
+            "", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        return value;
+    }
+
+    private static async Task<bool> TikTokFillVerifiedCaptionAsync(
+        IPage page, string wanted, Action<string>? log, CancellationToken ct)
+    {
+        for (var attempt=1;attempt<=3;attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            foreach (var frame in page.Frames)
+            {
+                try
+                {
+                    var editor = frame.Locator("[contenteditable='true']:visible").First;
+                    if (await editor.CountAsync()!=1 || !await editor.IsVisibleAsync()) continue;
+                    await editor.FillAsync(wanted);
+                    await Task.Delay(900,ct); // TikTok's filename autofill may arrive later.
+                    var found = await editor.EvaluateAsync<string>(
+                        "el => (el.innerText||el.textContent||'').replace(/\\u200b/g,'').trim()");
+                    if (TikTokCaptionComparison(found) == TikTokCaptionComparison(wanted))
+                    {
+                        log?.Invoke("TikTok: SEO caption verified after fill; no filename prefix or altered hashtags.");
+                        return true;
+                    }
+                    log?.Invoke("TikTok: caption changed after fill (attempt " + attempt +
+                        "/3); rewriting before scheduling. Expected " + wanted.Length +
+                        " characters; actual " + found.Length + ".");
+                }
+                catch (PlaywrightException ex)
+                {
+                    log?.Invoke("TikTok: caption editor unavailable: " + ex.Message.Split('\n')[0]);
+                }
+            }
+            await Task.Delay(400,ct);
+        }
+        await SaveDiagnosticAsync(page,"TikTok-Caption-Mismatch",log);
+        log?.Invoke("TikTok: caption verification failed; final submit blocked to prevent filename/hashtag corruption.");
+        return false;
+    }
+
     public async Task<string> PrepareAsync(ZeroVideoSettings settings, string destination,
         string videoPath, string title, string description, string caption, string thumbnailPath,
         DateTimeOffset? scheduledAt, Action<string>? log = null, CancellationToken ct = default,
@@ -1349,40 +1406,27 @@ return sel+'\n'+(e?e.outerHTML.slice(0,45000):'not visible')})
         }
         else
         {
-            // TikTok Studio is frequently updated; use semantic text inputs and fail visibly
-            // rather than silently filling an unrelated control.
-            var filled = false;
-            for (var attempt = 0; attempt < 30 && !filled; attempt++)
-            {
-                ct.ThrowIfCancellationRequested();
-                foreach (var frame in page.Frames)
-                {
-                    try
-                    {
-                        var editor = frame.Locator("[contenteditable=true]").First;
-                        if (await editor.CountAsync() > 0 && await editor.IsVisibleAsync())
-                        {
-                            await editor.FillAsync(caption);
-                            filled = true;
-                            break;
-                        }
-                    }
-                    catch (PlaywrightException) { }
-                }
-                if (!filled) await Task.Delay(1000, ct);
-            }
-            if (!filled)
-                return "TikTok: caption entry FAILED. No post was submitted; review in TikTok Studio.";
-            log?.Invoke("TikTok: caption entered; automatic final submission authorized in ZeroVideo.");
+            // TikTok asynchronously inserts the video filename as a default
+            // caption. Wait for upload completion BEFORE overwriting it.
+            if (!await WaitForTikTokUploadReadyAsync(page, log, ct))
+                return "TikTok: upload still processing; final submission NOT attempted.";
+            var finalCaption = TikTokCleanCaption(caption);
+            if (string.IsNullOrWhiteSpace(finalCaption) ||
+                finalCaption.Length > 3500)
+                return "TikTok: invalid SEO caption. No post submitted.";
+            if (!await TikTokFillVerifiedCaptionAsync(page,finalCaption,log,ct))
+                return "TikTok: caption mismatch after upload; final submission NOT attempted.";
             try
             {
-                if (!await WaitForTikTokUploadReadyAsync(page, log, ct))
-                    return "TikTok: upload still processing; final submission NOT attempted.";
                 if (scheduledAt.HasValue &&
                     !await SetTikTokScheduleAsync(page, scheduledAt.Value, log, ct,
                         subsequent: freshTikTokUploadPage))
                     return "TikTok: requested date/time NOT verified. Final submission NOT attempted.";
-                // Only reach the final button after all required checks passed.
+
+                // Date picker interactions can trigger a React rerender and
+                // restore the uploaded filename. Recheck before final click.
+                if (!await TikTokFillVerifiedCaptionAsync(page,finalCaption,log,ct))
+                    return "TikTok: caption changed before submission. Final post NOT attempted.";
                 return await SubmitTikTokOnceAsync(page, scheduledAt.HasValue, log, ct);
             }
             catch (Exception ex) when (ex is PlaywrightException or TimeoutException or InvalidOperationException)
