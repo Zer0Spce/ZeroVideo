@@ -796,8 +796,8 @@ public sealed partial class MainViewModel
             filters.Add("[bgraw" + i + "]scale=540:960:force_original_aspect_ratio=increase," +
                 "crop=540:960,boxblur=18:2,scale=1080:1920,setsar=1[bg" + i + "]");
             filters.Add("[fgraw" + i + "]scale=1080:608:force_original_aspect_ratio=decrease," +
-                "pad=1080:608:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[fg" + i + "]");
-            filters.Add("[bg" + i + "][fg" + i + "]overlay=x=0:y=(H-h)/2," +
+                "format=rgba,setsar=1[fg" + i + "]");
+            filters.Add("[bg" + i + "][fg" + i + "]overlay=x=(W-w)/2:y=(H-h)/2," +
                 "trim=duration=" + duration + ",setpts=PTS-STARTPTS[v" + i + "]");
         }
         filters.Add(string.Concat(Enumerable.Range(0, count).Select(i => "[v" + i + "]")) +
@@ -861,7 +861,7 @@ public sealed partial class MainViewModel
                     "':fontsize=100:fontcolor=white:" +
                     "shadowcolor=black@0.95:shadowx=3:shadowy=4:" +
                     "x=(w-text_w)/2:y=1425:" + delayed);
-                captions.Add("drawtext=text='" + stars +
+                captions.Add("drawtext=font='Segoe UI Symbol':text='" + stars +
                     "':fontsize=65:fontcolor=0xE5C16E:" +
                     "shadowcolor=black@0.8:shadowx=2:shadowy=3:" +
                     "x=(w-text_w)/2:y=1560:" + delayed);
