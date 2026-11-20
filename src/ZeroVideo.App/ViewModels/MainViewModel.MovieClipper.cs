@@ -827,16 +827,14 @@ public sealed partial class MainViewModel
             captions.Add("drawtext=textfile=movie-title.txt:fontsize=75:fontcolor=white:" +
                 "borderw=5:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2:" +
                 "enable='between(t,0.3,2.6)'");
-        // A restrained editorial eyebrow appears only after the title-art opening.
-        captions.Add("drawtext=text='FILMSIGNAL  /  FILM ANALYSIS':fontsize=31:" +
-            "fontcolor=white@0.88:borderw=2:bordercolor=black@0.65:" +
-            "x=65:y=140:enable='between(t," + MovieNumber(titleEnd) +
-            "," + MovieNumber(Math.Max(titleEnd, videoSeconds - 1)) + ")'");
+        // Brand only on the opening artwork; keeping it off the trailer avoids
+        // a tiny permanent watermark competing with the score overlays.
+        captions.Add("drawtext=text='FILMSIGNAL':fontsize=36:fontcolor=white:" +
+            "borderw=2:bordercolor=black@0.65:x=70:y=125:" +
+            "enable='between(t,0.25," + MovieNumber(titleEnd - 0.1) + ")'");
         var labels = new[] { "PLOT", "ACTING", "PACING", "CINEMATOGRAPHY",
             "WRITING", "ENDING", "OVERALL" };
         var values = score.Parts.Concat([score.Overall]).ToArray();
-        // Allocate review beats proportionally, reserving the opening for movie
-        // artwork and the final section for a distinct overall rating reveal.
         var available = Math.Max(0.5, videoSeconds - titleEnd);
         for (var i = 0; i < labels.Length; i++)
         {
@@ -845,27 +843,48 @@ public sealed partial class MainViewModel
                 ? titleEnd + available * (i + 1) / labels.Length - 0.05
                 : videoSeconds - 0.05;
             var isFinal = i == labels.Length - 1;
-            var labelSize = isFinal ? 72 : 49;
-            var ratingSize = isFinal ? 148 : 92;
-            // Consistent lower-third editorial card instead of fullscreen,
-            // repeated "MOVIE REVIEW" typography.
-            captions.Add("drawbox=x=35:y=" + (isFinal ? "1190" : "1480") +
-                ":w=1010:h=" + (isFinal ? "400" : "245") +
-                ":color=black@0.65:t=fill:enable='between(t," +
-                MovieNumber(from) + "," + MovieNumber(to) + ")'");
-            captions.Add("drawtext=text='" + labels[i] +
-                "':fontsize=" + labelSize +
-                ":fontcolor=white:borderw=2:bordercolor=black:" +
-                "x=" + (isFinal ? "90" : "88") + ":y=" + (isFinal ? "1250" : "1515") +
-                ":enable='between(t," + MovieNumber(from) + "," + MovieNumber(to) + ")'");
-            captions.Add("drawtext=text='" +
-                values[i].ToString("0.0", CultureInfo.InvariantCulture) +
-                "/10':fontsize=" + ratingSize +
-                ":fontcolor=white:borderw=3:bordercolor=black:" +
-                "x=" + (isFinal ? "90" : "610") + ":y=" + (isFinal ? "1350" : "1550") +
-                ":enable='between(t," +
-                MovieNumber(from + Math.Min(0.35, (to - from) * 0.2)) +
-                "," + MovieNumber(to) + ")'");
+            var fromText = MovieNumber(from);
+            var toText = MovieNumber(to);
+            var show = "enable='between(t," + fromText + "," + toText + ")'";
+            // All ratings stay in a consistent TikTok-safe lower third rather
+            // than filling the screen. Subtle translucent background provides
+            // readability against both bright and dark movie footage.
+            if (!isFinal)
+            {
+                captions.Add("drawbox=x=70:y=1425:w=940:h=170:" +
+                    "color=black@0.52:t=fill:" + show);
+                captions.Add("drawbox=x=70:y=1425:w=7:h=170:" +
+                    "color=0xE5C16E@1:t=fill:" + show);
+                captions.Add("drawtext=text='" + labels[i] +
+                    "':fontsize=43:fontcolor=white:borderw=1:" +
+                    "bordercolor=black@0.7:x=115:y=1483:" + show);
+                captions.Add("drawtext=text='" +
+                    values[i].ToString("0.0", CultureInfo.InvariantCulture) +
+                    "/10':fontsize=77:fontcolor=white:borderw=2:" +
+                    "bordercolor=black@0.7:x=w-text_w-115:y=1467:" +
+                    "enable='between(t," +
+                    MovieNumber(from + Math.Min(0.24, (to - from) * 0.12)) +
+                    "," + toText + ")'");
+            }
+            else
+            {
+                // The final rating gets an intentional, premium verdict reveal,
+                // with distinct typography rather than repeating category cards.
+                captions.Add("drawbox=x=70:y=1180:w=940:h=415:" +
+                    "color=black@0.73:t=fill:" + show);
+                captions.Add("drawbox=x=70:y=1180:w=940:h=8:" +
+                    "color=0xE5C16E@1:t=fill:" + show);
+                captions.Add("drawtext=text='FILMSIGNAL VERDICT':fontsize=41:" +
+                    "fontcolor=0xE5C16E:borderw=1:bordercolor=black:" +
+                    "x=(w-text_w)/2:y=1240:" + show);
+                captions.Add("drawtext=text='" +
+                    values[i].ToString("0.0", CultureInfo.InvariantCulture) +
+                    "/10':fontsize=142:fontcolor=white:borderw=3:" +
+                    "bordercolor=black:x=(w-text_w)/2:y=1355:" +
+                    "enable='between(t," +
+                    MovieNumber(from + Math.Min(0.28, (to - from) * 0.1)) +
+                    "," + toText + ")'");
+            }
         }
         filters.Add(baseInput + string.Join(",", captions) + "[v]");
 
