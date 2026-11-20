@@ -659,6 +659,19 @@ copyrighted photograph.
             var freshJson = ChatGptResponseRecovery.FindJsonInCodeBlock(
                 codeBlock, requestId)
                 ?? ChatGptResponseRecovery.FindJsonForRequest(visibleMain, requestId);
+            // Some code-block UIs omit the optional request markers despite
+            // returning the correct typed response. Accept only a new, complete,
+            // schema-matching code block which is absent from the prompt and
+            // pre-send conversation; never accept an old response or example.
+            if (freshJson is null && !string.IsNullOrWhiteSpace(codeBlock))
+            {
+                var candidate = ChatGptResponseRecovery.ExtractLastValidJsonObject(codeBlock);
+                if (candidate is not null &&
+                    !baselineMainText.Contains(candidate, StringComparison.Ordinal) &&
+                    !sentPrompt.Contains(candidate, StringComparison.Ordinal) &&
+                    ChatGptResponseRecovery.MatchesRequestedSchema(candidate, sentPrompt))
+                    freshJson = candidate;
+            }
             if (freshJson is null)
                 freshJson = ChatGptResponseRecovery.FindFreshJson(
                     candidates, baselineCount, baselineAssistant, baseline);
@@ -806,32 +819,44 @@ copyrighted photograph.
     /// </summary>
     private static async Task<string?> ReadLatestJsonCodeBlockAsync(IPage page, string requestId)
     {
+        // ChatGPT's newer code-block component is not always placed under <main>
+        // or rendered with the old 'pre code' hierarchy. Read visible code
+        // surfaces from the document itself and ignore any code in user turns.
         const string script = """
             (requestId) => {
-              const root=document.querySelector('main') ||
-                document.querySelector('[role="main"]');
-              if(!root)return null;
+              const roots=[document.querySelector('main'),
+                document.querySelector('[role="main"]'),document.body].filter(Boolean);
               const selectors=[
-                'pre code','pre','[data-language="json"] code',
-                '[data-testid*="code-block"] code','[data-testid*="codeblock"] code'
+                'pre code','pre','[data-language="json"]',
+                '[data-testid*="code-block"]','[data-testid*="codeblock"]',
+                '[class*="code-block"] code','[class*="codeblock"] code'
               ];
-              let matches=[];
-              for(const selector of selectors) {
-                try {
-                  for(const n of root.querySelectorAll(selector)) {
-                    const text=(n.innerText||n.textContent||'').trim();
-                    if(text.includes(requestId) &&
-                       text.includes('"zerovideo_request_id"'))
-                      matches.push({n,text});
-                  }
-                } catch {}
+              const seen=new Set(),hits=[];
+              const user=n=>!!n.closest('[data-message-author-role="user"],' +
+                '[data-role="user"],[data-testid*="conversation-turn-user"]');
+              for(const root of roots) for(const selector of selectors) {
+                for(const n of root.querySelectorAll(selector)){
+                  if(seen.has(n)||user(n))continue;
+                  seen.add(n);
+                  const style=getComputedStyle(n);
+                  if(style.display==='none'||style.visibility==='hidden')continue;
+                  const value=(n.innerText||n.textContent||'').trim();
+                  if(!value || value.length>500000)continue;
+                  // Keep the entire latest block, including an untagged
+                  // MovieClipper response. C# validates freshness and JSON.
+                  if(value.includes(requestId) ||
+                     (value.includes('"movies"') &&
+                      value.includes('"response_type"')) ||
+                     value.includes('"zerovideo_end_marker"'))
+                    hits.push({n,value});
+                }
               }
-              matches.sort((a,b)=>{
-                const v=a.n.compareDocumentPosition(b.n);
-                return v&Node.DOCUMENT_POSITION_FOLLOWING?-1:
-                  v&Node.DOCUMENT_POSITION_PRECEDING?1:0;
+              hits.sort((a,b)=>{
+                const pos=a.n.compareDocumentPosition(b.n);
+                return pos&Node.DOCUMENT_POSITION_FOLLOWING?-1:
+                  pos&Node.DOCUMENT_POSITION_PRECEDING?1:0;
               });
-              return matches.length?matches[matches.length-1].text:null;
+              return hits.length?hits[hits.length-1].value:null;
             }
             """;
         foreach (var frame in page.Frames)
@@ -841,10 +866,10 @@ copyrighted photograph.
                 if (frame != page.MainFrame &&
                     !frame.Url.Contains("chatgpt.com", StringComparison.OrdinalIgnoreCase))
                     continue;
-                var text = await frame.EvaluateAsync<string?>(script, requestId);
-                if (!string.IsNullOrWhiteSpace(text)) return text;
+                var value = await frame.EvaluateAsync<string?>(script, requestId);
+                if (!string.IsNullOrWhiteSpace(value)) return value;
             }
-            catch (PlaywrightException) { /* Re-read after streaming rerender. */ }
+            catch (PlaywrightException) { /* Retry after the next UI poll. */ }
         }
         return null;
     }

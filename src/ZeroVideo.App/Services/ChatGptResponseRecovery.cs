@@ -260,6 +260,26 @@ public static class ChatGptResponseRecovery
         return json;
     }
 
+    /// <summary>
+    /// Validate untagged code-block JSON against the currently requested output,
+    /// never against a generic JSON object or an old response in the chat.
+    /// </summary>
+    public static bool MatchesRequestedSchema(string json, string? sentPrompt)
+    {
+        if (string.IsNullOrWhiteSpace(sentPrompt)) return false;
+        try
+        {
+            using var parsed = JsonDocument.Parse(json);
+            var root = parsed.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return false;
+            if (sentPrompt.Contains("movieclipper_ideas_v2", StringComparison.OrdinalIgnoreCase))
+                return IsStringValue(root, "response_type", "movieclipper_ideas_v2") &&
+                    HasNonEmptyArray(root, "movies");
+        }
+        catch (JsonException) { }
+        return false;
+    }
+
     private static bool TryGetProperty(JsonElement root, string name, out JsonElement value)
     {
         foreach (var property in root.EnumerateObject())
