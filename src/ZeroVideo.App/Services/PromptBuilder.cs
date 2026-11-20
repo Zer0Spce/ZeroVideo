@@ -35,7 +35,7 @@ Requirements:
 - If the topic is current or factual, do not invent claims or sources. When genuinely known, include useful source URLs or source names; otherwise leave sources empty.
 - Avoid generic chapter names like "More Information".
 
-Return ONLY valid JSON, no markdown and no commentary, using exactly this shape:
+Return exactly ONE Markdown fenced json code block with no text outside the block, using exactly this shape:
 {
   "title": "video title",
   "sources": ["source URL or source name"],
@@ -132,6 +132,12 @@ Requirements:
 - Across the complete video, the narration must feel intentionally opened and intentionally closed: the first scene introduces the story, while the final scene resolves and lands it.
 - visualQuery must be a concise 2-8 word search phrase that names the actual subject, event, object, place, person, clue, document, or action in that scene. Avoid generic searches such as "mystery evidence", "dramatic background", "question marks", or "thinking person" when the narration contains something more specific.
 - imagePrompt must be directly derived from the SAME scene narration. It must depict the exact subject/action/place/object being discussed, not merely the general theme of the whole video.
+- Pick the imagePrompt's camera distance based on its actual story beat. Vary establishing/wide, medium action, over-the-shoulder and relevant object/document detail shots across the chapter. Do NOT make every frame a person portrait or close-up, even when the video is about one famous real person.
+- For real-person subjects, preserve recognizable facial features ONLY when that person actually appears in the scene. A named person's mention in the voiceover does NOT require their face to be on screen: events, interiors, evidence, objects, maps, buildings and important actions must receive their own visuals when they are what the scene is describing.
+- Explicitly write shot scale and the subject's physical place within the setting (full-body if wide, actions + environment if medium). Reserve face close-ups for spoken details about expression/appearance or emotionally relevant reactions; never default to a tight face because of an identity reference.
+- Keep meaningful character movement, scenery and evidence visible, and do not reuse the same camera framing in adjacent scenes.
+- Scene visual continuity must NOT override the actual narrated event; a different event gets a different location/action/prop arrangement.
+- If a scene contains a specific date, location, crime-scene document, vehicle, object or action, represent that fact directly and accurately rather than placing the named person alone against a generic background.
 - When narration mentions a named person, location, vehicle, document, object, historical event, physical clue, technology, company, or institution, make that concrete item the primary visual subject when visually appropriate.
 - Prefer concrete explanatory visuals over generic symbolism. Do not default to puzzle pieces, question marks, silhouettes, anonymous investigators, random landscapes, or generic mystery boards unless the narration specifically calls for them.
 - For abstract narration, build the metaphor from topic-specific objects already established in the story so the visual still clearly belongs to this video.
@@ -145,7 +151,7 @@ Requirements:
 - Use role from: hook, setup, detail, evidence, transition, reveal, ending.
 - Do not fabricate specific quotes, documents, statistics, or events.
 
-Return ONLY valid JSON, no markdown and no commentary. Do NOT duplicate the narration in a separate chapter-level narration field. Use exactly:
+Return exactly ONE Markdown fenced json code block with no text outside the block. Do NOT duplicate the narration in a separate chapter-level narration field. Use exactly:
 {
   "number": {{chapter.Number}},
   "title": "{{Escape(chapter.Title)}}",

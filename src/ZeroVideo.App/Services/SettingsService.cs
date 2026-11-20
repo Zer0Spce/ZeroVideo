@@ -13,8 +13,24 @@ public sealed class SettingsService
         ZeroVideoSettings settings;
         if (File.Exists(AppPaths.SettingsFile))
         {
-            await using var stream = File.OpenRead(AppPaths.SettingsFile);
-            settings = await JsonSerializer.DeserializeAsync<ZeroVideoSettings>(stream, JsonOptions) ?? new();
+            try
+            {
+                await using var stream = File.OpenRead(AppPaths.SettingsFile);
+                settings = await JsonSerializer.DeserializeAsync<ZeroVideoSettings>(
+                    stream, JsonOptions) ?? new();
+            }
+            catch (JsonException ex)
+            {
+                // An invalid/older settings JSON should not make the entire Windows app
+                // unusable. Preserve the original bytes before using safe defaults.
+                var backup = AppPaths.SettingsFile + ".invalid-" +
+                    DateTime.UtcNow.ToString("yyyyMMdd-HHmmssfff") + ".bak";
+                File.Copy(AppPaths.SettingsFile, backup);
+                ZeroVideo.App.StartupDiagnostics.Report(
+                    new InvalidDataException("Invalid settings JSON was backed up to " + backup, ex),
+                    "Settings recovery");
+                settings = new();
+            }
         }
         else settings = new();
 
@@ -29,6 +45,24 @@ public sealed class SettingsService
         {
             settings.AutomationProfilePath = AppPaths.BundledAutomationProfile;
         }
+
+        // Legacy animation selection is no longer supported. Do not delete
+        // old model files here: cleanup is an explicit confirmed user action.
+        if (settings.AiImageAnimationEngine is "Wan2.2 5B (ComfyUI)" or
+            "FramePack (Local)" || string.IsNullOrWhiteSpace(settings.AiImageAnimationEngine))
+            settings.AiImageAnimationEngine = "Camera Motion (FFmpeg)";
+        if (settings.AiImageAnimationEngine is not ("Off" or
+            "Camera Motion (FFmpeg)" or "LivePortrait (Local)"))
+            settings.AiImageAnimationEngine = "Camera Motion (FFmpeg)";
+
+        // Migrate missing/unrecognized values without changing legacy
+        // projects' 8GB-friendly 1024x576 ComfyUI default.
+        if (!LocalImageResolutionService.IsValidPreset(
+                settings.LocalImageResolutionPreset))
+            settings.LocalImageResolutionPreset = LocalImageResolutionService.Fast;
+        if (!LocalImageResolutionService.IsValidMode(
+                settings.LocalImageResolutionMode))
+            settings.LocalImageResolutionMode = LocalImageResolutionService.Direct;
 
         settings.FfmpegPath = ResolveTool(settings.FfmpegPath, "ffmpeg.exe");
         settings.FfprobePath = ResolveTool(settings.FfprobePath, "ffprobe.exe");
