@@ -827,13 +827,24 @@ public sealed partial class MainViewModel
         // Typography-only treatment: no boxes, translucent cards or ribbons.
         // Condensed Impact headline, crisp white scores, soft shadow, gold stars.
         // Positioned in the blurred lower area, outside the 16:9 movie frame.
-        captions.Add("drawtext=font='Impact':text='FILMSIGNAL':fontsize=38:" +
-            "fontcolor=white:shadowcolor=black@0.85:shadowx=2:shadowy=3:" +
-            "x=80:y=150:enable='between(t,0.2," +
-            MovieNumber(titleEnd - 0.1) + ")'");
         var labels = new[] { "PLOT", "ACTING", "PACING", "CINEMATOGRAPHY",
             "WRITING", "ENDING", "OVERALL" };
         var values = score.Parts.Concat([score.Overall]).ToArray();
+        // Original editorial commentary based on the generated subjective scores.
+        // Never fabricate attributed critic quotations or media endorsements.
+        string[] reviewHeadlineTop = [
+            "A STORY THAT", "PERFORMANCES", "THE PACE", "VISUALLY",
+            "THE WRITING", "THE ENDING", "THE FINAL"
+        ];
+        string[] reviewHeadlineBottom = [
+            score.Plot >= 8 ? "STAYS WITH YOU" : "INVITES DEBATE",
+            score.Acting >= 8 ? "THAT STAND OUT" : "TAKE CENTER STAGE",
+            score.Pacing >= 8 ? "NEVER LETS UP" : "TAKES ITS TIME",
+            score.Cinematography >= 8 ? "STRIKING" : "DISTINCTIVE",
+            score.Writing >= 8 ? "FEELS SHARP" : "HAS IDEAS",
+            score.Ending >= 8 ? "DELIVERS" : "INVITES DEBATE",
+            "VERDICT"
+        ];
         var available = Math.Max(0.5, videoSeconds - titleEnd);
         for (var i = 0; i < labels.Length; i++)
         {
@@ -849,43 +860,50 @@ public sealed partial class MainViewModel
                 MovieNumber(from + Math.Min(0.22, (to - from) * 0.12)) +
                 "," + toText + ")'";
             var scoreText = values[i].ToString("0.0", CultureInfo.InvariantCulture) + "/10";
+            // Review headline lives in the blurred upper band, not over movie footage.
+            if (!isFinal)
+            {
+                captions.Add("drawtext=font='Impact':text='" + reviewHeadlineTop[i] +
+                    "':fontsize=78:fontcolor=white:shadowcolor=black@0.9:" +
+                    "shadowx=3:shadowy=4:x=(w-text_w)/2:y=310:" + show);
+                captions.Add("drawtext=font='Impact':text='" + reviewHeadlineBottom[i] +
+                    "':fontsize=78:fontcolor=white:shadowcolor=black@0.9:" +
+                    "shadowx=3:shadowy=4:x=(w-text_w)/2:y=410:" + show);
+                captions.Add("drawtext=font='Impact':text='EDITORIAL TAKE':" +
+                    "fontsize=27:fontcolor=white@0.85:shadowcolor=black@0.8:" +
+                    "shadowx=2:shadowy=3:x=(w-text_w)/2:y=515:" + show);
+            }
             var stars = new string('★', Math.Clamp(
                 (int)Math.Round(values[i] / 2.0, MidpointRounding.AwayFromZero), 0, 5));
             if (!isFinal)
             {
                 captions.Add("drawtext=font='Impact':text='" + labels[i] +
-                    "':fontsize=68:fontcolor=white:" +
+                    "':fontsize=76:fontcolor=white:" +
                     "shadowcolor=black@0.95:shadowx=3:shadowy=4:" +
                     "x=(w-text_w)/2:y=1335:" + show);
                 captions.Add("drawtext=font='Impact':text='" + scoreText +
-                    "':fontsize=100:fontcolor=white:" +
+                    "':fontsize=112:fontcolor=white:" +
                     "shadowcolor=black@0.95:shadowx=3:shadowy=4:" +
                     "x=(w-text_w)/2:y=1425:" + delayed);
                 captions.Add("drawtext=font='Segoe UI Symbol':text='" + stars +
-                    "':fontsize=65:fontcolor=0xE5C16E:" +
+                    "':fontsize=73:fontcolor=0xE5C16E:" +
                     "shadowcolor=black@0.8:shadowx=2:shadowy=3:" +
                     "x=(w-text_w)/2:y=1560:" + delayed);
             }
             else
             {
-                captions.Add("drawtext=font='Impact':text='FILMSIGNAL VERDICT':" +
-                    "fontsize=65:fontcolor=white:" +
+                captions.Add("drawtext=font='Impact':text='FINAL VERDICT':" +
+                    "fontsize=77:fontcolor=white:" +
                     "shadowcolor=black@0.95:shadowx=3:shadowy=4:" +
                     "x=(w-text_w)/2:y=1305:" + show);
                 captions.Add("drawtext=font='Impact':text='" + scoreText +
-                    "':fontsize=140:fontcolor=white:" +
+                    "':fontsize=150:fontcolor=white:" +
                     "shadowcolor=black@0.95:shadowx=4:shadowy=5:" +
                     "x=(w-text_w)/2:y=1400:" + delayed);
-                captions.Add("drawtext=text='" + stars +
+                captions.Add("drawtext=font='Segoe UI Symbol':text='" + stars +
                     "':fontsize=78:fontcolor=0xE5C16E:" +
                     "shadowcolor=black@0.8:shadowx=2:shadowy=3:" +
                     "x=(w-text_w)/2:y=1565:" + delayed);
-                if (movie.VoteCount > 0)
-                    captions.Add("drawtext=font='Impact':text='TMDB AUDIENCE " +
-                        movie.VoteAverage.ToString("0.0", CultureInfo.InvariantCulture) +
-                        "/10':fontsize=35:fontcolor=white@0.85:" +
-                        "shadowcolor=black@0.9:shadowx=2:shadowy=2:" +
-                        "x=(w-text_w)/2:y=1685:" + show);
             }
         }
         filters.Add(baseInput + string.Join(",", captions) + "[v]");
