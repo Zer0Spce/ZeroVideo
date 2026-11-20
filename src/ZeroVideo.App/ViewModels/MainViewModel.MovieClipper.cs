@@ -818,14 +818,14 @@ public sealed partial class MainViewModel
             cleaned = cleaned[..(sentenceEnd + 1)];
         var words = cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (words.Length < 5) return "";
-        if (words.Length > 12)
-            cleaned = string.Join(" ", words.Take(12)).TrimEnd(',', ';', ':') + "…";
+        if (words.Length > 9)
+            cleaned = string.Join(" ", words.Take(9)).TrimEnd(',', ';', ':') + "…";
         else
             cleaned = string.Join(" ", words);
         return cleaned.Length <= 110 ? cleaned : "";
     }
 
-        private async Task<PublishQueueItem> MovieRenderAsync(MovieClipperEntry movie, string trailer)
+    private async Task<PublishQueueItem> MovieRenderAsync(MovieClipperEntry movie, string trailer)
     {
         if (string.IsNullOrWhiteSpace(MovieSoundFile) || !File.Exists(MovieSoundFile))
             throw new InvalidOperationException("Choose a background-music file first. The movie duration will match that audio file.");
