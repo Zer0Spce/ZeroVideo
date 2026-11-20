@@ -720,6 +720,108 @@ public sealed partial class MainViewModel
         catch (Exception ex) { Log("TMDB movie title logo unavailable: " + ex.Message); return null; }
     }
 
+    private sealed record MovieVerifiedReview(string Excerpt, string Attribution, string Source, string Url);
+
+    // Only published user reviews from TMDB and reviews returned by the NYT
+    // Movie Reviews API are eligible for attributed on-screen quotations.
+    // Never infer press consensus from AI-generated subjective category scores.
+    private async Task<List<MovieVerifiedReview>> MovieFetchVerifiedReviewsAsync(MovieClipperEntry movie)
+    {
+        var reviews = new List<MovieVerifiedReview>();
+        try
+        {
+            using var doc = await MovieTmdbAsync("movie/" + movie.TmdbId +
+                "/reviews?language=en-US&page=1");
+            if (doc.RootElement.TryGetProperty("results", out var items) &&
+                items.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var review in items.EnumerateArray())
+                {
+                    var author = MovieSafeReviewText(MovieJson(review, "author"), 32);
+                    var excerpt = MovieReviewExcerpt(MovieJson(review, "content"));
+                    var url = MovieJson(review, "url");
+                    if (author.Length == 0 || excerpt.Length == 0 ||
+                        !Uri.TryCreate(url, UriKind.Absolute, out var location) ||
+                        location.Scheme != Uri.UriSchemeHttps ||
+                        !location.Host.EndsWith("themoviedb.org", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    reviews.Add(new MovieVerifiedReview(excerpt, author, "TMDB REVIEW", url));
+                    if (reviews.Count >= 6) break;
+                }
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { Log("TMDB review lookup unavailable: " + ex.Message); }
+
+        // Optional extra published critic source; never require a new key to
+        // render ordinary MovieClipper videos. Configure privately via environment.
+        var nytKey = Environment.GetEnvironmentVariable("NYT_MOVIE_REVIEWS_API_KEY");
+        if (!string.IsNullOrWhiteSpace(nytKey))
+        {
+            try
+            {
+                var uri = "https://api.nytimes.com/svc/movies/v2/reviews/search.json" +
+                    "?query=" + Uri.EscapeDataString(movie.Title) +
+                    "&api-key=" + Uri.EscapeDataString(nytKey);
+                using var response = await _movieHttp.GetAsync(uri, _cts.Token);
+                response.EnsureSuccessStatusCode();
+                using var parsed = JsonDocument.Parse(await response.Content.ReadAsStringAsync(_cts.Token));
+                if (parsed.RootElement.TryGetProperty("results", out var entries) &&
+                    entries.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var review in entries.EnumerateArray())
+                    {
+                        var reviewedTitle = MovieClean(MovieJson(review, "display_title"));
+                        if (reviewedTitle != MovieClean(movie.Title)) continue;
+                        var byline = MovieSafeReviewText(MovieJson(review, "byline"), 32);
+                        var excerpt = MovieReviewExcerpt(MovieJson(review, "summary_short"));
+                        var url = review.TryGetProperty("link", out var link) &&
+                            link.ValueKind == JsonValueKind.Object ? MovieJson(link, "url") : "";
+                        if (excerpt.Length == 0 || byline.Length == 0 ||
+                            !Uri.TryCreate(url, UriKind.Absolute, out var location) ||
+                            location.Scheme != Uri.UriSchemeHttps ||
+                            !location.Host.EndsWith("nytimes.com", StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        reviews.Insert(0, new MovieVerifiedReview(excerpt, byline,
+                            "THE NEW YORK TIMES", url));
+                        break;
+                    }
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { Log("NYT review lookup unavailable: " + ex.Message); }
+        }
+        return reviews.GroupBy(x => x.Source + "|" + x.Attribution + "|" + x.Excerpt,
+                StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First()).Take(6).ToList();
+    }
+
+    private static string MovieSafeReviewText(string text, int maxChars)
+    {
+        text = System.Net.WebUtility.HtmlDecode(
+            System.Text.RegularExpressions.Regex.Replace(text, "<[^>]*>", " "));
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\\s+", " ").Trim();
+        return text.Length > maxChars ? text[..maxChars].TrimEnd() : text;
+    }
+
+    // Keep sourced quotation text brief; no fabricated wording or mid-word cuts.
+    // Select the first short sentence when available, otherwise whole words.
+    private static string MovieReviewExcerpt(string review)
+    {
+        var cleaned = MovieSafeReviewText(review, 2500);
+        if (cleaned.Length < 30) return "";
+        var sentenceEnd = cleaned.IndexOfAny(['.', '!', '?']);
+        if (sentenceEnd >= 22 && sentenceEnd <= 145)
+            cleaned = cleaned[..(sentenceEnd + 1)];
+        var words = cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length < 5) return "";
+        if (words.Length > 15)
+            cleaned = string.Join(" ", words.Take(15)) + "…";
+        else
+            cleaned = string.Join(" ", words);
+        return cleaned.Length <= 135 ? cleaned : "";
+    }
+
     private async Task<PublishQueueItem> MovieRenderAsync(MovieClipperEntry movie, string trailer)
     {
         if (string.IsNullOrWhiteSpace(MovieSoundFile) || !File.Exists(MovieSoundFile))
@@ -749,6 +851,10 @@ public sealed partial class MainViewModel
             File.Exists(Settings.FfmpegPath) ? Settings.FfmpegPath : "ffmpeg";
         var source = await MovieProbeAsync(trailer);
         var score = await MovieGenerateScoresAsync(movie);
+        var verifiedReviews = await MovieFetchVerifiedReviewsAsync(movie);
+        Log("MovieClipper: " + verifiedReviews.Count +
+            " sourced review excerpts found for " + movie.Label +
+            "; missing quotes will be omitted, never invented.");
         movie.Status = "Analyzing musical beats and scene changes";
         var soundtrack = MovieSoundFile;
         var beatTimeline = await MovieBeatTimelineAsync(ffmpeg, soundtrack, videoSeconds);
@@ -771,6 +877,9 @@ public sealed partial class MainViewModel
             {
                 movie = movie.Label, trailer, beatTimeline, sourceShots = starts,
                 sceneChanges = changes.Count, scores = score.Parts, overall = score.Overall,
+                sourcedReviews = verifiedReviews.Select(x => new {
+                    x.Excerpt, x.Attribution, x.Source, x.Url
+                }).ToArray(),
                 scoring = "AI-generated subjective category scores; TMDB is an audience aggregate"
             }), _cts.Token);
         // Poster carries the authentic title treatment; no second logo needed.
@@ -830,21 +939,6 @@ public sealed partial class MainViewModel
         var labels = new[] { "PLOT", "ACTING", "PACING", "CINEMATOGRAPHY",
             "WRITING", "ENDING", "OVERALL" };
         var values = score.Parts.Concat([score.Overall]).ToArray();
-        // Original editorial commentary based on the generated subjective scores.
-        // Never fabricate attributed critic quotations or media endorsements.
-        string[] reviewHeadlineTop = [
-            "A STORY THAT", "PERFORMANCES", "THE PACE", "VISUALLY",
-            "THE WRITING", "THE ENDING", "THE FINAL"
-        ];
-        string[] reviewHeadlineBottom = [
-            score.Plot >= 8 ? "STAYS WITH YOU" : "INVITES DEBATE",
-            score.Acting >= 8 ? "THAT STAND OUT" : "TAKE CENTER STAGE",
-            score.Pacing >= 8 ? "NEVER LETS UP" : "TAKES ITS TIME",
-            score.Cinematography >= 8 ? "STRIKING" : "DISTINCTIVE",
-            score.Writing >= 8 ? "FEELS SHARP" : "HAS IDEAS",
-            score.Ending >= 8 ? "DELIVERS" : "INVITES DEBATE",
-            "VERDICT"
-        ];
         var available = Math.Max(0.5, videoSeconds - titleEnd);
         for (var i = 0; i < labels.Length; i++)
         {
@@ -860,27 +954,56 @@ public sealed partial class MainViewModel
                 MovieNumber(from + Math.Min(0.22, (to - from) * 0.12)) +
                 "," + toText + ")'";
             var scoreText = values[i].ToString("0.0", CultureInfo.InvariantCulture) + "/10";
-            // Professional critic-card typography: an actual opening quote at
-            // the start and a matching closing quote at the end, like the
-            // reference. Use text files so FFmpeg never mishandles quotation
-            // marks or apostrophes in the drawtext filter.
-            if (!isFinal)
+            // Show each sourced review no more than once. Alternate short
+            // quotations with score-only beats so captions do not overwhelm.
+            // Attribution identifies the actual reviewer and publication/site.
+            var reviewSlot = i / 2;
+            if (!isFinal && i % 2 == 0 && reviewSlot < verifiedReviews.Count)
             {
-                var headlineTopFile = "review-headline-" + i + "-top.txt";
-                var headlineBottomFile = "review-headline-" + i + "-bottom.txt";
-                await File.WriteAllTextAsync(Path.Combine(folder, headlineTopFile),
-                    "“" + reviewHeadlineTop[i], _cts.Token);
-                await File.WriteAllTextAsync(Path.Combine(folder, headlineBottomFile),
-                    reviewHeadlineBottom[i] + "”", _cts.Token);
-                captions.Add("drawtext=font='Impact':textfile=" + headlineTopFile +
-                    ":fontsize=108:fontcolor=white:shadowcolor=black@0.92:" +
-                    "shadowx=3:shadowy=5:x=(w-text_w)/2:y=290:" + show);
-                captions.Add("drawtext=font='Impact':textfile=" + headlineBottomFile +
-                    ":fontsize=118:fontcolor=white:shadowcolor=black@0.92:" +
-                    "shadowx=3:shadowy=5:x=(w-text_w)/2:y=392:" + show);
-                captions.Add("drawtext=font='Impact':text='ORIGINAL EDITORIAL REVIEW':" +
-                    "fontsize=27:fontcolor=white@0.88:shadowcolor=black@0.8:" +
-                    "shadowx=2:shadowy=3:x=(w-text_w)/2:y=518:" + show);
+                var review = verifiedReviews[reviewSlot];
+                var quoteFile = "verified-review-" + i + ".txt";
+                var attributionFile = "verified-review-attribution-" + i + ".txt";
+                await File.WriteAllTextAsync(Path.Combine(folder, quoteFile),
+                    "“" + review.Excerpt + "”", _cts.Token);
+                await File.WriteAllTextAsync(Path.Combine(folder, attributionFile),
+                    review.Attribution.ToUpperInvariant() + " / " + review.Source,
+                    _cts.Token);
+                // Larger condensed quote, wrapped into 2-3 deliberate lines.
+                // The line breaking is performed at word boundaries to avoid
+                // clipping long single lines inside a 1080px-wide video.
+                var quoteWords = ("“" + review.Excerpt + "”")
+                    .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                var quoteLines = new List<string>();
+                var currentLine = "";
+                foreach (var word in quoteWords)
+                {
+                    var candidate = currentLine.Length == 0 ? word : currentLine + " " + word;
+                    if (candidate.Length > 19 && currentLine.Length > 0)
+                    {
+                        quoteLines.Add(currentLine);
+                        currentLine = word;
+                    }
+                    else currentLine = candidate;
+                }
+                if (currentLine.Length > 0) quoteLines.Add(currentLine);
+                // Maximum four lines in upper blur. If excerpt is longer, do not
+                // display a partial misquotation: omit it for this beat.
+                if (quoteLines.Count <= 4)
+                {
+                    for (var lineIndex = 0; lineIndex < quoteLines.Count; lineIndex++)
+                    {
+                        var lineFile = "verified-review-" + i + "-" + lineIndex + ".txt";
+                        await File.WriteAllTextAsync(Path.Combine(folder, lineFile),
+                            quoteLines[lineIndex], _cts.Token);
+                        captions.Add("drawtext=font='Impact':textfile=" + lineFile +
+                            ":fontsize=93:fontcolor=white:shadowcolor=black@0.93:" +
+                            "shadowx=3:shadowy=5:x=(w-text_w)/2:y=" +
+                            (175 + lineIndex * 103) + ":" + show);
+                    }
+                    captions.Add("drawtext=font='Impact':textfile=" + attributionFile +
+                        ":fontsize=28:fontcolor=white@0.9:shadowcolor=black@0.9:" +
+                        "shadowx=2:shadowy=3:x=(w-text_w)/2:y=602:" + show);
+                }
             }
             var stars = new string('★', Math.Clamp(
                 (int)Math.Round(values[i] / 2.0, MidpointRounding.AwayFromZero), 0, 5));
