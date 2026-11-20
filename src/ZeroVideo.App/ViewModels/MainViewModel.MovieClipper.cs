@@ -860,18 +860,27 @@ public sealed partial class MainViewModel
                 MovieNumber(from + Math.Min(0.22, (to - from) * 0.12)) +
                 "," + toText + ")'";
             var scoreText = values[i].ToString("0.0", CultureInfo.InvariantCulture) + "/10";
-            // Review headline lives in the blurred upper band, not over movie footage.
+            // Professional critic-card typography: an actual opening quote at
+            // the start and a matching closing quote at the end, like the
+            // reference. Use text files so FFmpeg never mishandles quotation
+            // marks or apostrophes in the drawtext filter.
             if (!isFinal)
             {
-                captions.Add("drawtext=font='Impact':text='" + reviewHeadlineTop[i] +
-                    "':fontsize=78:fontcolor=white:shadowcolor=black@0.9:" +
-                    "shadowx=3:shadowy=4:x=(w-text_w)/2:y=310:" + show);
-                captions.Add("drawtext=font='Impact':text='" + reviewHeadlineBottom[i] +
-                    "':fontsize=78:fontcolor=white:shadowcolor=black@0.9:" +
-                    "shadowx=3:shadowy=4:x=(w-text_w)/2:y=410:" + show);
-                captions.Add("drawtext=font='Impact':text='EDITORIAL TAKE':" +
-                    "fontsize=27:fontcolor=white@0.85:shadowcolor=black@0.8:" +
-                    "shadowx=2:shadowy=3:x=(w-text_w)/2:y=515:" + show);
+                var headlineTopFile = "review-headline-" + i + "-top.txt";
+                var headlineBottomFile = "review-headline-" + i + "-bottom.txt";
+                await File.WriteAllTextAsync(Path.Combine(folder, headlineTopFile),
+                    "“" + reviewHeadlineTop[i], _cts.Token);
+                await File.WriteAllTextAsync(Path.Combine(folder, headlineBottomFile),
+                    reviewHeadlineBottom[i] + "”", _cts.Token);
+                captions.Add("drawtext=font='Impact':textfile=" + headlineTopFile +
+                    ":fontsize=84:fontcolor=white:shadowcolor=black@0.92:" +
+                    "shadowx=3:shadowy=5:x=(w-text_w)/2:y=290:" + show);
+                captions.Add("drawtext=font='Impact':textfile=" + headlineBottomFile +
+                    ":fontsize=96:fontcolor=white:shadowcolor=black@0.92:" +
+                    "shadowx=3:shadowy=5:x=(w-text_w)/2:y=392:" + show);
+                captions.Add("drawtext=font='Impact':text='ORIGINAL EDITORIAL REVIEW':" +
+                    "fontsize=27:fontcolor=white@0.88:shadowcolor=black@0.8:" +
+                    "shadowx=2:shadowy=3:x=(w-text_w)/2:y=518:" + show);
             }
             var stars = new string('★', Math.Clamp(
                 (int)Math.Round(values[i] / 2.0, MidpointRounding.AwayFromZero), 0, 5));
