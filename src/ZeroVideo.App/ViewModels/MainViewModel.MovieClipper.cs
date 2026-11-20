@@ -773,7 +773,7 @@ public sealed partial class MainViewModel
                 sceneChanges = changes.Count, scores = score.Parts, overall = score.Overall,
                 scoring = "AI-generated subjective category scores; TMDB is an audience aggregate"
             }), _cts.Token);
-        var logo = await MovieDownloadLogoAsync(movie, Path.Combine(folder, "title-logo.png"));
+        // Poster carries the authentic title treatment; no second logo needed.
         var args = new List<string> { "-y" };
         for (var i = 0; i < count; i++)
             args.AddRange(["-ss", MovieNumber(starts[i]),
@@ -782,10 +782,7 @@ public sealed partial class MainViewModel
         // The selected soundtrack remains the only audio input, with its original timing.
         var posterIndex = count;
         args.AddRange(["-loop", "1", "-framerate", "30", "-t", MovieNumber(videoSeconds), "-i", poster]);
-        var logoIndex = count + 1;
-        if (logo is not null)
-            args.AddRange(["-loop", "1", "-framerate", "30", "-t", MovieNumber(videoSeconds), "-i", logo]);
-        var audioIndex = count + 1 + (logo is null ? 0 : 1);
+        var audioIndex = count + 1;
         var customMusic = true;
         args.AddRange(["-i", soundtrack]);
         const string frame = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30,format=yuv420p";
@@ -808,25 +805,10 @@ public sealed partial class MainViewModel
         filters.Add("[exact][posterbg]overlay=x=0:y=0:enable='between(t,0," +
             MovieNumber(titleEnd) + ")'[opening]");
         var baseInput = "[opening]";
-        if (logo is not null)
-        {
-            filters.Add("[" + logoIndex + ":v]scale=850:550:force_original_aspect_ratio=decrease," +
-                "format=rgba,fade=t=in:st=0.2:d=0.3:alpha=1," +
-                "fade=t=out:st=2.25:d=0.35:alpha=1[titlelogo]");
-            filters.Add("[opening][titlelogo]overlay=x=(W-w)/2:y=(H-h)/2:" +
-                "enable='between(t,0.2,2.6)'[art]");
-            baseInput = "[art]";
-        }
-        else
-        {
-            await File.WriteAllTextAsync(Path.Combine(folder, "movie-title.txt"),
-                movie.Title.ToUpperInvariant(), _cts.Token);
-        }
+        // The poster already includes the movie title. Do not draw another TMDB
+        // logo or fallback text on top: the duplicate made the intro unreadable.
+        // Keep the original poster with a single visible title treatment.
         var captions = new List<string>();
-        if (logo is null)
-            captions.Add("drawtext=textfile=movie-title.txt:fontsize=75:fontcolor=white:" +
-                "borderw=5:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2:" +
-                "enable='between(t,0.3,2.6)'");
         // Brand only on the opening artwork; keeping it off the trailer avoids
         // a tiny permanent watermark competing with the score overlays.
         captions.Add("drawtext=text='FILMSIGNAL':fontsize=36:fontcolor=white:" +
@@ -851,17 +833,17 @@ public sealed partial class MainViewModel
             // readability against both bright and dark movie footage.
             if (!isFinal)
             {
-                captions.Add("drawbox=x=70:y=1425:w=940:h=170:" +
+                captions.Add("drawbox=x=70:y=1190:w=940:h=170:" +
                     "color=black@0.52:t=fill:" + show);
-                captions.Add("drawbox=x=70:y=1425:w=7:h=170:" +
+                captions.Add("drawbox=x=70:y=1190:w=7:h=170:" +
                     "color=0xE5C16E@1:t=fill:" + show);
                 captions.Add("drawtext=text='" + labels[i] +
                     "':fontsize=43:fontcolor=white:borderw=1:" +
-                    "bordercolor=black@0.7:x=115:y=1483:" + show);
+                    "bordercolor=black@0.7:x=115:y=1248:" + show);
                 captions.Add("drawtext=text='" +
                     values[i].ToString("0.0", CultureInfo.InvariantCulture) +
                     "/10':fontsize=77:fontcolor=white:borderw=2:" +
-                    "bordercolor=black@0.7:x=w-text_w-115:y=1467:" +
+                    "bordercolor=black@0.7:x=w-text_w-115:y=1232:" +
                     "enable='between(t," +
                     MovieNumber(from + Math.Min(0.24, (to - from) * 0.12)) +
                     "," + toText + ")'");
@@ -870,17 +852,17 @@ public sealed partial class MainViewModel
             {
                 // The final rating gets an intentional, premium verdict reveal,
                 // with distinct typography rather than repeating category cards.
-                captions.Add("drawbox=x=70:y=1180:w=940:h=415:" +
+                captions.Add("drawbox=x=70:y=1010:w=940:h=415:" +
                     "color=black@0.73:t=fill:" + show);
-                captions.Add("drawbox=x=70:y=1180:w=940:h=8:" +
+                captions.Add("drawbox=x=70:y=1010:w=940:h=8:" +
                     "color=0xE5C16E@1:t=fill:" + show);
                 captions.Add("drawtext=text='FILMSIGNAL VERDICT':fontsize=41:" +
                     "fontcolor=0xE5C16E:borderw=1:bordercolor=black:" +
-                    "x=(w-text_w)/2:y=1240:" + show);
+                    "x=(w-text_w)/2:y=1070:" + show);
                 captions.Add("drawtext=text='" +
                     values[i].ToString("0.0", CultureInfo.InvariantCulture) +
                     "/10':fontsize=142:fontcolor=white:borderw=3:" +
-                    "bordercolor=black:x=(w-text_w)/2:y=1355:" +
+                    "bordercolor=black:x=(w-text_w)/2:y=1185:" +
                     "enable='between(t," +
                     MovieNumber(from + Math.Min(0.28, (to - from) * 0.1)) +
                     "," + toText + ")'");
