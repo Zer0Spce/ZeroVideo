@@ -785,12 +785,21 @@ public sealed partial class MainViewModel
         var audioIndex = count + 1;
         var customMusic = true;
         args.AddRange(["-i", soundtrack]);
-        const string frame = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30,format=yuv420p";
+        // Film presentation: preserve the complete widescreen image. A softened
+        // copy of that same scene fills the vertical space above and below.
+        // Never crop source movie footage to 9:16.
         var filters = new List<string>();
         for (var i = 0; i < count; i++)
-            filters.Add("[" + i + ":v]" + frame + ",trim=duration=" +
-                MovieNumber(beatTimeline[i + 1] - beatTimeline[i]) +
-                ",setpts=PTS-STARTPTS[v" + i + "]");
+        {
+            var duration = MovieNumber(beatTimeline[i + 1] - beatTimeline[i]);
+            filters.Add("[" + i + ":v]fps=30,split=2[bgraw" + i + "][fgraw" + i + "]");
+            filters.Add("[bgraw" + i + "]scale=540:960:force_original_aspect_ratio=increase," +
+                "crop=540:960,boxblur=18:2,scale=1080:1920,setsar=1[bg" + i + "]");
+            filters.Add("[fgraw" + i + "]scale=1080:608:force_original_aspect_ratio=decrease," +
+                "pad=1080:608:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[fg" + i + "]");
+            filters.Add("[bg" + i + "][fg" + i + "]overlay=x=0:y=(H-h)/2," +
+                "trim=duration=" + duration + ",setpts=PTS-STARTPTS[v" + i + "]");
+        }
         filters.Add(string.Concat(Enumerable.Range(0, count).Select(i => "[v" + i + "]")) +
             "concat=n=" + count + ":v=1:a=0[montage]");
         // Match the audio duration, rounded to the nearest 30-fps video frame.
@@ -800,20 +809,28 @@ public sealed partial class MainViewModel
         // Poster occupies the first seconds; subsequent shots still follow the
         // existing soundtrack/scene-cut timeline without replacing the audio.
         const double titleEnd = 2.75;
-        filters.Add("[" + posterIndex + ":v]scale=1080:1920:force_original_aspect_ratio=increase," +
-            "crop=1080:1920,setsar=1,format=yuv420p[posterbg]");
-        filters.Add("[exact][posterbg]overlay=x=0:y=0:enable='between(t,0," +
+        // Original movie poster is shown only once, with no duplicated logo.
+        // Preserve the artwork aspect ratio, with a blurred version behind it.
+        filters.Add("[" + posterIndex + ":v]fps=30,split=2[posterblur][posterfront]");
+        filters.Add("[posterblur]scale=540:960:force_original_aspect_ratio=increase," +
+            "crop=540:960,boxblur=18:2,scale=1080:1920[posterbg]");
+        filters.Add("[posterfront]scale=1020:1600:force_original_aspect_ratio=decrease," +
+            "format=rgba[posterfg]");
+        filters.Add("[posterbg][posterfg]overlay=x=(W-w)/2:y=(H-h)/2[posterart]");
+        filters.Add("[exact][posterart]overlay=x=0:y=0:enable='between(t,0," +
             MovieNumber(titleEnd) + ")'[opening]");
         var baseInput = "[opening]";
         // The poster already includes the movie title. Do not draw another TMDB
         // logo or fallback text on top: the duplicate made the intro unreadable.
         // Keep the original poster with a single visible title treatment.
         var captions = new List<string>();
-        // Brand only on the opening artwork; keeping it off the trailer avoids
-        // a tiny permanent watermark competing with the score overlays.
-        captions.Add("drawtext=text='FILMSIGNAL':fontsize=36:fontcolor=white:" +
-            "borderw=2:bordercolor=black@0.65:x=70:y=125:" +
-            "enable='between(t,0.25," + MovieNumber(titleEnd - 0.1) + ")'");
+        // Typography-only treatment: no boxes, translucent cards or ribbons.
+        // Condensed Impact headline, crisp white scores, soft shadow, gold stars.
+        // Positioned in the blurred lower area, outside the 16:9 movie frame.
+        captions.Add("drawtext=font='Impact':text='FILMSIGNAL':fontsize=38:" +
+            "fontcolor=white:shadowcolor=black@0.85:shadowx=2:shadowy=3:" +
+            "x=80:y=150:enable='between(t,0.2," +
+            MovieNumber(titleEnd - 0.1) + ")'");
         var labels = new[] { "PLOT", "ACTING", "PACING", "CINEMATOGRAPHY",
             "WRITING", "ENDING", "OVERALL" };
         var values = score.Parts.Concat([score.Overall]).ToArray();
@@ -828,44 +845,47 @@ public sealed partial class MainViewModel
             var fromText = MovieNumber(from);
             var toText = MovieNumber(to);
             var show = "enable='between(t," + fromText + "," + toText + ")'";
-            // All ratings stay in a consistent TikTok-safe lower third rather
-            // than filling the screen. Subtle translucent background provides
-            // readability against both bright and dark movie footage.
+            var delayed = "enable='between(t," +
+                MovieNumber(from + Math.Min(0.22, (to - from) * 0.12)) +
+                "," + toText + ")'";
+            var scoreText = values[i].ToString("0.0", CultureInfo.InvariantCulture) + "/10";
+            var stars = new string('★', Math.Clamp(
+                (int)Math.Round(values[i] / 2.0, MidpointRounding.AwayFromZero), 0, 5));
             if (!isFinal)
             {
-                captions.Add("drawbox=x=70:y=1190:w=940:h=170:" +
-                    "color=black@0.52:t=fill:" + show);
-                captions.Add("drawbox=x=70:y=1190:w=7:h=170:" +
-                    "color=0xE5C16E@1:t=fill:" + show);
-                captions.Add("drawtext=text='" + labels[i] +
-                    "':fontsize=43:fontcolor=white:borderw=1:" +
-                    "bordercolor=black@0.7:x=115:y=1248:" + show);
-                captions.Add("drawtext=text='" +
-                    values[i].ToString("0.0", CultureInfo.InvariantCulture) +
-                    "/10':fontsize=77:fontcolor=white:borderw=2:" +
-                    "bordercolor=black@0.7:x=w-text_w-115:y=1232:" +
-                    "enable='between(t," +
-                    MovieNumber(from + Math.Min(0.24, (to - from) * 0.12)) +
-                    "," + toText + ")'");
+                captions.Add("drawtext=font='Impact':text='" + labels[i] +
+                    "':fontsize=68:fontcolor=white:" +
+                    "shadowcolor=black@0.95:shadowx=3:shadowy=4:" +
+                    "x=(w-text_w)/2:y=1335:" + show);
+                captions.Add("drawtext=font='Impact':text='" + scoreText +
+                    "':fontsize=100:fontcolor=white:" +
+                    "shadowcolor=black@0.95:shadowx=3:shadowy=4:" +
+                    "x=(w-text_w)/2:y=1425:" + delayed);
+                captions.Add("drawtext=text='" + stars +
+                    "':fontsize=65:fontcolor=0xE5C16E:" +
+                    "shadowcolor=black@0.8:shadowx=2:shadowy=3:" +
+                    "x=(w-text_w)/2:y=1560:" + delayed);
             }
             else
             {
-                // The final rating gets an intentional, premium verdict reveal,
-                // with distinct typography rather than repeating category cards.
-                captions.Add("drawbox=x=70:y=1010:w=940:h=415:" +
-                    "color=black@0.73:t=fill:" + show);
-                captions.Add("drawbox=x=70:y=1010:w=940:h=8:" +
-                    "color=0xE5C16E@1:t=fill:" + show);
-                captions.Add("drawtext=text='FILMSIGNAL VERDICT':fontsize=41:" +
-                    "fontcolor=0xE5C16E:borderw=1:bordercolor=black:" +
-                    "x=(w-text_w)/2:y=1070:" + show);
-                captions.Add("drawtext=text='" +
-                    values[i].ToString("0.0", CultureInfo.InvariantCulture) +
-                    "/10':fontsize=142:fontcolor=white:borderw=3:" +
-                    "bordercolor=black:x=(w-text_w)/2:y=1185:" +
-                    "enable='between(t," +
-                    MovieNumber(from + Math.Min(0.28, (to - from) * 0.1)) +
-                    "," + toText + ")'");
+                captions.Add("drawtext=font='Impact':text='FILMSIGNAL VERDICT':" +
+                    "fontsize=65:fontcolor=white:" +
+                    "shadowcolor=black@0.95:shadowx=3:shadowy=4:" +
+                    "x=(w-text_w)/2:y=1305:" + show);
+                captions.Add("drawtext=font='Impact':text='" + scoreText +
+                    "':fontsize=140:fontcolor=white:" +
+                    "shadowcolor=black@0.95:shadowx=4:shadowy=5:" +
+                    "x=(w-text_w)/2:y=1400:" + delayed);
+                captions.Add("drawtext=text='" + stars +
+                    "':fontsize=78:fontcolor=0xE5C16E:" +
+                    "shadowcolor=black@0.8:shadowx=2:shadowy=3:" +
+                    "x=(w-text_w)/2:y=1565:" + delayed);
+                if (movie.VoteCount > 0)
+                    captions.Add("drawtext=font='Impact':text='TMDB AUDIENCE " +
+                        movie.VoteAverage.ToString("0.0", CultureInfo.InvariantCulture) +
+                        "/10':fontsize=35:fontcolor=white@0.85:" +
+                        "shadowcolor=black@0.9:shadowx=2:shadowy=2:" +
+                        "x=(w-text_w)/2:y=1685:" + show);
             }
         }
         filters.Add(baseInput + string.Join(",", captions) + "[v]");
