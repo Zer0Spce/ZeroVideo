@@ -798,31 +798,34 @@ public sealed partial class MainViewModel
 
     private static string MovieSafeReviewText(string text, int maxChars)
     {
+        // Strip markup, block-quote prefixes, arrow entities and rogue
+        // punctuation inserted by some TMDB user-review submissions.
         text = System.Net.WebUtility.HtmlDecode(
             System.Text.RegularExpressions.Regex.Replace(text, "<[^>]*>", " "));
-        text = System.Text.RegularExpressions.Regex.Replace(text, @"\\s+", " ").Trim();
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
+        text = text.TrimStart('>', '<', '|', '-', ':', ' ', '\t', '“', '"', '❝');
         return text.Length > maxChars ? text[..maxChars].TrimEnd() : text;
     }
 
-    // Keep sourced quotation text brief; no fabricated wording or mid-word cuts.
-    // Select the first short sentence when available, otherwise whole words.
+    // A short verbatim extract of an actual published review, not an invented
+    // pull quote. Use complete sentences or an explicitly ellipsized excerpt.
     private static string MovieReviewExcerpt(string review)
     {
         var cleaned = MovieSafeReviewText(review, 2500);
-        if (cleaned.Length < 30) return "";
+        if (cleaned.Length < 24) return "";
         var sentenceEnd = cleaned.IndexOfAny(['.', '!', '?']);
-        if (sentenceEnd >= 22 && sentenceEnd <= 145)
+        if (sentenceEnd >= 24 && sentenceEnd <= 125)
             cleaned = cleaned[..(sentenceEnd + 1)];
         var words = cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (words.Length < 5) return "";
-        if (words.Length > 15)
-            cleaned = string.Join(" ", words.Take(15)) + "…";
+        if (words.Length > 12)
+            cleaned = string.Join(" ", words.Take(12)).TrimEnd(',', ';', ':') + "…";
         else
             cleaned = string.Join(" ", words);
-        return cleaned.Length <= 135 ? cleaned : "";
+        return cleaned.Length <= 110 ? cleaned : "";
     }
 
-    private async Task<PublishQueueItem> MovieRenderAsync(MovieClipperEntry movie, string trailer)
+        private async Task<PublishQueueItem> MovieRenderAsync(MovieClipperEntry movie, string trailer)
     {
         if (string.IsNullOrWhiteSpace(MovieSoundFile) || !File.Exists(MovieSoundFile))
             throw new InvalidOperationException("Choose a background-music file first. The movie duration will match that audio file.");
@@ -961,48 +964,54 @@ public sealed partial class MainViewModel
             if (!isFinal && i % 2 == 0 && reviewSlot < verifiedReviews.Count)
             {
                 var review = verifiedReviews[reviewSlot];
-                var quoteFile = "verified-review-" + i + ".txt";
-                var attributionFile = "verified-review-attribution-" + i + ".txt";
-                await File.WriteAllTextAsync(Path.Combine(folder, quoteFile),
-                    "“" + review.Excerpt + "”", _cts.Token);
-                await File.WriteAllTextAsync(Path.Combine(folder, attributionFile),
-                    review.Attribution.ToUpperInvariant() + " / " + review.Source,
-                    _cts.Token);
-                // Larger condensed quote, wrapped into 2-3 deliberate lines.
-                // The line breaking is performed at word boundaries to avoid
-                // clipping long single lines inside a 1080px-wide video.
-                var quoteWords = ("“" + review.Excerpt + "”")
+                // Match the reference: three editorial lines, ALL CAPS,
+                // heavy condensed lettering, prominent quotation marks,
+                // and a compact byline below. No background card.
+                var quoteWords = review.Excerpt.ToUpperInvariant()
                     .Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 var quoteLines = new List<string>();
-                var currentLine = "";
+                var line = "";
                 foreach (var word in quoteWords)
                 {
-                    var candidate = currentLine.Length == 0 ? word : currentLine + " " + word;
-                    if (candidate.Length > 19 && currentLine.Length > 0)
+                    var candidate = line.Length == 0 ? word : line + " " + word;
+                    if (candidate.Length > 17 && line.Length > 0)
                     {
-                        quoteLines.Add(currentLine);
-                        currentLine = word;
+                        quoteLines.Add(line);
+                        line = word;
                     }
-                    else currentLine = candidate;
+                    else line = candidate;
                 }
-                if (currentLine.Length > 0) quoteLines.Add(currentLine);
-                // Maximum four lines in upper blur. If excerpt is longer, do not
-                // display a partial misquotation: omit it for this beat.
-                if (quoteLines.Count <= 4)
+                if (line.Length > 0) quoteLines.Add(line);
+                // Quotes that are too long must be skipped instead of creating
+                // five crowded rows or rendering text over the movie itself.
+                if (quoteLines.Count is >= 2 and <= 3 &&
+                    quoteLines.All(x => x.Length <= 21))
                 {
+                    quoteLines[0] = "“" + quoteLines[0];
+                    quoteLines[^1] += "”";
+                    var yBase = quoteLines.Count == 2 ? 272 : 214;
                     for (var lineIndex = 0; lineIndex < quoteLines.Count; lineIndex++)
                     {
                         var lineFile = "verified-review-" + i + "-" + lineIndex + ".txt";
                         await File.WriteAllTextAsync(Path.Combine(folder, lineFile),
                             quoteLines[lineIndex], _cts.Token);
+                        // Reference styling: first line slightly smaller;
+                        // headline lines significantly larger and centered.
+                        var size = lineIndex == 0 ? 91 : 113;
                         captions.Add("drawtext=font='Impact':textfile=" + lineFile +
-                            ":fontsize=93:fontcolor=white:shadowcolor=black@0.93:" +
-                            "shadowx=3:shadowy=5:x=(w-text_w)/2:y=" +
-                            (175 + lineIndex * 103) + ":" + show);
+                            ":fontsize=" + size +
+                            ":fontcolor=white:shadowcolor=black@0.8:" +
+                            "shadowx=2:shadowy=4:x=(w-text_w)/2:y=" +
+                            (yBase + lineIndex * 116) + ":" + show);
                     }
+                    var attributionFile = "verified-review-attribution-" + i + ".txt";
+                    await File.WriteAllTextAsync(Path.Combine(folder, attributionFile),
+                        review.Attribution.ToUpperInvariant() + ", " + review.Source,
+                        _cts.Token);
                     captions.Add("drawtext=font='Impact':textfile=" + attributionFile +
-                        ":fontsize=28:fontcolor=white@0.9:shadowcolor=black@0.9:" +
-                        "shadowx=2:shadowy=3:x=(w-text_w)/2:y=602:" + show);
+                        ":fontsize=31:fontcolor=white@0.94:" +
+                        "shadowcolor=black@0.8:shadowx=2:shadowy=3:" +
+                        "x=(w-text_w)/2:y=579:" + show);
                 }
             }
             var stars = new string('★', Math.Clamp(
