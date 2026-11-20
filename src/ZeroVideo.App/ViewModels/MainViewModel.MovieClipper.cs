@@ -778,10 +778,14 @@ public sealed partial class MainViewModel
         for (var i = 0; i < count; i++)
             args.AddRange(["-ss", MovieNumber(starts[i]),
                 "-t", MovieNumber(beatTimeline[i + 1] - beatTimeline[i]), "-i", trailer]);
-        var logoIndex = count;
+        // Introduce the actual film using its TMDB poster/title artwork, not a generic label.
+        // The selected soundtrack remains the only audio input, with its original timing.
+        var posterIndex = count;
+        args.AddRange(["-loop", "1", "-framerate", "30", "-t", MovieNumber(videoSeconds), "-i", poster]);
+        var logoIndex = count + 1;
         if (logo is not null)
             args.AddRange(["-loop", "1", "-framerate", "30", "-t", MovieNumber(videoSeconds), "-i", logo]);
-        var audioIndex = count + (logo is null ? 0 : 1);
+        var audioIndex = count + 1 + (logo is null ? 0 : 1);
         var customMusic = true;
         args.AddRange(["-i", soundtrack]);
         const string frame = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30,format=yuv420p";
@@ -795,45 +799,73 @@ public sealed partial class MainViewModel
         // Match the audio duration, rounded to the nearest 30-fps video frame.
         filters.Add("[montage]tpad=stop_mode=clone:stop_duration=1," +
             "trim=duration=" + MovieNumber(videoSeconds) + ",setpts=PTS-STARTPTS[exact]");
-        var baseInput = "[exact]";
+        // Visually distinct movie-specific introduction using the movie's own poster.
+        // Poster occupies the first seconds; subsequent shots still follow the
+        // existing soundtrack/scene-cut timeline without replacing the audio.
+        const double titleEnd = 2.75;
+        filters.Add("[" + posterIndex + ":v]scale=1080:1920:force_original_aspect_ratio=increase," +
+            "crop=1080:1920,setsar=1,format=yuv420p[posterbg]");
+        filters.Add("[exact][posterbg]overlay=x=0:y=0:enable='between(t,0," +
+            MovieNumber(titleEnd) + ")'[opening]");
+        var baseInput = "[opening]";
         if (logo is not null)
         {
-            filters.Add("[" + logoIndex + ":v]scale=820:500:force_original_aspect_ratio=decrease," +
-                "format=rgba,fade=t=in:st=2.1:d=0.25:alpha=1,fade=t=out:st=5.0:d=0.3:alpha=1[logo]");
-            filters.Add("[exact][logo]overlay=x=(W-w)/2:y=(H-h)/2:" +
-                "enable='between(t,2.1,5.3)'[art]");
+            filters.Add("[" + logoIndex + ":v]scale=850:550:force_original_aspect_ratio=decrease," +
+                "format=rgba,fade=t=in:st=0.2:d=0.3:alpha=1," +
+                "fade=t=out:st=2.25:d=0.35:alpha=1[titlelogo]");
+            filters.Add("[opening][titlelogo]overlay=x=(W-w)/2:y=(H-h)/2:" +
+                "enable='between(t,0.2,2.6)'[art]");
             baseInput = "[art]";
         }
         else
         {
-            await File.WriteAllTextAsync(Path.Combine(folder, "movie-title.txt"), movie.Title, _cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(folder, "movie-title.txt"),
+                movie.Title.ToUpperInvariant(), _cts.Token);
         }
         var captions = new List<string>();
-        captions.Add("drawtext=text='MOVIE REVIEW':fontsize=90:fontcolor=white:" +
-            "borderw=5:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2:" +
-            "enable='between(t,0,2.0)'");
         if (logo is null)
-            captions.Add("drawtext=textfile=movie-title.txt:fontsize=82:fontcolor=white:" +
+            captions.Add("drawtext=textfile=movie-title.txt:fontsize=75:fontcolor=white:" +
                 "borderw=5:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2:" +
-                "enable='between(t,2.1,5.3)'");
+                "enable='between(t,0.3,2.6)'");
+        // A restrained editorial eyebrow appears only after the title-art opening.
+        captions.Add("drawtext=text='FILMSIGNAL  /  FILM ANALYSIS':fontsize=31:" +
+            "fontcolor=white@0.88:borderw=2:bordercolor=black@0.65:" +
+            "x=65:y=140:enable='between(t," + MovieNumber(titleEnd) +
+            "," + MovieNumber(Math.Max(titleEnd, videoSeconds - 1)) + ")'");
         var labels = new[] { "PLOT", "ACTING", "PACING", "CINEMATOGRAPHY",
             "WRITING", "ENDING", "OVERALL" };
         var values = score.Parts.Concat([score.Overall]).ToArray();
-        var froms = new[] { 5.3, 8.6, 11.9, 15.2, 18.5, 21.8, 25.1 }
-            .Select(x => x / 30.0 * videoSeconds).ToArray();
+        // Allocate review beats proportionally, reserving the opening for movie
+        // artwork and the final section for a distinct overall rating reveal.
+        var available = Math.Max(0.5, videoSeconds - titleEnd);
         for (var i = 0; i < labels.Length; i++)
         {
-            var from = froms[i];
-            var to = i < labels.Length - 1 ? froms[i + 1] - 0.05 : videoSeconds - 0.1;
-            var labelSize = labels[i] == "CINEMATOGRAPHY" ? 69 : 100;
+            var from = titleEnd + available * i / labels.Length;
+            var to = i < labels.Length - 1
+                ? titleEnd + available * (i + 1) / labels.Length - 0.05
+                : videoSeconds - 0.05;
+            var isFinal = i == labels.Length - 1;
+            var labelSize = isFinal ? 72 : 49;
+            var ratingSize = isFinal ? 148 : 92;
+            // Consistent lower-third editorial card instead of fullscreen,
+            // repeated "MOVIE REVIEW" typography.
+            captions.Add("drawbox=x=35:y=" + (isFinal ? "1190" : "1480") +
+                ":w=1010:h=" + (isFinal ? "400" : "245") +
+                ":color=black@0.65:t=fill:enable='between(t," +
+                MovieNumber(from) + "," + MovieNumber(to) + ")'");
             captions.Add("drawtext=text='" + labels[i] +
-                "':fontsize=" + labelSize + ":fontcolor=white:borderw=5:bordercolor=black:" +
-                "x=(w-text_w)/2:y=(h-text_h)/2-48:" +
-                "enable='between(t," + MovieNumber(from) + "," + MovieNumber(to) + ")'");
-            captions.Add("drawtext=text='" + values[i].ToString("0.0", CultureInfo.InvariantCulture) +
-                "/10':fontsize=76:fontcolor=white:borderw=4:bordercolor=black:" +
-                "x=(w-text_w)/2:y=(h-text_h)/2+75:" +
-                "enable='between(t," + MovieNumber(from + Math.Min(0.95, (to - from) * 0.4)) + "," + MovieNumber(to) + ")'");
+                "':fontsize=" + labelSize +
+                ":fontcolor=white:borderw=2:bordercolor=black:" +
+                "x=" + (isFinal ? "90" : "88") + ":y=" + (isFinal ? "1250" : "1515") +
+                ":enable='between(t," + MovieNumber(from) + "," + MovieNumber(to) + ")'");
+            captions.Add("drawtext=text='" +
+                values[i].ToString("0.0", CultureInfo.InvariantCulture) +
+                "/10':fontsize=" + ratingSize +
+                ":fontcolor=white:borderw=3:bordercolor=black:" +
+                "x=" + (isFinal ? "90" : "610") + ":y=" + (isFinal ? "1350" : "1550") +
+                ":enable='between(t," +
+                MovieNumber(from + Math.Min(0.35, (to - from) * 0.2)) +
+                "," + MovieNumber(to) + ")'");
         }
         filters.Add(baseInput + string.Join(",", captions) + "[v]");
 
