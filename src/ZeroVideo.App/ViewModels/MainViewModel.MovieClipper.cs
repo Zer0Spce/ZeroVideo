@@ -873,10 +873,10 @@ public sealed partial class MainViewModel
                 await File.WriteAllTextAsync(Path.Combine(folder, headlineBottomFile),
                     reviewHeadlineBottom[i] + "”", _cts.Token);
                 captions.Add("drawtext=font='Impact':textfile=" + headlineTopFile +
-                    ":fontsize=84:fontcolor=white:shadowcolor=black@0.92:" +
+                    ":fontsize=108:fontcolor=white:shadowcolor=black@0.92:" +
                     "shadowx=3:shadowy=5:x=(w-text_w)/2:y=290:" + show);
                 captions.Add("drawtext=font='Impact':textfile=" + headlineBottomFile +
-                    ":fontsize=96:fontcolor=white:shadowcolor=black@0.92:" +
+                    ":fontsize=118:fontcolor=white:shadowcolor=black@0.92:" +
                     "shadowx=3:shadowy=5:x=(w-text_w)/2:y=392:" + show);
                 captions.Add("drawtext=font='Impact':text='ORIGINAL EDITORIAL REVIEW':" +
                     "fontsize=27:fontcolor=white@0.88:shadowcolor=black@0.8:" +
