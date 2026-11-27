@@ -30,6 +30,7 @@ try
     VerifyHistoricalVideoContextFiltering();
     await VerifyCommonsVideosInNarrationSequence();
     await VerifyUserSourcePriorityAndDisabledSources();
+VerifyYouTubeTopicRelevance();
     await VerifyPixabayNarrationTopicFiltering();
     VerifyRightsReviewedScreencapImport();
     await VerifyChatGptArtworkMixedIntoChronologicalScenes();
@@ -517,6 +518,26 @@ async Task RescueEmptySceneWithAiImage()
         images[0].Id == rescue.Id && service.SceneFootageShortfall == 4,
         "One truthful scene-specific image should rescue five shot slots.");
     Console.WriteLine("PASS: zero-coverage scene rescued with original image instead of hard stop");
+}
+
+void VerifyYouTubeTopicRelevance()
+{
+    var scene = new PixabayFootageScene(1, "Vintage Mickey Mouse cartoons show Mickey Mouse smiling.",
+        "vintage Mickey Mouse smiling", "calm");
+    const string title = "Why Disney Hid an Entire Collection of Mickey Mouse-Era Cartoons";
+    Check(YouTubeFlowClipService.IsTopicMatch(title, scene, "Mickey Mouse Classic Cartoon"),
+        "Exact Mickey Mouse cartoon title must pass.");
+    Check(!YouTubeFlowClipService.IsTopicMatch(title, scene, "Vintage smiling cartoon mouse"),
+        "Generic mouse footage must not substitute for Mickey Mouse.");
+    Check(!YouTubeFlowClipService.IsTopicMatch(title, scene, "Mickey Mouse gameplay walkthrough"),
+        "Unrelated gameplay must not substitute for original animation.");
+    Check(!YouTubeFlowClipService.IsTopicMatch(title, scene, "Tom and Jerry Cartoon", "Mickey Mouse smiling"),
+        "Chapter metadata alone must not override unrelated video title.");
+    var generic = new PixabayFootageScene(2, "The cartoons disappeared from television broadcasts.",
+        "vintage television broadcast", "neutral");
+    Check(!YouTubeFlowClipService.IsTopicMatch(title, generic, "Vintage television broadcast footage"),
+        "Generic footage must not pass the named documentary identity gate.");
+    Console.WriteLine("PASS: YouTube footage must match documentary and narration identity");
 }
 
 async Task VerifyUserSourcePriorityAndDisabledSources()
