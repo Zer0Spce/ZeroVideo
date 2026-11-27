@@ -8,6 +8,7 @@ namespace ZeroVideo.App.Services;
 /// </summary>
 public static class YouTubeFlowSourceRouter
 {
+    public const string YouTube = "youtube-clips";
     public const string Pixabay = "pixabay-video";
     public const string CommonsVideo = "wikimedia-video";
     public const string CommonsPhoto = "wikimedia-photo";
@@ -18,7 +19,7 @@ public static class YouTubeFlowSourceRouter
     public const string Bulbagarden = "bulbagarden";
 
     public static IReadOnlyList<string> AutomaticSources { get; } =
-        [Pixabay, CommonsVideo, CommonsPhoto, ChatGpt];
+        [YouTube, Pixabay, ChatGpt, CommonsVideo, CommonsPhoto];
 
     public static bool IsReviewOnly(string source)
         => source is SpongeBob or AnimationScreencaps or Intanibase or Bulbagarden;
@@ -85,16 +86,11 @@ public static class YouTubeFlowSourceRouter
 
             if (source == Pixabay)
             {
-                // Keep one slot open where practical for enabled later-ranked
-                // automatic sources, allowing a real mixed-media documentary
-                // without discarding the user's priority order.
-                var mixAfter = order.Skip(p + 1).Any(s =>
-                    AutomaticSources.Contains(s));
-                var budgets = Enumerable.Range(0, scenes.Count)
-                    .Select(i => mixAfter && remains[i] >= 2
-                        ? remains[i] - 1 : remains[i]).ToArray();
-                if (budgets.All(x => x == 0)) continue;
-                var stock = await pixabayBatch(budgets, ct);
+                var budgets = remains;
+                IReadOnlyList<PixabayFlowClip> stock;
+                try { stock = await pixabayBatch(budgets, ct); }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { log?.Invoke("Pixabay unavailable: " + ex.Message); continue; }
                 for (var i = 0; i < scenes.Count; i++)
                     AddForScene(i, stock.Where(c =>
                         c.MediaSource == "Pixabay"), budgets[i]);
@@ -110,7 +106,7 @@ public static class YouTubeFlowSourceRouter
                 // Avoid repeated generation/downloads: a single illustration
                 // or manually reviewed frame can be held for its scene.
                 var maximum = source == ChatGpt || IsReviewOnly(source) ? 1
-                    : Math.Min(2, quota[i] - items[i].Count);
+                    : source == YouTube ? quota[i] - items[i].Count : Math.Min(2, quota[i] - items[i].Count);
                 IReadOnlyList<PixabayFlowClip> found;
                 try
                 {
