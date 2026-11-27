@@ -41,14 +41,16 @@ public sealed partial class MainViewModel
 
     public ObservableCollection<YouTubeFlowMediaSourceOption> YouTubeFlowMediaSources { get; } =
     [
+        new(YouTubeFlowSourceRouter.YouTube, "YouTube — Relevant Clips",
+            "yt-dlp downloads matched chapter segments with on-video channel credits"),
         new(YouTubeFlowSourceRouter.Pixabay, "Pixabay — Stock Videos",
             "Scene/topic-matched footage; requires Pixabay API key"),
+        new(YouTubeFlowSourceRouter.ChatGpt, "ChatGPT — Original Images",
+            "Contextual illustrations; no franchise character lookalikes"),
         new(YouTubeFlowSourceRouter.CommonsVideo, "Wikimedia Commons — Videos",
             "Public-domain, CC0 or verified CC BY videos"),
         new(YouTubeFlowSourceRouter.CommonsPhoto, "Wikimedia Commons — Photos",
             "Commercially reusable still photos with source credits"),
-        new(YouTubeFlowSourceRouter.ChatGpt, "ChatGPT — Original Images",
-            "Contextual illustrations; no franchise character lookalikes"),
         new(YouTubeFlowSourceRouter.SpongeBob, "SpongeBob Captures",
             "Copyright review required; approved user-imported stills only",
             false, true),
@@ -170,7 +172,7 @@ public sealed partial class MainViewModel
             {
                 var preferences = JsonSerializer.Deserialize<List<SourcePreference>>(
                     File.ReadAllText(YouTubeFlowSourcePreferencesFile));
-                if (preferences is not null)
+                if (preferences is not null && preferences.Any(p => p.Id == YouTubeFlowSourceRouter.YouTube))
                 {
                     foreach (var saved in preferences)
                     {
@@ -474,8 +476,7 @@ public sealed partial class MainViewModel
                     "Enable at least one Youtube Flow media source using the checkboxes.");
             if (mediaSourceOrder.Contains(YouTubeFlowSourceRouter.Pixabay) &&
                 string.IsNullOrWhiteSpace(Settings.PixabayApiKey))
-                throw new InvalidOperationException(
-                    "Pixabay is checked. Enter your Pixabay API key or uncheck Pixabay to use the other sources.");
+                Log("Pixabay has no API key; it will be skipped if needed.");
             Log("YouTube Flow source priority: " + string.Join(" > ", mediaSourceOrder));
             // Keep import location stable even if the output later switches to
             // a recovered project folder.
@@ -711,7 +712,7 @@ public sealed partial class MainViewModel
             // Mix a small, bounded number of ChatGPT-made scene illustrations
             // with stock footage and Wikimedia Commons photos. Never generate
             // a new image for a scene if its previously saved file is usable.
-            var maxAiImages = Math.Min(6, Math.Max(1, scenes.Count / 5));
+            var maxAiImages = scenes.Count;
             var aiImagesAttempted = 0;
             var mandatoryAiRescues = 0;
             var imageProviderRefusedThisProject = false;
@@ -776,6 +777,8 @@ public sealed partial class MainViewModel
                 string source, PixabayFootageScene scene, int maximum,
                 CancellationToken cancellation)
             {
+                if (source == YouTubeFlowSourceRouter.YouTube)
+                    return await new YouTubeFlowClipService(_runner).AcquireAsync(scene, maximum, folder, Settings.FfmpegPath, Log, cancellation);
                 if (source == YouTubeFlowSourceRouter.CommonsVideo)
                     return await commonsVideos.FindVideosAsync(
                         scene, maximum,
@@ -923,7 +926,7 @@ public sealed partial class MainViewModel
                 await File.WriteAllTextAsync(Path.Combine(folder, "AI-generated-images.txt"),
                     provenance.ToString(), _cts.Token);
             }
-            Log($"YouTube Flow media: {pixabayVideoClips.Length} Pixabay videos, " +
+            Log($"YouTube Flow media: {clips.Count(c => c.MediaSource == "YouTube")} YouTube videos, {pixabayVideoClips.Length} Pixabay videos, " +
                 $"{commonsVideoClips.Length} Wikimedia Commons videos, " +
                 $"{commonsPhotos.Length} Commons photographs, " +
                 $"{aiIllustrations.Length} ChatGPT illustrations, " +
@@ -942,6 +945,7 @@ public sealed partial class MainViewModel
                 target_clip_count = targetClips,
                 matched_clip_count = clips.Count,
                 video_clip_count = clips.Count(c => !c.IsStillImage),
+                youtube_video_count = clips.Count(c => c.MediaSource == "YouTube"),
                 pixabay_video_count = pixabayVideoClips.Length,
                 wikimedia_video_count = commonsVideoClips.Length,
                 wikimedia_photo_count = commonsPhotos.Length,
