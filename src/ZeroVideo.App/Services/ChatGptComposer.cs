@@ -164,10 +164,14 @@ IMPORTANT IMAGE ROUTING NOTE:
         await page.Keyboard.PressAsync("Enter");
     }
 
-    private static bool IsImageGenerationPrompt(string text)
+    public static bool IsImageGenerationPrompt(string text)
         => text.Contains("still image for this exact video scene", StringComparison.OrdinalIgnoreCase)
-           || (text.StartsWith("Create ONE original", StringComparison.OrdinalIgnoreCase)
-               && text.Contains("image", StringComparison.OrdinalIgnoreCase));
+           || ((text.StartsWith("Create ONE original", StringComparison.OrdinalIgnoreCase) ||
+                text.StartsWith("Create exactly ONE original", StringComparison.OrdinalIgnoreCase) ||
+                text.StartsWith("Create exactly ONE finished", StringComparison.OrdinalIgnoreCase)) &&
+               (text.Contains("image", StringComparison.OrdinalIgnoreCase) ||
+                text.Contains("illustration", StringComparison.OrdinalIgnoreCase) ||
+                text.Contains("thumbnail", StringComparison.OrdinalIgnoreCase)));
 
     private static async Task AttachBlankRoutingCanvasAsync(IPage page, string aspectRatio, CancellationToken ct)
     {

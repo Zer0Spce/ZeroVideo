@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/ZeroVideo.App/Models/VideoProject.cs" Link="VideoProject.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/CharacterConsistencyService.cs" Link="CharacterConsistencyService.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/RealPersonIdentityService.cs" Link="RealPersonIdentityService.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/AutoRealPersonIdentityService.cs" Link="AutoRealPersonIdentityService.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/SceneVisualPlanService.cs" Link="SceneVisualPlanService.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/NarrationTimelineService.cs" Link="NarrationTimelineService.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/CaptionLayoutService.cs" Link="CaptionLayoutService.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/CaptionRenderPolicy.cs" Link="CaptionRenderPolicy.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/ChatGptResponseRecovery.cs" Link="ChatGptResponseRecovery.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/TikTokSubsequentDatePolicy.cs" Link="TikTokSubsequentDatePolicy.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/TikTokScheduleDateGuard.cs" Link="TikTokScheduleDateGuard.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/YouTubeShortsPolicy.cs" Link="YouTubeShortsPolicy.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/YouTubeStudioControlPolicy.cs" Link="YouTubeStudioControlPolicy.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/ThumbnailHeadlineService.cs" Link="ThumbnailHeadlineService.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Services/LocalImageResolutionService.cs" Link="LocalImageResolutionService.cs"/>
+    <Compile Include="../../src/ZeroVideo.App/Models/ZeroVideoSettings.cs" Link="ZeroVideoSettings.cs"/>
+  </ItemGroup>
+</Project>
