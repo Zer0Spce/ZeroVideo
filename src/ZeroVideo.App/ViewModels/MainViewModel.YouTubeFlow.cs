@@ -1,0 +1,1199 @@
+using System.Collections.ObjectModel;
+using System.Security.Cryptography;
+using System.Diagnostics;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Text;
+using System.Windows.Input;
+using ZeroVideo.App.Infrastructure;
+using ZeroVideo.App.Models;
+using ZeroVideo.App.Services;
+
+namespace ZeroVideo.App.ViewModels;
+
+/// <summary>
+/// Isolated one-tab production workflow: ideas -> script -> voice -> Pixabay -> FFmpeg.
+/// Does not change legacy Shorts, Long Form or Publishing implementations.
+/// </summary>
+public sealed partial class MainViewModel
+{
+    private string _youTubeFlowNiche = "Documentary facts";
+    private int _youTubeFlowIdeaCount = 6;
+    private VideoIdea? _youTubeFlowSelectedIdea;
+    private string _youTubeFlowTitle = "";
+    private string _youTubeFlowScript = "";
+    private int _youTubeFlowMinutes = 5;
+    private string _youTubeFlowRatio = "16:9";
+    private string _youTubeFlowStatus = "Enter a niche or paste a script to begin.";
+    private string _youTubeFlowOutput = "";
+    private string _youTubeFlowSeoTitle = "";
+    private string _youTubeFlowSeoDescription = "";
+    private string _youTubeFlowSeoTags = "";
+    private string _youTubeFlowSeoHashtags = "";
+    private string _youTubeFlowPinnedComment = "";
+    private string _youTubeFlowSeoStatus = "";
+    private string _youTubeFlowThumbnailStyle = "Dark Documentary";
+    private string _youTubeFlowThumbnailHeadline = "";
+    private string _youTubeFlowThumbnailConcepts = "";
+    private string _youTubeFlowThumbnailOutput = "";
+    private string _youTubeFlowThumbnailStatus = "";
+    private string _youTubeFlowSourceStatus = "Select sources and set priority (top = first choice).";
+
+    public ObservableCollection<YouTubeFlowMediaSourceOption> YouTubeFlowMediaSources { get; } =
+    [
+        new(YouTubeFlowSourceRouter.YouTube, "YouTube — Relevant Clips",
+            "yt-dlp downloads matched chapter segments with on-video channel credits"),
+        new(YouTubeFlowSourceRouter.Pixabay, "Pixabay — Stock Videos",
+            "Scene/topic-matched footage; requires Pixabay API key"),
+        new(YouTubeFlowSourceRouter.ChatGpt, "ChatGPT — Original Images",
+            "Contextual illustrations; no franchise character lookalikes"),
+        new(YouTubeFlowSourceRouter.CommonsVideo, "Wikimedia Commons — Videos",
+            "Public-domain, CC0 or verified CC BY videos"),
+        new(YouTubeFlowSourceRouter.CommonsPhoto, "Wikimedia Commons — Photos",
+            "Commercially reusable still photos with source credits"),
+        new(YouTubeFlowSourceRouter.SpongeBob, "SpongeBob Captures",
+            "Copyright review required; approved user-imported stills only",
+            false, true),
+        new(YouTubeFlowSourceRouter.AnimationScreencaps, "Animation Screencaps",
+            "Copyright review required; approved user-imported stills only",
+            false, true),
+        new(YouTubeFlowSourceRouter.Intanibase, "Internet Animation Database",
+            "Copyright review required; approved user-imported stills only",
+            false, true),
+        new(YouTubeFlowSourceRouter.Bulbagarden, "Bulbagarden Archives",
+            "Copyright review required; approved user-imported stills only",
+            false, true)
+    ];
+    public string YouTubeFlowSourceStatus
+    {
+        get => _youTubeFlowSourceStatus;
+        private set => Set(ref _youTubeFlowSourceStatus, value);
+    }
+    public ICommand MoveYouTubeFlowSourceUpCommand { get; private set; } = null!;
+    public ICommand MoveYouTubeFlowSourceDownCommand { get; private set; } = null!;
+    public ICommand OpenYouTubeFlowScreencapFolderCommand { get; private set; } = null!;
+
+    public ObservableCollection<int> YouTubeFlowIdeaCounts { get; } = [3, 6, 10];
+    public ObservableCollection<int> YouTubeFlowDurations { get; } = [1, 3, 5, 10, 15];
+    public ObservableCollection<VideoIdea> YouTubeFlowIdeas { get; } = [];
+    public string YouTubeFlowNiche { get => _youTubeFlowNiche; set => Set(ref _youTubeFlowNiche, value); }
+    public int YouTubeFlowIdeaCount { get => _youTubeFlowIdeaCount; set => Set(ref _youTubeFlowIdeaCount, value); }
+    public VideoIdea? YouTubeFlowSelectedIdea { get => _youTubeFlowSelectedIdea; set => Set(ref _youTubeFlowSelectedIdea, value); }
+    public string YouTubeFlowTitle { get => _youTubeFlowTitle; set => Set(ref _youTubeFlowTitle, value); }
+    public string YouTubeFlowScript { get => _youTubeFlowScript; set => Set(ref _youTubeFlowScript, value); }
+    public int YouTubeFlowMinutes { get => _youTubeFlowMinutes; set => Set(ref _youTubeFlowMinutes, value); }
+    public string YouTubeFlowRatio { get => _youTubeFlowRatio; set => Set(ref _youTubeFlowRatio, value); }
+    public string YouTubeFlowStatus { get => _youTubeFlowStatus; private set => Set(ref _youTubeFlowStatus, value); }
+    public string YouTubeFlowOutput { get => _youTubeFlowOutput; private set => Set(ref _youTubeFlowOutput, value); }
+    public string YouTubeFlowSeoTitle { get => _youTubeFlowSeoTitle; set => Set(ref _youTubeFlowSeoTitle, value); }
+    public string YouTubeFlowSeoDescription { get => _youTubeFlowSeoDescription; set => Set(ref _youTubeFlowSeoDescription, value); }
+    public string YouTubeFlowSeoTags { get => _youTubeFlowSeoTags; set => Set(ref _youTubeFlowSeoTags, value); }
+    public string YouTubeFlowSeoHashtags { get => _youTubeFlowSeoHashtags; set => Set(ref _youTubeFlowSeoHashtags, value); }
+    public string YouTubeFlowPinnedComment { get => _youTubeFlowPinnedComment; set => Set(ref _youTubeFlowPinnedComment, value); }
+    public string YouTubeFlowSeoStatus { get => _youTubeFlowSeoStatus; private set => Set(ref _youTubeFlowSeoStatus, value); }
+    public ObservableCollection<string> YouTubeFlowThumbnailStyles { get; } =
+        ["Dark Documentary", "Creepy Cartoon Commentary", "Clean Educational", "Dramatic Documentary"];
+    public string YouTubeFlowThumbnailStyle { get => _youTubeFlowThumbnailStyle; set => Set(ref _youTubeFlowThumbnailStyle, value); }
+    public string YouTubeFlowThumbnailHeadline { get => _youTubeFlowThumbnailHeadline; set => Set(ref _youTubeFlowThumbnailHeadline, value); }
+    public string YouTubeFlowThumbnailConcepts { get => _youTubeFlowThumbnailConcepts; private set => Set(ref _youTubeFlowThumbnailConcepts, value); }
+    public string YouTubeFlowThumbnailOutput { get => _youTubeFlowThumbnailOutput; private set => Set(ref _youTubeFlowThumbnailOutput, value); }
+    public string YouTubeFlowThumbnailStatus { get => _youTubeFlowThumbnailStatus; private set => Set(ref _youTubeFlowThumbnailStatus, value); }
+
+    public ICommand GenerateYouTubeFlowIdeasCommand { get; private set; } = null!;
+    public ICommand UseYouTubeFlowIdeaCommand { get; private set; } = null!;
+    public ICommand GenerateYouTubeFlowScriptCommand { get; private set; } = null!;
+    public ICommand BuildYouTubeFlowCommand { get; private set; } = null!;
+    public ICommand SaveYouTubeFlowSettingsCommand { get; private set; } = null!;
+    public ICommand OpenYouTubeFlowOutputCommand { get; private set; } = null!;
+    public ICommand GenerateYouTubeFlowSeoCommand { get; private set; } = null!;
+    public ICommand GenerateYouTubeFlowThumbnailConceptsCommand { get; private set; } = null!;
+    public ICommand GenerateYouTubeFlowThumbnailCommand { get; private set; } = null!;
+
+    private void InitializeYouTubeFlowCommands()
+    {
+        LoadYouTubeFlowMediaSources();
+        MoveYouTubeFlowSourceUpCommand = new AsyncItemCommand<YouTubeFlowMediaSourceOption>(
+            item => { MoveYouTubeFlowSource(item, -1); return Task.CompletedTask; });
+        MoveYouTubeFlowSourceDownCommand = new AsyncItemCommand<YouTubeFlowMediaSourceOption>(
+            item => { MoveYouTubeFlowSource(item, 1); return Task.CompletedTask; });
+        OpenYouTubeFlowScreencapFolderCommand = new RelayCommand(() =>
+        {
+            var target = Path.Combine(YouTubeFlowPublishingFolder(), "approved-screencaps");
+            Directory.CreateDirectory(target);
+            Process.Start(new ProcessStartInfo("explorer.exe", "\"" + target + "\"")
+                { UseShellExecute = true });
+            YouTubeFlowSourceStatus = "Use the screencap-review.json and README instructions. " +
+                "Only manually approved, rights-reviewed frames can enter the render.";
+        });
+        GenerateYouTubeFlowIdeasCommand = new AsyncCommand(() =>
+            RunManagedJobAsync("YouTube Flow — Ideas", GenerateYouTubeFlowIdeasAsync));
+        UseYouTubeFlowIdeaCommand = new RelayCommand(() =>
+        {
+            if (YouTubeFlowSelectedIdea is null) return;
+            YouTubeFlowTitle = YouTubeFlowSelectedIdea.Title;
+            YouTubeFlowStatus = "Idea selected. Generate a script or paste your own.";
+        });
+        GenerateYouTubeFlowScriptCommand = new AsyncCommand(() =>
+            RunManagedJobAsync("YouTube Flow — Script", GenerateYouTubeFlowScriptAsync));
+        SaveYouTubeFlowSettingsCommand = new AsyncCommand(async () =>
+        {
+            await _settingsService.SaveAsync(Settings);
+            YouTubeFlowStatus = "Pixabay key/settings saved locally.";
+        });
+        BuildYouTubeFlowCommand = new AsyncCommand(() =>
+            RunManagedJobAsync("YouTube Flow — Stock Video", BuildYouTubeFlowAsync));
+        GenerateYouTubeFlowSeoCommand = new AsyncCommand(() =>
+            RunManagedJobAsync("YouTube Flow — SEO", GenerateYouTubeFlowSeoAsync));
+        GenerateYouTubeFlowThumbnailConceptsCommand = new AsyncCommand(() =>
+            RunManagedJobAsync("YouTube Flow — Thumbnail Concepts",
+                GenerateYouTubeFlowThumbnailConceptsAsync));
+        GenerateYouTubeFlowThumbnailCommand = new AsyncCommand(() =>
+            RunManagedJobAsync("YouTube Flow — Thumbnail", GenerateYouTubeFlowThumbnailAsync));
+        OpenYouTubeFlowOutputCommand = new RelayCommand(() =>
+        {
+            if (string.IsNullOrWhiteSpace(YouTubeFlowOutput)) return;
+            var folder = Path.GetDirectoryName(YouTubeFlowOutput);
+            if (folder is not null && Directory.Exists(folder))
+                Process.Start(new ProcessStartInfo("explorer.exe", "\"" + folder + "\"")
+                    { UseShellExecute = true });
+        });
+    }
+
+    private static string YouTubeFlowSourcePreferencesFile =>
+        Path.Combine(AppPaths.DataDirectory, "youtube-flow-media-sources-v1.json");
+
+    private sealed record SourcePreference(string Id, bool Enabled);
+
+    private void LoadYouTubeFlowMediaSources()
+    {
+        try
+        {
+            if (File.Exists(YouTubeFlowSourcePreferencesFile))
+            {
+                var preferences = JsonSerializer.Deserialize<List<SourcePreference>>(
+                    File.ReadAllText(YouTubeFlowSourcePreferencesFile));
+                if (preferences is not null && preferences.Any(p => p.Id == YouTubeFlowSourceRouter.YouTube))
+                {
+                    foreach (var saved in preferences)
+                    {
+                        var option = YouTubeFlowMediaSources.FirstOrDefault(x => x.Id == saved.Id);
+                        if (option is null) continue;
+                        option.IsEnabled = saved.Enabled;
+                        var current = YouTubeFlowMediaSources.IndexOf(option);
+                        YouTubeFlowMediaSources.Move(current,
+                            Math.Min(YouTubeFlowMediaSources.Count - 1,
+                                Math.Max(0, preferences.IndexOf(saved))));
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            YouTubeFlowSourceStatus = "Default media source priorities loaded: " + ex.Message;
+        }
+        foreach (var source in YouTubeFlowMediaSources)
+            source.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName == nameof(YouTubeFlowMediaSourceOption.IsEnabled))
+                    SaveYouTubeFlowMediaSources();
+            };
+    }
+
+    private void MoveYouTubeFlowSource(YouTubeFlowMediaSourceOption item, int movement)
+    {
+        var index = YouTubeFlowMediaSources.IndexOf(item);
+        if (index < 0 || index + movement < 0 ||
+            index + movement >= YouTubeFlowMediaSources.Count) return;
+        YouTubeFlowMediaSources.Move(index, index + movement);
+        SaveYouTubeFlowMediaSources();
+    }
+
+    private void SaveYouTubeFlowMediaSources()
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.DataDirectory);
+            var preferences = YouTubeFlowMediaSources.Select(x =>
+                new SourcePreference(x.Id, x.IsEnabled)).ToArray();
+            File.WriteAllText(YouTubeFlowSourcePreferencesFile,
+                JsonSerializer.Serialize(preferences, new JsonSerializerOptions
+                    { WriteIndented = true }));
+            YouTubeFlowSourceStatus =
+                "Saved priorities: " + string.Join(" > ",
+                    YouTubeFlowMediaSources.Where(x => x.IsEnabled).Select(x => x.Name));
+        }
+        catch (Exception ex)
+        {
+            YouTubeFlowSourceStatus = "Could not save media priority settings: " + ex.Message;
+        }
+    }
+
+    private string[] EnabledYouTubeFlowMediaSources()
+        => YouTubeFlowSourceRouter.NormalizeOrder(
+            YouTubeFlowMediaSources.Where(x => x.IsEnabled).Select(x => x.Id)).ToArray();
+
+    private async Task GenerateYouTubeFlowIdeasAsync()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(YouTubeFlowNiche))
+                throw new InvalidOperationException("Enter a niche before generating ideas.");
+            YouTubeFlowStatus = "Generating YouTube Flow ideas with ChatGPT...";
+            var response = await _chat.GenerateVideoIdeasAsync(
+                YouTubeFlowNiche.Trim(), YouTubeFlowIdeaCount, Settings, Log, _cts.Token);
+            using var document = JsonDocument.Parse(response);
+            var root = document.RootElement;
+            if (root.GetProperty("response_type").GetString() != "zerovideo_ideas_v1")
+                throw new InvalidDataException("Unexpected idea response type.");
+            YouTubeFlowIdeas.Clear();
+            foreach (var idea in root.GetProperty("ideas").EnumerateArray())
+            {
+                var title = GetString(idea, "title");
+                var hook = GetString(idea, "hook");
+                if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(hook)) continue;
+                YouTubeFlowIdeas.Add(new VideoIdea
+                {
+                    Title = title, Hook = hook, Niche = YouTubeFlowNiche.Trim()
+                });
+            }
+            YouTubeFlowSelectedIdea = YouTubeFlowIdeas.FirstOrDefault();
+            YouTubeFlowStatus = YouTubeFlowIdeas.Count +
+                " ideas ready. Select an idea and choose Use selected.";
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { YouTubeFlowStatus = "Ideas failed: " + ex.Message; Fail(ex); }
+    }
+
+    private async Task GenerateYouTubeFlowScriptAsync()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(YouTubeFlowTitle))
+                throw new InvalidOperationException("Choose a video idea or enter a title first.");
+            YouTubeFlowStatus = "Writing narration script...";
+            var words = YouTubeFlowMinutes * 135;
+            var prompt =
+                "Write an original, complete, accurate voiceover narration script for a faceless " +
+                "YouTube documentary video titled: " + YouTubeFlowTitle + ". " +
+                "Aim for approximately " + words +
+                " spoken words for " + YouTubeFlowMinutes + " minutes. " +
+                "Use an immediate hook, clear narrative flow, strong transitions and a meaningful ending. " +
+                "Avoid production directions, captions, timestamps, headings and stock footage instructions " +
+                "inside the spoken narration. Avoid unfounded claims or fabricated real events. " +
+                "Return ONLY one valid JSON object in a fenced json code block with exactly the schema " +
+                "{\"response_type\":\"youtube_flow_script_v1\",\"script\":\"Full spoken narration text\"}.";
+            var result = await _chat.GenerateTextAsync(
+                new VideoProject { Title = YouTubeFlowTitle, Topic = YouTubeFlowTitle },
+                Settings, prompt, Log, _cts.Token);
+            using var doc = JsonDocument.Parse(result);
+            if (GetString(doc.RootElement, "response_type") != "youtube_flow_script_v1")
+                throw new InvalidDataException("Script response was not in the expected JSON format.");
+            var script = GetString(doc.RootElement, "script");
+            if (script.Length < 100)
+                throw new InvalidDataException("Generated script was too short. Retry script generation.");
+            YouTubeFlowScript = script;
+            YouTubeFlowStatus = "Script ready. Review/edit it, then select Create video.";
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { YouTubeFlowStatus = "Script failed: " + ex.Message; Fail(ex); }
+    }
+
+    private string YouTubeFlowPublishingFolder()
+    {
+        if (!string.IsNullOrWhiteSpace(YouTubeFlowOutput))
+        {
+            var existing = Path.GetDirectoryName(YouTubeFlowOutput);
+            if (!string.IsNullOrWhiteSpace(existing) && Directory.Exists(existing) &&
+                File.Exists(Path.Combine(existing, "script.txt")))
+                return existing;
+        }
+        var filename = new string(YouTubeFlowTitle
+            .Where(c => !Path.GetInvalidFileNameChars().Contains(c)).Take(70).ToArray()).Trim();
+        if (string.IsNullOrWhiteSpace(filename)) filename = "Untitled Documentary";
+        var folder = Path.Combine(Settings.ProjectsRoot, "YouTube Flow",
+            "Publishing Assets", filename);
+        Directory.CreateDirectory(folder);
+        return folder;
+    }
+
+    private async Task GenerateYouTubeFlowSeoAsync()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(YouTubeFlowTitle) ||
+                YouTubeFlowScript.Trim().Length < 100)
+                throw new InvalidOperationException(
+                    "Enter a title and narration script to generate accurate YouTube metadata.");
+            YouTubeFlowSeoStatus = "Creating accurate YouTube SEO title, description and tags...";
+            var prompt = "Write an accurate, copy-paste-ready YouTube documentary SEO pack. " +
+                "DO NOT invent facts, quote nonexistent sources, or claim hidden/official footage. " +
+                "Optimize for human readability and search relevance, not keyword spam. " +
+                "Title maximum 100 characters. Include a clear 150-400 word description, " +
+                "10-20 descriptive single-line keyword tags and 3-6 hashtags and an optional pinned question. " +
+                "Include a note that any AI images are illustrative and not authentic archival footage " +
+                "when appropriate. Return exactly one JSON object, no prose, with schema " +
+                "{\"response_type\":\"youtube_flow_seo_v1\",\"title\":\"...\", " +
+                "\"description\":\"...\",\"tags\":[\"...\"],\"hashtags\":[\"#...\"]," +
+                "\"pinned_comment\":\"...\"}. " +
+                "VIDEO TITLE: " + YouTubeFlowTitle + "\nFULL NARRATION:\n" + YouTubeFlowScript;
+            var raw = await _chat.GenerateTextAsync(
+                new VideoProject { Title = YouTubeFlowTitle, Topic = YouTubeFlowTitle },
+                Settings, prompt, Log, _cts.Token);
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            if (GetString(root, "response_type") != "youtube_flow_seo_v1")
+                throw new InvalidDataException("SEO response was not in the expected format.");
+            var newTitle = GetString(root, "title");
+            var newDescription = GetString(root, "description");
+            if (string.IsNullOrWhiteSpace(newTitle) || newTitle.Length > 100 ||
+                string.IsNullOrWhiteSpace(newDescription))
+                throw new InvalidDataException("SEO title or description is missing/invalid.");
+            static string ListField(JsonElement obj, string key)
+            {
+                if (!obj.TryGetProperty(key, out var array) ||
+                    array.ValueKind != JsonValueKind.Array)
+                    throw new InvalidDataException($"SEO '{key}' must be an array.");
+                return string.Join(", ", array.EnumerateArray()
+                    .Where(x => x.ValueKind == JsonValueKind.String)
+                    .Select(x => x.GetString()?.Trim())
+                    .Where(x => !string.IsNullOrWhiteSpace(x)));
+            }
+            YouTubeFlowSeoTitle = newTitle;
+            YouTubeFlowSeoDescription = newDescription;
+            YouTubeFlowSeoTags = ListField(root, "tags");
+            YouTubeFlowSeoHashtags = ListField(root, "hashtags");
+            YouTubeFlowPinnedComment = GetString(root, "pinned_comment");
+            var directory = YouTubeFlowPublishingFolder();
+            await File.WriteAllTextAsync(Path.Combine(directory, "youtube-seo-pack.json"),
+                JsonSerializer.Serialize(new
+                {
+                    title = YouTubeFlowSeoTitle,
+                    description = YouTubeFlowSeoDescription,
+                    tags = YouTubeFlowSeoTags.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+                    hashtags = YouTubeFlowSeoHashtags.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+                    pinned_comment = YouTubeFlowPinnedComment
+                }, new JsonSerializerOptions { WriteIndented = true }), _cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(directory, "youtube-seo-copy.txt"),
+                YouTubeFlowSeoTitle + "\n\n" + YouTubeFlowSeoDescription +
+                "\n\n" + YouTubeFlowSeoHashtags +
+                "\n\nTags: " + YouTubeFlowSeoTags +
+                "\n\nPinned comment: " + YouTubeFlowPinnedComment, _cts.Token);
+            YouTubeFlowSeoStatus = "SEO pack ready and saved. All fields are editable.";
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { YouTubeFlowSeoStatus = "SEO failed: " + ex.Message; Fail(ex); }
+    }
+
+    private async Task GenerateYouTubeFlowThumbnailConceptsAsync()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(YouTubeFlowTitle) ||
+                YouTubeFlowScript.Trim().Length < 100)
+                throw new InvalidOperationException("Provide the title and narration first.");
+            YouTubeFlowThumbnailStatus = "Creating three subject-specific thumbnail concepts...";
+            var prompt = "Produce EXACTLY three distinct YouTube thumbnail concepts for this actual " +
+                "documentary narration. Each must focus on a concrete subject named in the script, " +
+                "not generic architecture, people in meetings, or random stock. " +
+                "If this is a cartoon/show controversy, suggest a transformative original " +
+                "cartoon-like subject illustration with an eerie treatment when appropriate. " +
+                "No copyrighted episode screenshots, misleading historical claims, gore, " +
+                "official logos or fabricated evidence. " +
+                "Return exactly one JSON object: " +
+                "{\"response_type\":\"youtube_flow_thumbnail_concepts_v1\"," +
+                "\"concepts\":[{\"name\":\"...\",\"visual\":\"...\",\"headline\":\"...\"}]}. " +
+                "STYLE: " + YouTubeFlowThumbnailStyle +
+                "\nTITLE: " + YouTubeFlowTitle +
+                "\nNARRATION:\n" + YouTubeFlowScript;
+            var raw = await _chat.GenerateTextAsync(
+                new VideoProject { Title = YouTubeFlowTitle, Topic = YouTubeFlowTitle },
+                Settings, prompt, Log, _cts.Token);
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            if (GetString(root, "response_type") != "youtube_flow_thumbnail_concepts_v1" ||
+                !root.TryGetProperty("concepts", out var array) ||
+                array.ValueKind != JsonValueKind.Array || array.GetArrayLength() != 3)
+                throw new InvalidDataException("Thumbnail concepts must contain three entries.");
+            var pieces = array.EnumerateArray().Select((c, i) =>
+                $"{i + 1}. {GetString(c, "name")}\n" +
+                $"Visual: {GetString(c, "visual")}\n" +
+                $"Headline: {GetString(c, "headline")}").ToArray();
+            YouTubeFlowThumbnailConcepts = string.Join("\n\n", pieces);
+            var preferred = GetString(array[0], "headline");
+            if (string.IsNullOrWhiteSpace(YouTubeFlowThumbnailHeadline) &&
+                preferred.Length <= 48)
+                YouTubeFlowThumbnailHeadline = preferred;
+            await File.WriteAllTextAsync(Path.Combine(
+                YouTubeFlowPublishingFolder(), "thumbnail-concepts.json"),
+                raw, _cts.Token);
+            YouTubeFlowThumbnailStatus = "Three concepts ready. Edit the headline and generate your thumbnail.";
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { YouTubeFlowThumbnailStatus = "Concepts failed: " + ex.Message; Fail(ex); }
+    }
+
+    private async Task GenerateYouTubeFlowThumbnailAsync()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(YouTubeFlowTitle) ||
+                YouTubeFlowScript.Trim().Length < 100)
+                throw new InvalidOperationException("Provide the title and narration first.");
+            var folder = YouTubeFlowPublishingFolder();
+            var output = Path.Combine(folder, "thumbnail-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".png");
+            YouTubeFlowThumbnailStatus = "Generating 16:9 documentary thumbnail illustration...";
+            var project = new VideoProject
+            {
+                Title = YouTubeFlowTitle, Topic = YouTubeFlowTitle,
+                AspectRatio = "16:9", Style = YouTubeFlowThumbnailStyle,
+                ProjectDirectory = folder
+            };
+            var file = await _chat.GenerateYouTubeFlowThumbnailAsync(
+                project, YouTubeFlowScript, YouTubeFlowThumbnailStyle,
+                YouTubeFlowThumbnailHeadline, Settings, output, Log, _cts.Token);
+            YouTubeFlowThumbnailOutput = file;
+            await File.WriteAllTextAsync(Path.Combine(folder, "thumbnail-provenance.txt"),
+                "Original AI-generated editorial documentary illustration.\n" +
+                "Not an authentic episode frame, licensed character artwork or archival photograph.\n" +
+                "Title: " + YouTubeFlowTitle + "\nStyle: " + YouTubeFlowThumbnailStyle +
+                "\nHeadline: " + YouTubeFlowThumbnailHeadline + "\nImage: " + file,
+                _cts.Token);
+            YouTubeFlowThumbnailStatus = "Thumbnail saved: " + file;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { YouTubeFlowThumbnailStatus = "Thumbnail failed: " + ex.Message; Fail(ex); }
+    }
+
+    private async Task BuildYouTubeFlowAsync()
+    {
+        try
+        {
+            if (YouTubeFlowScript.Trim().Length < 100)
+                throw new InvalidOperationException("Paste a full narration script or generate one first.");
+            var mediaSourceOrder = EnabledYouTubeFlowMediaSources();
+            if (mediaSourceOrder.Length == 0)
+                throw new InvalidOperationException(
+                    "Enable at least one Youtube Flow media source using the checkboxes.");
+            if (mediaSourceOrder.Contains(YouTubeFlowSourceRouter.Pixabay) &&
+                string.IsNullOrWhiteSpace(Settings.PixabayApiKey))
+                Log("Pixabay has no API key; it will be skipped if needed.");
+            Log("YouTube Flow source priority: " + string.Join(" > ", mediaSourceOrder));
+            // Keep import location stable even if the output later switches to
+            // a recovered project folder.
+            var mediaImportWorkspace = YouTubeFlowPublishingFolder();
+
+            // Separate workspace: never change the current Create/Shorts project.
+            var safeName = new string((string.IsNullOrWhiteSpace(YouTubeFlowTitle)
+                    ? "YouTube Flow" : YouTubeFlowTitle.Trim())
+                .Where(ch => !Path.GetInvalidFileNameChars().Contains(ch)).Take(52).ToArray()).Trim();
+            if (safeName.Length == 0) safeName = "YouTube Flow";
+            var root = Path.Combine(Settings.ProjectsRoot, "YouTube Flow");
+            Directory.CreateDirectory(root);
+            var expectedTarget = Math.Clamp(YouTubeFlowMinutes * PixabayVideoService.ClipsPerMinute,
+                1, PixabayVideoService.MaxClipsPerVideo);
+            // A retry after Pixabay HTTP 429 must resume the existing voiceover
+            // instead of generating (and billing for) the narration again.
+            // Never put the API key in project IDs or checkpoint filenames.
+            var identity = string.Join("\n", YouTubeFlowTitle, YouTubeFlowScript,
+                YouTubeFlowRatio, Settings.TextToSpeechEngine,
+                Settings.OmniVoiceProfileId, Settings.ClipchampVoice);
+            var resumeKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..24];
+            var resumeFile = Path.Combine(root, ".resume-" + resumeKey + ".txt");
+            var folder = "";
+            try
+            {
+                if (File.Exists(resumeFile))
+                {
+                    var candidate = Path.GetFullPath(await File.ReadAllTextAsync(resumeFile, _cts.Token));
+                    var permittedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) +
+                        Path.DirectorySeparatorChar;
+                    if (candidate.StartsWith(permittedRoot, StringComparison.OrdinalIgnoreCase) &&
+                        File.Exists(Path.Combine(candidate, "script.txt")) &&
+                        File.Exists(Path.Combine(candidate, "audio", "voiceover.wav")) &&
+                        await File.ReadAllTextAsync(Path.Combine(candidate, "script.txt"), _cts.Token) ==
+                            YouTubeFlowScript)
+                    {
+                        folder = candidate;
+                        Log("YouTube Flow: resuming previous unfinished project without repeating completed stages.");
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Log("YouTube Flow: previous resume marker was not usable; starting a new folder.");
+            }
+            // Recover a project written by the older portable build, before the
+            // dedicated resume marker existed. Match the *exact* narration, limit
+            // discovery to recent unfinished folders and do not touch completed MP4s.
+            if (string.IsNullOrWhiteSpace(folder))
+            {
+                foreach (var previous in Directory.EnumerateDirectories(root)
+                    .OrderByDescending(Directory.GetLastWriteTimeUtc).Take(30))
+                {
+                    var savedScript = Path.Combine(previous, "script.txt");
+                    var savedAudio = Path.Combine(previous, "audio", "voiceover.wav");
+                    if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(previous) > TimeSpan.FromDays(7))
+                        continue;
+                    if (!File.Exists(savedScript) || !File.Exists(savedAudio))
+                        continue;
+                    try
+                    {
+                        if (await File.ReadAllTextAsync(savedScript, _cts.Token) == YouTubeFlowScript)
+                        {
+                            folder = previous;
+                            Log("YouTube Flow: reusing narration from matching previous project (old video will be preserved).");
+                            break;
+                        }
+                    }
+                    catch (IOException) { /* Unreadable prior project is left unchanged. */ }
+                }
+            }
+            if (string.IsNullOrWhiteSpace(folder))
+                folder = Path.Combine(root, DateTime.Now.ToString("yyyyMMdd-HHmmssfff") +
+                    "-" + safeName);
+            Directory.CreateDirectory(folder);
+            Directory.CreateDirectory(Path.Combine(folder, "audio"));
+            // Every choice/order has a stable distinct output. Reordering
+            // providers never overwrites the old stock-only or hybrid MP4.
+            var mediaFingerprint = Convert.ToHexString(SHA256.HashData(
+                Encoding.UTF8.GetBytes("priority-v1|" + string.Join(">", mediaSourceOrder))))[..12];
+            var output = Path.Combine(folder,
+                $"youtube-flow-sources-{mediaFingerprint}.mp4");
+            YouTubeFlowOutput = output; // Open Output Folder works after a failed job.
+            await File.WriteAllTextAsync(
+                Path.Combine(folder, "script.txt"), YouTubeFlowScript, _cts.Token);
+            await File.WriteAllTextAsync(resumeFile, folder, _cts.Token);
+
+            // Split longer scripts at sentence boundaries so Clipchamp/OmniVoice
+            // receive manageable narration chunks rather than a single giant TTS request.
+            var chapters = SplitYouTubeFlowNarration(YouTubeFlowScript)
+                .Select((narration, index) => new ProjectChapter
+                {
+                    Number = index + 1, Title = YouTubeFlowTitle,
+                    Narration = narration
+                }).ToList();
+            var project = new VideoProject
+            {
+                Title = YouTubeFlowTitle, Topic = YouTubeFlowTitle,
+                ProjectDirectory = folder, AspectRatio = YouTubeFlowRatio,
+                Chapters = chapters,
+                Options = new ProjectOptions { GenerateCaptions = false, BurnInBoldCaptions = false }
+            };
+            Status = YouTubeFlowStatus = "Preparing narration voiceover...";
+            Progress = 10;
+            var renderer = new YouTubeFlowRenderService(_runner, _ffmpeg);
+            var voiceover = Path.Combine(folder, "audio", "voiceover.wav");
+            var reuseVoiceover = false;
+            if (File.Exists(voiceover))
+            {
+                try
+                {
+                    await _ffmpeg.ValidateNarrationAudioAsync(
+                        voiceover, Settings, "YouTube Flow saved voiceover",
+                        YouTubeFlowScript, Log, _cts.Token);
+                    reuseVoiceover = true;
+                    Log("YouTube Flow: reusing the already-complete voiceover from this project.");
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    Log("YouTube Flow: saved voiceover is not valid (" + ex.Message +
+                        "); regenerating audio.");
+                }
+            }
+            if (!reuseVoiceover)
+            {
+            var localVoice = Settings.TextToSpeechEngine == "OmniVoice (Local)";
+            if (localVoice)
+            {
+                if (!Settings.OmniVoiceNonCommercialAcknowledged)
+                    throw new InvalidOperationException(
+                        "OmniVoice is non-commercial/evaluation-only. Acknowledge the license in Voice Studio.");
+            }
+            else
+            {
+                // One manual checkpoint for the whole session, not per chunk.
+                _ttsContinueGate = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                WaitingForTtsContinue = true;
+                Status = YouTubeFlowStatus = "Select your Clipchamp voice, then click Continue TTS here.";
+                await _clip.PrepareManualVoiceSelectionAsync(Settings, Log, _cts.Token);
+                await _ttsContinueGate.Task.WaitAsync(_cts.Token);
+                WaitingForTtsContinue = false;
+                _ttsContinueGate = null;
+                _clip.ConfirmManualVoiceSelection();
+            }
+            var narrationFiles = new List<string>();
+            for (var index = 0; index < chapters.Count; index++)
+            {
+                _cts.Token.ThrowIfCancellationRequested();
+                var chapter = chapters[index];
+                Status = YouTubeFlowStatus =
+                    $"Narrating section {index + 1}/{chapters.Count}...";
+                var generated = localVoice
+                    ? await _omniVoice.GenerateChapterAsync(chapter, project, Settings, Log, _cts.Token)
+                    : await _clip.GenerateChapterAsync(chapter, project, Settings, Log, _cts.Token);
+                if (string.IsNullOrWhiteSpace(generated))
+                    throw new InvalidDataException("Voice generation did not return audio.");
+                // The very last TTS chunk can be under eight seconds; the
+                // complete merged narration receives the stronger duration check.
+                if (chapter.Narration.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length < 40)
+                    await _ffmpeg.ValidateAudibleAudioAsync(
+                        generated, Settings, $"YouTube Flow short part {index + 1}",
+                        Log, _cts.Token);
+                else
+                    await _ffmpeg.ValidateNarrationAudioAsync(
+                        generated, Settings, $"YouTube Flow part {index + 1}",
+                        chapter.Narration, Log, _cts.Token);
+                narrationFiles.Add(generated);
+            }
+            _ = await renderer.CombineNarrationAsync(
+                narrationFiles, voiceover,
+                Settings, Log, _cts.Token);
+            await _ffmpeg.ValidateNarrationAudioAsync(
+                voiceover, Settings, "YouTube Flow complete voiceover",
+                YouTubeFlowScript, Log, _cts.Token);
+            }
+            // Scale footage to the real narration duration, not merely the
+            // duration dropdown (a hand-edited script can be shorter/longer).
+            var narrationSeconds = await _ffmpeg.ProbeDurationAsync(voiceover, Settings, _cts.Token);
+            var targetClips = PixabayVideoService.TargetClipCount(
+                TimeSpan.FromSeconds(narrationSeconds));
+            var desiredQueries = PixabayVideoService.SuggestedQueryCount(targetClips);
+            Log($"YouTube Flow: narration {narrationSeconds:0}s; aiming for {targetClips} unique six-second stock clips from ~{desiredQueries} specific searches.");
+
+            Progress = 35;
+            Status = YouTubeFlowStatus = $"Storyboarding {desiredQueries} script scenes and their visual tone...";
+            var scenePlanFile = Path.Combine(folder, "pixabay-scenes-v4.json");
+            List<PixabayFootageScene>? scenes = null;
+            if (File.Exists(scenePlanFile))
+            {
+                try
+                {
+                    scenes = JsonSerializer.Deserialize<List<PixabayFootageScene>>(
+                        await File.ReadAllTextAsync(scenePlanFile, _cts.Token));
+                    if (scenes?.Count != desiredQueries ||
+                        scenes.Any(x => string.IsNullOrWhiteSpace(x.SearchQuery)))
+                        scenes = null;
+                    else Log("YouTube Flow: reusing storyboard and scene moods from previous attempt.");
+                }
+                catch (JsonException) { scenes = null; }
+            }
+            if (scenes is null)
+            {
+                scenes = await GenerateYouTubeFlowScenesAsync(desiredQueries);
+                await File.WriteAllTextAsync(scenePlanFile,
+                    JsonSerializer.Serialize(scenes, new JsonSerializerOptions { WriteIndented = true }),
+                    _cts.Token);
+            }
+            var queries = scenes.Select(scene => scene.SearchQuery).ToList();
+            Log($"YouTube Flow: {scenes.Count} narration-matched scenes ready. Incompatible visual moods or unrelated tags will be rejected.");
+            var screencapWorkspace = mediaImportWorkspace;
+            await YouTubeFlowScreencapReviewService.WriteReviewQueueAsync(
+                screencapWorkspace, YouTubeFlowTitle, scenes,
+                mediaSourceOrder, _cts.Token);
+            if (!Path.GetFullPath(folder).Equals(
+                    Path.GetFullPath(screencapWorkspace), StringComparison.OrdinalIgnoreCase))
+                await YouTubeFlowScreencapReviewService.WriteReviewQueueAsync(
+                    folder, YouTubeFlowTitle, scenes, mediaSourceOrder, _cts.Token);
+
+            Progress = 45;
+            Status = YouTubeFlowStatus = $"Selecting {targetClips} script-relevant Pixabay clips...";
+            var pixabay = new PixabayVideoService();
+            var commons = new WikimediaCommonsImageService();
+            var commonsVideos = new WikimediaCommonsVideoService();
+            var documentaryProject = new VideoProject
+            {
+                Title = YouTubeFlowTitle,
+                Topic = YouTubeFlowTitle,
+                AspectRatio = YouTubeFlowRatio,
+                ProjectDirectory = folder,
+                Style = "Documentary explainer"
+            };
+            // Mix a small, bounded number of ChatGPT-made scene illustrations
+            // with stock footage and Wikimedia Commons photos. Never generate
+            // a new image for a scene if its previously saved file is usable.
+            var maxAiImages = scenes.Count;
+            var aiImagesAttempted = 0;
+            var mandatoryAiRescues = 0;
+            var imageProviderRefusedThisProject = false;
+            async Task<PixabayFlowClip?> TryAiImageAsync(
+                PixabayFootageScene scene, CancellationToken cancellation,
+                bool mandatory = false)
+            {
+                // The optional illustration budget is separate from mandatory
+                // rescue. Missing scenes must not fail just because earlier
+                // scenes used the decorative AI slots.
+                // After an explicit content refusal, do not send repeated
+                // near-identical prompts or attempt to evade the guardrail.
+                // Wikimedia and local truthful text cards remain available.
+                if (imageProviderRefusedThisProject) return null;
+                if (mandatory)
+                {
+                    if (mandatoryAiRescues >= 10) return null;
+                    mandatoryAiRescues++;
+                }
+                else
+                {
+                    if (aiImagesAttempted >= maxAiImages) return null;
+                    aiImagesAttempted++;
+                }
+                // Bind the saved illustration to its exact script content.
+                // Replanned narration cannot accidentally reuse the wrong art.
+                var fingerprint = Convert.ToHexString(SHA256.HashData(
+                    Encoding.UTF8.GetBytes("contextual-nonfranchise-v5\n" +
+                        YouTubeFlowTitle + "\n" + scene.NarrationExcerpt + "\n" +
+                        scene.SearchQuery + "\n" + scene.Mood)))[..12];
+                var destination = Path.Combine(folder, "stock-images", "chatgpt",
+                    $"scene-{scene.SceneNumber:00}-{fingerprint}.png");
+                try
+                {
+                    var saved = await _chat.GenerateYouTubeFlowIllustrationAsync(
+                        documentaryProject, scene, Settings, destination, Log, cancellation);
+                    // Distinct from Commons page IDs (negative): use the long
+                    // minimum value plus scene number for AI media identifiers.
+                    return new PixabayFlowClip(long.MinValue + scene.SceneNumber,
+                        saved, "Generated with ChatGPT (not archival footage)",
+                        scene.SearchQuery, scene.NarrationExcerpt, true,
+                        "ChatGPT-generated by ZeroVideo", "AI-generated illustration", "", "ChatGPT");
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (ChatGptImageRefusedException ex)
+                {
+                    imageProviderRefusedThisProject = true;
+                    Log($"ChatGPT refused scene {scene.SceneNumber}: {ex.Message} " +
+                        "AI generation is disabled for the rest of this render; " +
+                        "continuing with licensed Commons photos or a local narration card.");
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    Log($"ChatGPT scene {scene.SceneNumber} unavailable: " +
+                        ex.Message + ". Continuing automatically with Wikimedia or a narration card.");
+                    return null;
+                }
+            }
+
+            async Task<IReadOnlyList<PixabayFlowClip>> AcquireFromPrioritySource(
+                string source, PixabayFootageScene scene, int maximum,
+                CancellationToken cancellation)
+            {
+                if (source == YouTubeFlowSourceRouter.YouTube)
+                    return await new YouTubeFlowClipService(_runner).AcquireAsync(scene, maximum, folder, Settings.FfmpegPath, YouTubeFlowTitle, Log, cancellation);
+                if (source == YouTubeFlowSourceRouter.CommonsVideo)
+                    return await commonsVideos.FindVideosAsync(
+                        scene, maximum,
+                        async (file, token) => await StockVideoQualityService
+                            .ContainsChromaScreenAsync(file, Settings.FfmpegPath, token),
+                        Log, cancellation);
+                if (source == YouTubeFlowSourceRouter.CommonsPhoto)
+                    return await commons.FindImagesAsync(scene, maximum, Log, cancellation);
+                if (source == YouTubeFlowSourceRouter.ChatGpt)
+                {
+                    var image = await TryAiImageAsync(scene, cancellation);
+                    return image is null ? [] : [image];
+                }
+                if (YouTubeFlowSourceRouter.IsReviewOnly(source))
+                {
+                    var fromProject = YouTubeFlowScreencapReviewService
+                        .FindApprovedImages(folder, scene, source);
+                    return fromProject.Count > 0 ? fromProject :
+                        YouTubeFlowScreencapReviewService.FindApprovedImages(
+                            screencapWorkspace, scene, source);
+                }
+                return [];
+            }
+
+            async Task<PixabayFlowClip> CreateSceneRescueAsync(
+                PixabayFootageScene scene, CancellationToken cancellation)
+            {
+                if (mediaSourceOrder.Contains(YouTubeFlowSourceRouter.ChatGpt))
+                {
+                    var ai = await TryAiImageAsync(scene, cancellation, mandatory: true);
+                    if (ai is not null) return ai;
+                }
+                cancellation.ThrowIfCancellationRequested();
+                var file = SceneFactCardService.Create(scene,
+                    Path.Combine(folder, "stock-images", "scene-cards"));
+                return new PixabayFlowClip(
+                    long.MinValue / 2 + scene.SceneNumber, file,
+                    "Generated from the actual narration by ZeroVideo",
+                    scene.SearchQuery, scene.NarrationExcerpt, true,
+                    "ZeroVideo editorial card", "Original narration text card",
+                    "", "ZeroVideo");
+            }
+
+            var clips = await YouTubeFlowSourceRouter.AssembleAsync(
+                scenes, targetClips, mediaSourceOrder,
+                async (budgets, cancellation) => await pixabay.AcquireAsync(
+                    queries, Settings.PixabayApiKey, YouTubeFlowRatio,
+                    Log, cancellation, budgets.Sum(),
+                    (ready, total) =>
+                    {
+                        Progress = 45 + (int)Math.Round(15d * ready / Math.Max(1,total));
+                        Status = YouTubeFlowStatus =
+                            $"Pixabay: {ready}/{total} video slots filled with narration-grounded clips...";
+                    },
+                    scenes,
+                    async (file, token) => await StockVideoQualityService
+                        .ContainsChromaScreenAsync(file, Settings.FfmpegPath, token),
+                    null, null, budgets, true, YouTubeFlowTitle),
+                AcquireFromPrioritySource, CreateSceneRescueAsync, Log, _cts.Token);
+            var shotShortfall = Math.Max(0, targetClips - clips.Count);
+            var reviewedScreencaps = clips.Where(c =>
+                YouTubeFlowSourceRouter.IsReviewOnly(c.MediaSource)).ToArray();
+            if (reviewedScreencaps.Length > 0)
+            {
+                var credits = new StringBuilder(
+                    "USER-APPROVED CARTOON SCREENSHOT SOURCES\n" +
+                    "These screenshots are not automatically licensed by ZeroVideo. " +
+                    "The user supplied a per-file use justification; verify permissions " +
+                    "and rights before publishing.\n\n");
+                foreach (var screen in reviewedScreencaps)
+                    credits.AppendLine("Gallery: " + screen.MediaSource)
+                        .AppendLine("File: " + screen.FilePath)
+                        .AppendLine("Source URL: " + screen.SourcePage)
+                        .AppendLine("Credit: " + screen.Attribution)
+                        .AppendLine("User's use basis: " + screen.License)
+                        .AppendLine();
+                await File.WriteAllTextAsync(
+                    Path.Combine(folder, "Approved-screencap-credits.txt"),
+                    credits.ToString(), _cts.Token);
+            }
+            var photos = clips.Where(c => c.IsStillImage).ToArray();
+            var commonsVideoClips = clips.Where(c =>
+                !c.IsStillImage && c.MediaSource == "Wikimedia Commons").ToArray();
+            var pixabayVideoClips = clips.Where(c =>
+                !c.IsStillImage && c.MediaSource == "Pixabay").ToArray();
+            var commonsPhotos = photos.Where(c => c.License != "AI-generated illustration" &&
+                c.License != "Original narration text card").ToArray();
+            var editorialCards = photos.Where(c => c.License == "Original narration text card").ToArray();
+            var aiIllustrations = photos.Where(c => c.License == "AI-generated illustration").ToArray();
+            if (commonsPhotos.Length > 0)
+            {
+                var credits = new StringBuilder(
+                    "WIKIMEDIA COMMONS IMAGE CREDITS — Add these credits to the YouTube description.\n" +
+                    "Images have cinematic crop, zoom/pan and fade effects. Check each file page " +
+                    "for any extra depicted-person, trademark or jurisdiction restrictions.\n\n");
+                foreach (var photo in commonsPhotos)
+                    credits.AppendLine(photo.SourcePage)
+                        .AppendLine("Author: " + photo.Attribution)
+                        .AppendLine("License: " + photo.License +
+                            (string.IsNullOrWhiteSpace(photo.LicenseUrl) ? "" :
+                                " — " + photo.LicenseUrl))
+                        .AppendLine("Edits: cropped, animated, graded and faded")
+                        .AppendLine();
+                await File.WriteAllTextAsync(
+                    Path.Combine(folder, "Wikimedia-image-credits.txt"),
+                    credits.ToString(), _cts.Token);
+            }
+            // Unified per-file attribution covering BOTH Commons still images
+            // and Commons video derivatives. CC BY licenses require author,
+            // link, license reference and a note about changes.
+            if (commonsVideoClips.Length > 0 || commonsPhotos.Length > 0)
+            {
+                var credits = new StringBuilder(
+                    "WIKIMEDIA COMMONS DOCUMENTARY MEDIA CREDITS\n" +
+                    "Include these credits in the YouTube description or another " +
+                    "prominently linked credits page. Each source file is individually " +
+                    "licensed; verify depicted-person and other non-copyright restrictions.\n\n");
+                foreach (var item in commonsVideoClips.Concat(commonsPhotos))
+                {
+                    credits.AppendLine(item.IsStillImage ? "PHOTO" : "VIDEO")
+                        .AppendLine("Source: " + item.SourcePage)
+                        .AppendLine("Creator: " + item.Attribution)
+                        .AppendLine("License: " + item.License)
+                        .AppendLine("License URL: " + item.LicenseUrl)
+                        .AppendLine(item.IsStillImage
+                            ? "Changes: crop, pan/zoom, color grading and fades"
+                            : "Changes: trim, crop, color grading and original audio muted")
+                        .AppendLine();
+                }
+                await File.WriteAllTextAsync(Path.Combine(folder,
+                    "Wikimedia-media-credits.txt"), credits.ToString(), _cts.Token);
+            }
+            if (aiIllustrations.Length > 0)
+            {
+                var provenance = new StringBuilder(
+                    "AI-GENERATED DOCUMENTARY ILLUSTRATIONS\n" +
+                    "These visuals were created with ChatGPT from the user-provided script. " +
+                    "They are imaginative illustrations, NOT authentic historical or archival " +
+                    "photographs and NOT recordings of real incidents.\n\n");
+                foreach (var image in aiIllustrations)
+                    provenance.AppendLine("Scene: " + image.SearchQuery)
+                        .AppendLine("File: " + image.FilePath)
+                        .AppendLine("Narration: " + image.Tags)
+                        .AppendLine();
+                await File.WriteAllTextAsync(Path.Combine(folder, "AI-generated-images.txt"),
+                    provenance.ToString(), _cts.Token);
+            }
+            Log($"YouTube Flow media: {clips.Count(c => c.MediaSource == "YouTube")} YouTube videos, {pixabayVideoClips.Length} Pixabay videos, " +
+                $"{commonsVideoClips.Length} Wikimedia Commons videos, " +
+                $"{commonsPhotos.Length} Commons photographs, " +
+                $"{aiIllustrations.Length} ChatGPT illustrations, " +
+                $"{editorialCards.Length} narration cards.");
+            var sceneDurations = YouTubeFlowRenderService.PlanSceneDurations(
+                scenes, narrationSeconds);
+            var manifest = new
+            {
+                title = YouTubeFlowTitle,
+                aspect_ratio = YouTubeFlowRatio,
+                provider = "Priority-ordered optional sources",
+                media_source_priority = mediaSourceOrder,
+                reviewed_screencap_count = reviewedScreencaps.Length,
+                captions = false,
+                footage_complete = true,
+                target_clip_count = targetClips,
+                matched_clip_count = clips.Count,
+                video_clip_count = clips.Count(c => !c.IsStillImage),
+                youtube_video_count = clips.Count(c => c.MediaSource == "YouTube"),
+                pixabay_video_count = pixabayVideoClips.Length,
+                wikimedia_video_count = commonsVideoClips.Length,
+                wikimedia_photo_count = commonsPhotos.Length,
+                licensed_still_image_count = commonsPhotos.Length,
+                ai_generated_image_count = aiIllustrations.Length,
+                narration_card_count = editorialCards.Length,
+                shortfall_compensated_by_scene_duration = shotShortfall,
+                narration_seconds = narrationSeconds,
+                searches = queries,
+                scenes = scenes.Select(scene => new
+                {
+                    scene.SceneNumber, scene.NarrationExcerpt, scene.SearchQuery, scene.Mood,
+                    start_seconds = Math.Round(sceneDurations.Take(scene.SceneNumber - 1).Sum(), 2),
+                    end_seconds = Math.Round(sceneDurations.Take(scene.SceneNumber).Sum(), 2),
+                    matching_clips = clips.Count(c => c.SearchQuery == scene.SearchQuery)
+                }).ToArray(),
+                clips = clips.Select(c => new
+                {
+                    c.Id, c.SourcePage, c.SearchQuery, c.Tags,
+                    is_still_image = c.IsStillImage,
+                    provider = c.MediaSource,
+                    attribution = c.Attribution,
+                    license = c.License,
+                    license_url = c.LicenseUrl,
+                    local_file = c.FilePath
+                }).ToArray()
+            };
+            var sourceManifestJson = JsonSerializer.Serialize(manifest,
+                new JsonSerializerOptions { WriteIndented = true });
+            await File.WriteAllTextAsync(Path.Combine(folder, "stock-sources.json"),
+                sourceManifestJson, _cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(folder,
+                $"stock-sources-{mediaFingerprint}.json"),
+                sourceManifestJson, _cts.Token);
+            Progress = 65;
+            Status = YouTubeFlowStatus = "FFmpeg is stitching the stock footage...";
+            await renderer.RenderAsync(clips, voiceover, output,
+                YouTubeFlowRatio, Settings, Log, _cts.Token, scenes);
+
+            Progress = 100;
+            YouTubeFlowOutput = output;
+            Status = YouTubeFlowStatus = shotShortfall > 0
+                ? $"Complete: {clips.Count}/{targetClips} prioritized scene-matched assets; " +
+                    $"{shotShortfall} shot slots covered by extending relevant footage: " + output
+                : $"Complete: {pixabayVideoClips.Length} Pixabay videos, " +
+                    $"{commonsVideoClips.Length} Commons videos, " +
+                    $"{commonsPhotos.Length} Commons photos, " +
+                    $"{aiIllustrations.Length} AI illustrations: " + output;
+            Log("YouTube Flow finished with scene-aligned stock video and cinematic photo transitions. Output: " + output);
+            try { File.Delete(resumeFile); } catch { /* Finished output remains safe. */ }
+            await _settingsService.SaveAsync(Settings);
+        }
+        catch (OperationCanceledException) { YouTubeFlowStatus = "Stopped. Completed files remain saved."; throw; }
+        catch (Exception ex) { YouTubeFlowStatus = "Video failed: " + ex.Message; Fail(ex); }
+        finally
+        {
+            WaitingForTtsContinue = false;
+            _ttsContinueGate = null;
+        }
+    }
+
+    private static bool IsIncompletePixabayPreview(string folder, int desiredClipCount)
+    {
+        // Older builds considered three clips "complete" after HTTP 429.
+        // Detect that old partial output by its existing source manifest,
+        // without touching or overwriting the original MP4.
+        var manifest = Path.Combine(folder, "stock-sources.json");
+        // Previous successful renders predate the mixed-image storyboard.
+        // Rebuild them to a new filename without overwriting their MP4.
+        if (!File.Exists(Path.Combine(folder, "pixabay-scenes-v3.json"))) return true;
+        if (!File.Exists(manifest)) return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(manifest));
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("clips", out var clips) ||
+                clips.ValueKind != JsonValueKind.Array)
+                return false;
+            // Even a "complete" old 6-10 clip video is only a preview under
+            // the newer duration-based one-clip-per-six-seconds requirement.
+            return clips.GetArrayLength() < desiredClipCount;
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private async Task<List<PixabayFootageScene>> GenerateYouTubeFlowScenesAsync(int desiredQueries)
+    {
+        var narrationSegments = SplitNarrationIntoScenes(YouTubeFlowScript, desiredQueries);
+        // Scary/horror titles have a genre-wide dark art direction. Other
+        // narratives can shift mood naturally with each scene.
+        var scaryTitle = Regex.IsMatch(YouTubeFlowTitle,
+            @"\b(horror|haunted|haunting|scary|creepy|ghost|exorcism|demon|nightmare|curse|darkest|terrifying|paranormal|sinister|chilling)\b",
+            RegexOptions.IgnoreCase);
+        var storyboard = string.Join("\n", narrationSegments.Select((segment, i) =>
+            $"SCENE {i + 1} (narration in this exact order): {segment}"));
+        var prompt =
+            "You are a documentary stock-footage storyboard editor. Produce EXACTLY " +
+            desiredQueries + " chronological Pixabay VIDEO searches, ONE for each numbered script scene. " +
+            "Each search MUST depict a visible person/object/action/place actually appropriate to its " +
+            "corresponding narration segment. INCLUDE the actual objects, subjects, actions or locations " +
+            "named in that segment; avoid vague symbolic imagery if the script names something concrete. " +
+            "STRICT TOPIC GROUNDING: every search MUST contain at least one important concrete noun " +
+            "or named place/object explicitly spoken in the corresponding numbered narration. " +
+            "Do not invent substitute nouns, random nature shots, food, pets, stock cityscape, " +
+            "or a generally similar mood when the video actually narrates a specific cartoon, " +
+            "episode, broadcaster, controversy, object or location. Prefer the exact subject " +
+            "over visual variety. If the narration discusses a television controversy, " +
+            "show a television/broadcasting subject actually mentioned there, not a random " +
+            "person talking, woodland animal or suburban house. " +
+            "Avoid irrelevant cats, food, squirrels, people on phones, generic party scenes or random " +
+            "landscapes unless the exact narration segment calls for them. Do not request green-screen, " +
+            "blue-screen, chroma-key, isolated character, VFX template or blank TV-screen footage. " +
+            "Keep the video's genre and EMOTIONAL MOOD consistent. " +
+            "For scary, haunted, creepy or suspenseful material use genuinely dark/eerie/ominous " +
+            "visuals (night, shadows, fog, abandoned places, etc.). Never choose bright, happy, " +
+            "sunny vacation or party footage for a scary narration. For positive stories, use " +
+            "positive imagery. Match changes in mood only when the narration changes. " +
+            "Every search must be 2–5 ordinary searchable English words, concrete and specific, " +
+            "with visual mood where helpful (e.g. 'dark abandoned hallway', not 'interesting history'). " +
+            "Make all queries DIFFERENT while keeping each relevant to its numbered segment. " +
+            "Use one mood from: ominous, tense, somber, neutral, calm, upbeat. " +
+            "Do NOT invent eyewitness videos, archival recordings, or authentic footage of " +
+            "historical crimes. Symbolic B-roll is symbolic, not evidence. " +
+            "Return ONLY one valid fenced JSON object: " +
+            "{\"response_type\":\"youtube_flow_scenes_v2\",\"scenes\":[" +
+            "{\"query\":\"dark empty hallway\",\"mood\":\"ominous\"}]}." +
+            " The scenes array MUST contain exactly " + desiredQueries + " entries in " +
+            "the SAME ORDER as the numbered narration. No extra keys or explanation. " +
+            "VIDEO TITLE: " + YouTubeFlowTitle +
+            (scaryTitle ? "\nGLOBAL VISUAL TONE: DARK / OMINOUS across all scenes." : "") +
+            "\nNUMBERED NARRATION SCENES:\n" + storyboard;
+        var raw = await _chat.GenerateTextAsync(
+            new VideoProject { Title = YouTubeFlowTitle, Topic = YouTubeFlowTitle },
+            Settings, prompt, Log, _cts.Token);
+        using var doc = JsonDocument.Parse(raw);
+        if (GetString(doc.RootElement, "response_type") != "youtube_flow_scenes_v2" ||
+            !doc.RootElement.TryGetProperty("scenes", out var array) ||
+            array.ValueKind != JsonValueKind.Array ||
+            array.GetArrayLength() != desiredQueries)
+            throw new InvalidDataException(
+                $"Storyboard must return exactly {desiredQueries} ordered scenes. Please retry.");
+
+        var allowedMoods = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "ominous", "tense", "somber", "neutral", "calm", "upbeat" };
+        var usedQueries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var scenes = new List<PixabayFootageScene>(desiredQueries);
+        for (int i = 0; i < desiredQueries; i++)
+        {
+            var entry = array[i];
+            var query = Regex.Replace(GetString(entry, "query"), @"\s+", " ").Trim();
+            var mood = GetString(entry, "mood").ToLowerInvariant();
+            if (scaryTitle) mood = "ominous";
+            if (query.Length < 5 || query.Length > 100 ||
+                query.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length is < 2 or > 6 ||
+                !usedQueries.Add(query) || !allowedMoods.Contains(mood))
+                throw new InvalidDataException(
+                    $"Storyboard scene {i + 1} has an invalid/repeated visual query or mood. Retry the storyboard.");
+            scenes.Add(new PixabayFootageScene(i + 1, narrationSegments[i], query, mood));
+        }
+        return scenes;
+    }
+
+    private static List<string> SplitNarrationIntoScenes(string narration, int sceneCount)
+    {
+        // Avoid dividing the narration in the middle of a sentence. A sentence
+        // boundary provides a cleaner subject/action handoff for the stock search.
+        var sentences = Regex.Split(narration.Trim(), @"(?<=[.!?])\s+|\r?\n+")
+            .Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+        var words = Regex.Split(narration.Trim(), @"\s+")
+            .Where(x => !string.IsNullOrWhiteSpace(x)).ToArray();
+        if (words.Length < sceneCount * 2)
+            throw new InvalidDataException("Not enough narration to assign distinct stock-footage scenes.");
+        if (sentences.Count < sceneCount)
+        {
+            // Unusually long sentences: a word split is safer than missing scenes.
+            return Enumerable.Range(0, sceneCount).Select(i =>
+                string.Join(" ", words[(i * words.Length / sceneCount)..
+                    ((i + 1) * words.Length / sceneCount)])).ToList();
+        }
+
+        var segments = new List<string>(sceneCount);
+        var index = 0;
+        var remainingWords = words.Length;
+        for (var i = 0; i < sceneCount; i++)
+        {
+            var left = sceneCount - i;
+            var targetWords = (int)Math.Ceiling(remainingWords / (double)left);
+            var segment = new List<string>();
+            var count = 0;
+            while (index < sentences.Count)
+            {
+                var nextWords = Regex.Matches(sentences[index], @"\b[\p{L}\p{N}]+\b").Count;
+                var availableAfter = sentences.Count - index - 1;
+                if (left > 1 && segment.Count > 0 &&
+                    (count >= targetWords || availableAfter < left - 1))
+                    break;
+                segment.Add(sentences[index++]);
+                count += nextWords;
+                if (sentences.Count - index <= left - 1) break;
+            }
+            if (segment.Count == 0 && index < sentences.Count)
+            {
+                segment.Add(sentences[index++]);
+                count = Regex.Matches(segment[0], @"\b[\p{L}\p{N}]+\b").Count;
+            }
+            remainingWords -= count;
+            segments.Add(string.Join(" ", segment));
+        }
+        if (segments.Any(x => string.IsNullOrWhiteSpace(x)) || index != sentences.Count)
+            throw new InvalidDataException("The footage storyboard could not cover all narration sentences.");
+        return segments;
+    }
+
+    private static List<string> SplitYouTubeFlowNarration(string script)
+    {
+        const int maxCharacters = 1700;
+        var chunks = new List<string>();
+        var current = new StringBuilder();
+        var sentences = Regex.Split(script.Trim(), @"(?<=[.!?])\s+|\r?\n+");
+        foreach (var sentence in sentences.Where(x => !string.IsNullOrWhiteSpace(x)))
+        {
+            // Keep even unusually long sentences within browser TTS limits.
+            var words = sentence.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            foreach (var word in words)
+            {
+                if (current.Length > 0 && current.Length + word.Length + 1 > maxCharacters)
+                {
+                    chunks.Add(current.ToString().Trim());
+                    current.Clear();
+                }
+                if (word.Length > maxCharacters)
+                {
+                    for (var pos = 0; pos < word.Length; pos += maxCharacters)
+                        chunks.Add(word.Substring(pos, Math.Min(maxCharacters, word.Length - pos)));
+                    continue;
+                }
+                if (current.Length > 0) current.Append(' ');
+                current.Append(word);
+            }
+        }
+        if (current.Length > 0) chunks.Add(current.ToString().Trim());
+        return chunks;
+    }
+
+    private static string GetString(JsonElement node, string property)
+        => node.TryGetProperty(property, out var value) &&
+            value.ValueKind == JsonValueKind.String ? value.GetString()?.Trim() ?? "" : "";
+}

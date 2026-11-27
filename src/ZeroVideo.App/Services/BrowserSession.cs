@@ -193,6 +193,12 @@ public sealed class BrowserSession : IAsyncDisposable
             "ZeroVideo started Microsoft Edge but could not attach to it. Reopen ChatGPT from the Automation tab and try again.");
     }
 
+    /// <summary>
+    /// Force-stop the dedicated automated Edge instance launched by ZeroVideo.
+    /// Never targets the user's everyday Edge or manual sign-in windows.
+    /// </summary>
+    public Task ForceStopAutomationAsync() => StopAutomationAsync();
+
     private async Task StopAutomationAsync()
     {
         _context = null;
