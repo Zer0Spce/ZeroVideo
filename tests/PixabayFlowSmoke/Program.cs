@@ -559,8 +559,26 @@ async Task VerifyUserSourcePriorityAndDisabledSources()
         PixabayBatch, Other, Card, null, CancellationToken.None);
     Check(pixFirst.Count == 3 && pixFirst[0].MediaSource == "Pixabay" &&
         pixFirst[1].MediaSource == "Pixabay" &&
-        pixFirst[2].MediaSource == "Wikimedia Commons",
-        "Pixabay first must take its priority slots before Wikimedia video.");
+        pixFirst[2].MediaSource == "Pixabay",
+        "Pixabay first must fill available slots before falling back to Wikimedia.");
+    var youtube = new PixabayFlowClip(7001, "test-youtube.mp4",
+        "https://www.youtube.com/watch?v=test", scene.SearchQuery, "matched chapter",
+        false, "Original channel", "", "", "YouTube");
+    var beforeYouTube = pixCalls;
+    var youtubeFirst = await YouTubeFlowSourceRouter.AssembleAsync(
+        [scene], 1, [YouTubeFlowSourceRouter.YouTube, YouTubeFlowSourceRouter.Pixabay,
+            YouTubeFlowSourceRouter.ChatGpt, YouTubeFlowSourceRouter.CommonsVideo],
+        PixabayBatch, (source, _, _, _) => Task.FromResult<IReadOnlyList<PixabayFlowClip>>(
+            source == YouTubeFlowSourceRouter.YouTube ? [youtube] : []),
+        Card, null, CancellationToken.None);
+    Check(youtubeFirst.Count == 1 && youtubeFirst[0].Id == youtube.Id && pixCalls == beforeYouTube,
+        "YouTube first must prevent any lower-priority calls when the quota is filled.");
+    var youtubeUnavailable = await YouTubeFlowSourceRouter.AssembleAsync(
+        [scene], 3, [YouTubeFlowSourceRouter.YouTube, YouTubeFlowSourceRouter.Pixabay,
+            YouTubeFlowSourceRouter.ChatGpt, YouTubeFlowSourceRouter.CommonsVideo],
+        PixabayBatch, Other, Card, null, CancellationToken.None);
+    Check(youtubeUnavailable.Count == 3 && youtubeUnavailable.All(c => c.MediaSource == "Pixabay"),
+        "Unavailable YouTube must fall back to Pixabay before AI or Wikimedia.");
     var commonsFirst = await YouTubeFlowSourceRouter.AssembleAsync(
         [scene], 3, [YouTubeFlowSourceRouter.CommonsVideo,
             YouTubeFlowSourceRouter.Pixabay],
