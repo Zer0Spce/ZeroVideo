@@ -119,7 +119,8 @@ public sealed class YouTubeFlowRenderService(ProcessRunner runner, FfmpegService
             // not just the position (shot-01), or we would reuse unrelated footage.
             var seconds = shotDurations[i];
             var frames = Math.Max(1, (int)Math.Round(seconds * 30d));
-            var file = Path.Combine(work, $"shot-{i + 1:00}-{clips[i].Id}-{width}x{height}-{frames}f-{(clips[i].IsStillImage ? "photo-v2" : "video")}.mp4");
+            var creditSuffix = clips[i].MediaSource == "YouTube" ? "-credit-v1" : "";
+            var file = Path.Combine(work, $"shot-{i + 1:00}-{clips[i].Id}-{width}x{height}-{frames}f-{(clips[i].IsStillImage ? "photo-v2" : "video")}{creditSuffix}.mp4");
             if (!File.Exists(file) || new FileInfo(file).Length < 4096)
             {
                 var isPhoto = clips[i].IsStillImage;
@@ -151,6 +152,14 @@ public sealed class YouTubeFlowRenderService(ProcessRunner runner, FfmpegService
                         $",fade=t=out:st={fadeOutAt}:d=0.23,format=yuv420p";
                 }
                 else filter = baseFilter + ",fps=30,format=yuv420p";
+                if (clips[i].MediaSource == "YouTube")
+                {
+                    var creditFile = $"credit-{i:0000}.txt";
+                    var credit = Regex.Replace(clips[i].Attribution, @"[\r\n\p{C}]+", " ").Trim();
+                    if (credit.Length > 100) credit = credit[..100];
+                    await File.WriteAllTextAsync(Path.Combine(work, creditFile), "Source: " + credit, new UTF8Encoding(false), ct);
+                    filter += $",drawtext=fontfile=C\\\\:/Windows/Fonts/arial.ttf:textfile={creditFile}:expansion=none:fontsize={Math.Max(20, width / 75)}:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=7:x=w-tw-24:y=h-th-24";
+                }
                 var inputMode = isPhoto
                     ? "-loop 1 -framerate 30 "
                     : "-stream_loop -1 ";
@@ -161,7 +170,7 @@ public sealed class YouTubeFlowRenderService(ProcessRunner runner, FfmpegService
                     " -c:v libx264 -preset veryfast -crf 22 " +
                     "-pix_fmt yuv420p -r 30 " + Quote(file);
                 log?.Invoke($"FFmpeg: rendering footage shot {i + 1}/{clips.Count}.");
-                var result = await runner.RunAsync(settings.FfmpegPath, args, ct: ct);
+                var result = await runner.RunAsync(settings.FfmpegPath, args, workingDirectory: work, ct: ct);
                 if (result.ExitCode != 0)
                     throw new InvalidOperationException(
                         $"FFmpeg could not normalize stock clip {clips[i].Id}: " + Tail(result.StdErr));
