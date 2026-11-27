@@ -2,7 +2,7 @@ using ZeroVideo.App.Models;
 
 namespace ZeroVideo.App.Services;
 
-public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsService clipchamp, FfmpegService ffmpeg, ProjectStore store)
+public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsService clipchamp, FfmpegService ffmpeg, ProjectStore store, LocalImageService localImages, OmniVoiceService omniVoice)
 {
     public async Task<string> RunAsync(VideoProject project, ZeroVideoSettings settings, Action<string>? log = null, IProgress<double>? progress = null, CancellationToken ct = default)
     {
@@ -42,7 +42,10 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
                 {
                     try
                     {
-                        await clipchamp.GenerateChapterAsync(chapter, project, settings, log, ct);
+                        if(settings.TextToSpeechEngine=="OmniVoice (Local)")
+                            await omniVoice.GenerateChapterAsync(chapter,project,settings,log,ct);
+                        else
+                            await clipchamp.GenerateChapterAsync(chapter, project, settings, log, ct);
                         await ffmpeg.ValidateNarrationAudioAsync(chapter.AudioPath, settings, $"Chapter {chapter.Number} generated TTS", chapter.Narration, log, ct);
                         lastTtsError = null;
                         break;
@@ -72,11 +75,45 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
         var output = await ffmpeg.RenderAsync(project, settings, log, ct);
         progress?.Report(100);
         await store.SaveAsync(project, settings.ProjectsRoot);
+        // Delete ONLY automatically generated temporary identity portraits
+        // after FFmpeg returns a genuine completed video. Retain files on
+        // cancellation or render failure for safe recovery/resume.
+        if (File.Exists(output) && new FileInfo(output).Length > 64 * 1024 &&
+            ((project.RealPeople ?? []).Any(p =>
+                p.AutoTemporaryReferencePaths?.Count > 0) ||
+             project.AutoIdentityEnabledByVideo))
+        {
+            AutoRealPersonIdentityService.Cleanup(project,log);
+            await store.SaveAsync(project, settings.ProjectsRoot);
+        }
         return output;
     }
 
     private async Task GenerateMissingVisualsAsync(VideoProject project, ZeroVideoSettings settings, Action<string>? log, IProgress<double>? progress, CancellationToken ct)
     {
+        // Automatic cast detection runs only for explicitly selected local
+        // image generation. The working ChatGPT image path is unchanged.
+        if(project.Options.EnableCharacterConsistency &&
+           (settings.ImageGenerationEngine=="Local ComfyUI" ||
+            settings.ImageGenerationEngine=="Hybrid"))
+        {
+            var before=project.Characters?.Count??0;
+            CharacterConsistencyService.EnsureProfiles(project);
+            if(project.Characters.Count>before)
+            {
+                log?.Invoke($"Character Lock: detected {project.Characters.Count-before} "+
+                    "recurring characters. References will be saved in CharacterReferences.");
+                await store.SaveAsync(project,settings.ProjectsRoot);
+            }
+        }
+        if(settings.ImageGenerationEngine=="Local ComfyUI" &&
+           settings.LocalImageCheckpointFile==LocalImageService.FluxGgufFileName)
+        {
+            // Setup failure cannot be resolved by three attempts at each
+            // scene. Check the live custom-node registry before the first
+            // scene, preserving all already generated media on failure.
+            await localImages.EnsureFluxLoaderReadyAsync(log,ct);
+        }
         var all = project.Chapters.SelectMany(c => c.Scenes.Select(s => (Chapter: c, Scene: s))).ToList();
 
         if (project.VisualAssetVersion.GetValueOrDefault() < ProjectMedia.CurrentGeneratedAssetVersion)
@@ -141,6 +178,10 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
             return;
         }
 
+        // Main character identity is prepared once per VIDEO, not once per
+        // scene/chapter. The same 1–2 temporary references are reused
+        // throughout the video and checkpointed for interrupted runs.
+        await PrepareAutoIdentityAsync(project,settings,log,ct);
         log?.Invoke($"Visual pass: generating {missingSlots.Count} scene image(s) chapter by chapter. One generated image targets one scripted narration scene.");
         log?.Invoke("Visual pass is resumable: every successful full-resolution image is checkpointed immediately.");
 
@@ -182,6 +223,178 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
         log?.Invoke($"Visual pass total: {generatedNow}/{safetyCap} generated image(s). Voiceover remains aligned to the scripted scene order.");
     }
 
+    private async Task PrepareAutoIdentityAsync(
+        VideoProject project, ZeroVideoSettings settings,
+        Action<string>? log, CancellationToken ct)
+    {
+        if (!project.Options.AutoRealPersonIdentity) return;
+        var subject = AutoRealPersonIdentityService.DetectMainPerson(project);
+
+        if (!string.IsNullOrWhiteSpace(project.ActiveAutoIdentityPerson) &&
+            !string.Equals(project.ActiveAutoIdentityPerson, subject,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            log?.Invoke("Video topic changed: cleaning the PREVIOUS project's " +
+                "tracked automatic identity images before choosing another face.");
+            var report=AutoRealPersonIdentityService.Cleanup(project,log);
+            await store.SaveAsync(project,settings.ProjectsRoot);
+            if(report.Failed>0)
+            {
+                log?.Invoke("Some previous auto identity files couldn't be " +
+                    "removed. Skipping new automatic identity to prevent mixing.");
+                return;
+            }
+        }
+
+        if (subject is null)
+        {
+            log?.Invoke("Automatic real-person identity: no unambiguous " +
+                "full name in this video title/topic. Using ordinary images.");
+            return;
+        }
+        if (settings.ImageGenerationEngine is not ("Local ComfyUI" or "Hybrid") ||
+            settings.LocalImageCheckpointFile !=
+                LocalImageService.FluxGgufFileName)
+        {
+            log?.Invoke("Automatic identity detected " + subject +
+                ", but image engine is not local FLUX.1. Skipping optional " +
+                "ChatGPT identity-guide generation to avoid unused portraits.");
+            return;
+        }
+
+        // If the user supplied an actual approved portrait, prefer that over
+        // approximate ChatGPT-made celebrity faces. Do not re-generate or
+        // auto-delete user-added photos.
+        var existing=(project.RealPeople ?? []).FirstOrDefault(p =>
+            p.Name.Equals(subject,StringComparison.OrdinalIgnoreCase));
+        if (existing is not null)
+        {
+            var temporary=(existing.AutoTemporaryReferencePaths ?? [])
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var manual=(existing.ReferencePaths ?? [])
+                .Where(p => !temporary.Contains(p) &&
+                    File.Exists(p)).ToList();
+            if(manual.Count>0)
+            {
+                log?.Invoke("Automatic identity: reusing " + manual.Count +
+                    " manually approved reference(s) for " + subject +
+                    "; no AI approximations will be created or deleted.");
+                if (!project.Options.EnableRealPersonIdentityLock)
+                {
+                    try
+                    {
+                        await localImages.TestPulidIdentityAdapterAsync(log,ct);
+                        project.AutoIdentityEnabledByVideo=true;
+                        project.Options.EnableRealPersonIdentityLock=true;
+                        project.ActiveAutoIdentityPerson=subject;
+                        await store.SaveAsync(project,settings.ProjectsRoot);
+                    }
+                    catch(OperationCanceledException) { throw; }
+                    catch(Exception ex)
+                    {
+                        log?.Invoke("Approved manual face references are preserved, " +
+                            "but automatic Identity Lock wasn't enabled because " +
+                            "PuLID is not ready: "+ex.Message);
+                    }
+                }
+                return;
+            }
+        }
+
+        try
+        {
+            // Never trigger ChatGPT portrait generation if PuLID cannot
+            // actually use it. Keep normal video generation available.
+            await localImages.TestPulidIdentityAdapterAsync(log,ct);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            log?.Invoke("Auto identity for " + subject +
+                " skipped: PuLID/FLUX adapter is not ready ("+
+                ex.Message+"). Run the one-click setup in Identity Studio " +
+                "to activate automatic portraits. Ordinary video continues.");
+            if (project.AutoIdentityEnabledByVideo &&
+                project.ActiveAutoIdentityPerson.Equals(subject,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                project.Options.EnableRealPersonIdentityLock=false;
+                await store.SaveAsync(project,settings.ProjectsRoot);
+            }
+            return;
+        }
+
+        var person=AutoRealPersonIdentityService.GetOrCreate(project,subject);
+        person.Enabled=true;
+        var targetCount=Math.Clamp(
+            project.Options.AutoIdentityPortraitCount,1,2);
+        var current=AutoRealPersonIdentityService.ValidTemporaryCount(project,person);
+        var available=Math.Min(targetCount-current,
+            Math.Max(0,3-(person.ReferencePaths?.Count??0)));
+        if(available<=0)
+        {
+            log?.Invoke("Automatic identity: reusing " + current +
+                " existing temporary portrait(s) for " + subject +
+                " from this project's resume checkpoint.");
+        }
+        else
+        {
+            log?.Invoke("Automatic identity: generating " + available +
+                " temporary "+project.Style+" ChatGPT portrait guide(s) for " +
+                subject+". These are AI approximations, not verified photos.");
+            var folder=AutoRealPersonIdentityService.TemporaryDirectory(project);
+            Directory.CreateDirectory(folder);
+            for(var i=0;i<available;i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    var next=Math.Clamp(current+i+1,1,3);
+                    var saved=await chat.GenerateIdentityReferenceAsync(
+                        project,subject,next,settings,log,ct,folder);
+                    AutoRealPersonIdentityService.AttachTemporary(
+                        project,person,saved);
+                    project.ActiveAutoIdentityPerson=subject;
+                    await store.SaveAsync(project,settings.ProjectsRoot);
+                    log?.Invoke("Automatic identity: attached temporary " +
+                        "portrait "+next+" for "+subject+" to this video.");
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    // If one was captured successfully, use that reference.
+                    // The next resume can generate the missing portrait.
+                    log?.Invoke("Auto identity portrait creation failed: " +
+                        ex.Message+"; existing completed portraits preserved.");
+                    break;
+                }
+            }
+        }
+
+        if (AutoRealPersonIdentityService.ValidTemporaryCount(project,person)>0)
+        {
+            if (!project.Options.EnableRealPersonIdentityLock)
+            {
+                project.AutoIdentityEnabledByVideo=true;
+                project.Options.EnableRealPersonIdentityLock=true;
+            }
+            project.ActiveAutoIdentityPerson=subject;
+            await store.SaveAsync(project,settings.ProjectsRoot);
+            log?.Invoke("Automatic identity ACTIVE for "+subject+
+                ": references will be used only for matching visible people. "+
+                "Temporary portraits will be removed after a successful MP4.");
+        }
+        else
+        {
+            log?.Invoke("No usable temporary identity portraits were captured. " +
+                "Continuing with ordinary scene generation.");
+            if(person.AutoCreatedForVideo &&
+                (person.ReferencePaths?.Count??0)==0)
+                project.RealPeople.Remove(person);
+            await store.SaveAsync(project,settings.ProjectsRoot);
+        }
+    }
+
     private async Task<bool> TryGenerateSceneVisualAsync(
         VideoProject project,
         ProjectChapter chapter,
@@ -203,8 +416,38 @@ public sealed class PipelineService(ChatGptBrowserService chat, ClipchampTtsServ
                 if (attempt > 1)
                     log?.Invoke($"Scene {chapter.Number}.{scene.Number}: retry {attempt}/{maxAttempts}...");
 
-                await chat.GenerateSceneImageAsync(project, chapter, scene, settings, log, attemptCts.Token);
+                var engine = settings.ImageGenerationEngine ?? "ChatGPT";
+                if (engine.Equals("Local ComfyUI", StringComparison.OrdinalIgnoreCase))
+                {
+                    await localImages.GenerateAsync(project, chapter, scene, settings, log, attemptCts.Token);
+                }
+                else if (engine.Equals("Hybrid", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        await localImages.GenerateAsync(project, chapter, scene, settings, log, attemptCts.Token);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception localError)
+                    {
+                        log?.Invoke($"Scene {chapter.Number}.{scene.Number}: local generation " +
+                            $"unavailable ({localError.Message}). Falling back to the existing ChatGPT engine.");
+                        await chat.GenerateSceneImageAsync(project, chapter, scene, settings, log, attemptCts.Token);
+                    }
+                }
+                else
+                {
+                    // Keep the known-good browser generation path exactly as before.
+                    await chat.GenerateSceneImageAsync(project, chapter, scene, settings, log, attemptCts.Token);
+                }
                 return true;
+            }
+            catch (LocalImageSetupException)
+            {
+                // This is not a transient image error. Do not retry three
+                // times or proceed to additional scenes with a broken
+                // ComfyUI workflow.
+                throw;
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested && attemptCts.IsCancellationRequested)
             {

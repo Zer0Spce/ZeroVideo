@@ -1,0 +1,2519 @@
+using System.Globalization;
+using System.Net;
+using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Xml.Linq;
+using System.Windows.Media.Imaging;
+using ZeroVideo.App.Models;
+
+namespace ZeroVideo.App.Services;
+
+/// <summary>
+/// Game-specific imagery from official publisher-supplied Steam store screenshots.
+/// No AI generation, stock footage, community screenshots or unverified websites.
+/// Images retain their attribution and source URL. Official does not imply free-to-reuse:
+/// any publisher's media policy or applicable editorial exception remains relevant.
+/// </summary>
+public sealed class OfficialGamingMediaService
+{
+    private static readonly HttpClient Http = CreateMediaClient();
+
+    private static HttpClient CreateMediaClient()
+    {
+        var http = new HttpClient(new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+        }) { Timeout = TimeSpan.FromSeconds(35) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "ZeroVideo/0.1 (+https://github.com/Zer0Spce/ZeroVideo)");
+        http.DefaultRequestHeaders.Accept.ParseAdd("text/html, application/json, application/rss+xml, image/*");
+        return http;
+    }
+
+    public sealed record OfficialAsset(string LocalPath, string Url, string GameTitle,
+        string StoreUrl, string Source, string RightsNote);
+    public sealed record OfficialMediaResult(string Credit, IReadOnlyList<OfficialAsset> Assets);
+
+    private sealed class MediaUse
+    {
+        public string Fingerprint { get; set; } = "";
+        public string Url { get; set; } = "";
+        public DateTime UsedUtc { get; set; }
+        public string VideoId { get; set; } = "";
+    }
+
+    private static string MediaHistoryPath =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ZeroVideo", "gaming-news-media-history.json");
+
+    private static List<MediaUse> ReadMediaHistory(Action<string>? log)
+    {
+        try
+        {
+            if (!File.Exists(MediaHistoryPath)) return [];
+            return JsonSerializer.Deserialize<List<MediaUse>>(
+                File.ReadAllText(MediaHistoryPath)) ?? [];
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke("Gaming News media history could not be read: " + ex.Message);
+            return [];
+        }
+    }
+
+    private static async Task SaveMediaHistoryAsync(
+        List<MediaUse> entries, Action<string>? log, CancellationToken ct)
+    {
+        try
+        {
+            var path = MediaHistoryPath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var now = DateTime.UtcNow;
+            var recent = entries.Where(x => x.UsedUtc > now.AddDays(-14))
+                .TakeLast(2500).ToList();
+            var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            await File.WriteAllTextAsync(temp, JsonSerializer.Serialize(recent), ct);
+            File.Move(temp, path, true);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            log?.Invoke("Gaming News media use history unavailable: " + ex.Message);
+        }
+    }
+
+    private static string MediaSourceHost(OfficialAsset asset)
+    {
+        if (asset.Source.EndsWith(" gameplay/trailer video", StringComparison.OrdinalIgnoreCase))
+            return asset.Source[..^" gameplay/trailer video".Length] + " (YouTube)";
+        if (Uri.TryCreate(asset.StoreUrl, UriKind.Absolute, out var src))
+            return src.Host.Replace("www.", "", StringComparison.OrdinalIgnoreCase);
+        return asset.Source;
+    }
+
+    private static bool IsVideoAsset(OfficialAsset asset) =>
+        new[] { ".mp4", ".webm", ".mov", ".mkv", ".avi" }.Contains(
+            Path.GetExtension(asset.LocalPath), StringComparer.OrdinalIgnoreCase);
+
+    private static List<OfficialAsset> SelectDiverseShots(
+        VideoProject project, IReadOnlyList<OfficialAsset> assets,
+        IReadOnlyList<MediaUse> history, Action<string>? log)
+    {
+        const int target = 24;
+        var seedBytes = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            project.Id + "|" + project.Title + "|" + string.Join("|", project.Sources)));
+        var rng = new Random(BitConverter.ToInt32(seedBytes, 0));
+        var recentlyUsed = history.TakeLast(300)
+            .GroupBy(x => x.Fingerprint)
+            .ToDictionary(x => x.Key, x => x.Count(), StringComparer.OrdinalIgnoreCase);
+        var keyed = assets.Select(a => new
+        {
+            Asset = a,
+            Fingerprint = MediaFingerprint(a.LocalPath),
+            Host = MediaSourceHost(a)
+        }).ToList();
+        var pool = keyed.GroupBy(x => x.Fingerprint).Select(x => x.First()).ToList();
+        var hosts = pool.Select(x => x.Host).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var rankedSourceCounts = pool.GroupBy(x => x.Host, StringComparer.OrdinalIgnoreCase)
+            .Select(x => (Host: x.Key, Count: x.Count()))
+            .OrderByDescending(x => x.Count).ToList();
+        log?.Invoke("Gaming News verified source pool: " + string.Join(", ",
+            rankedSourceCounts.Select(x => x.Host + "=" + x.Count)));
+        if (rankedSourceCounts.Count < 2)
+            log?.Invoke("Gaming News: one image source available; using a varied " +
+                "selection from the game-matched pool instead of failing the batch.");
+        // One real publisher does not satisfy a multi-source news workflow.
+        // Never falsely describe 24 reordered Rockstar images as diverse.
+        // Multiple sources are preferred, not a hard requirement: Google may
+        // legitimately return strong, varied images from a single host.
+        var goalHosts = Math.Min(4, hosts.Count);
+        var maximumPerHost = hosts.Count >= 3 ? 12 : 15;
+        var storyKeywords = Regex.Matches(project.Title.ToLowerInvariant(), @"[a-z]{4,}")
+            .Select(x => x.Value)
+            .Where(x => !new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "grand", "theft", "auto", "game", "gaming", "news",
+                "guide", "every", "about", "with", "from", "your",
+                "what", "this", "that", "actually", "works", "latest"
+            }.Contains(x))
+            .Distinct().Take(8).ToArray();
+        var chosen = new List<OfficialAsset>();
+        var chosenHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var perSource = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var shotHosts = new List<string>();
+        int videoShots = 0;
+
+        for (var index = 0; index < target; index++)
+        {
+            var preferVideo = index % 5 == 2 || index % 7 == 4;
+            var uniqueFirst = chosenHashes.Count < pool.Count;
+            var choices = pool.Where(x => !uniqueFirst || !chosenHashes.Contains(x.Fingerprint))
+                .ToList();
+            if (choices.Count == 0) choices = pool.ToList();
+            if (hosts.Count >= 2)
+            {
+                var balanced = choices.Where(x =>
+                    perSource.GetValueOrDefault(x.Host) < maximumPerHost).ToList();
+                if (balanced.Count > 0) choices = balanced;
+            }
+            // Video and screenshot mix when genuine footage exists; never
+            // substitute unrelated videos merely to meet a quota.
+            if (preferVideo && choices.Any(x => IsVideoAsset(x.Asset)))
+                choices = choices.Where(x => IsVideoAsset(x.Asset)).ToList();
+            else if (!preferVideo && choices.Any(x => !IsVideoAsset(x.Asset)))
+                choices = choices.Where(x => !IsVideoAsset(x.Asset)).ToList();
+
+            var missingHosts = hosts.Count >= 2 ? hosts
+                .Where(h => !perSource.ContainsKey(h)).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var scored = choices.Select(x =>
+            {
+                var used = perSource.GetValueOrDefault(x.Host);
+                var consecutive = shotHosts.Count > 0 &&
+                    shotHosts[^1].Equals(x.Host, StringComparison.OrdinalIgnoreCase);
+                var repeatedTwice = shotHosts.Count >= 2 && consecutive &&
+                    shotHosts[^2].Equals(x.Host, StringComparison.OrdinalIgnoreCase);
+                var recent = recentlyUsed.GetValueOrDefault(x.Fingerprint);
+                var metadata = (x.Asset.Url + " " + x.Asset.StoreUrl).ToLowerInvariant();
+                var topicBonus = Math.Min(3.0,
+                    storyKeywords.Count(t => metadata.Contains(t, StringComparison.Ordinal)) * 1.2);
+                var share = (used + 1.0) / (index + 1.0);
+                var score = rng.NextDouble() * 2.4
+                    + topicBonus
+                    + (missingHosts.Contains(x.Host) ? 5.0 : 0.0)
+                    + (chosenHashes.Contains(x.Fingerprint) ? -4.0 : 3.0)
+                    - recent * 2.8
+                    - used * 0.85
+                    - (share > .35 && hosts.Count >= 3 ? 7.0 : 0.0)
+                    - (consecutive ? 5.0 : 0.0)
+                    - (repeatedTwice ? 40.0 : 0.0);
+                return new { Candidate = x, Score = score };
+            }).OrderByDescending(x => x.Score).ToList();
+            if (scored.Count == 0) break;
+            var pick = scored[0].Candidate;
+            chosen.Add(pick.Asset);
+            chosenHashes.Add(pick.Fingerprint);
+            perSource[pick.Host] = perSource.GetValueOrDefault(pick.Host) + 1;
+            shotHosts.Add(pick.Host);
+            if (IsVideoAsset(pick.Asset)) videoShots++;
+        }
+
+        if (perSource.Count < 2)
+            log?.Invoke("Gaming News: only one source contributed this time; " +
+                "randomized shot selection remains enabled.");
+        log?.Invoke("Gaming News diversified selection: " +
+            chosen.Count + " shots, " + perSource.Count + " source sites (" +
+            string.Join(", ", perSource.Select(x => x.Key + "=" + x.Value)) +
+            "), " + videoShots + " video beats; " +
+            "recent assets deprioritized across batches.");
+        if (perSource.Count < goalHosts)
+            log?.Invoke("Gaming News: some source sites had no usable unique assets; " +
+                "did not fabricate sources to meet diversity target.");
+        return chosen;
+    }
+
+    private static bool SteamHost(Uri uri) => uri.Scheme == "https" &&
+        (uri.Host == "store.steampowered.com" ||
+         uri.Host == "shared.akamai.steamstatic.com" ||
+         uri.Host == "shared.fastly.steamstatic.com" ||
+         uri.Host.EndsWith(".steamstatic.com", StringComparison.OrdinalIgnoreCase) ||
+         uri.Host == "steamcdn-a.akamaihd.net");
+
+    // First-party/platform editorial and media hosts. These are sourcing rules,
+    // not copyright licenses. Never follow arbitrary links or private addresses.
+    private static readonly string[] PlatformHosts =
+    [
+        "blog.playstation.com", "news.xbox.com", "www.nintendo.com",
+        "www.rockstargames.com", "www.ea.com", "www.ubisoft.com",
+        "www.bandainamcoent.com", "www.square-enix-games.com",
+        "www.capcom-games.com", "www.epicgames.com", "store.epicgames.com",
+        "store.steampowered.com", "www.gog.com", "bethesda.net",
+        "www.activision.com", "www.callofduty.com", "www.riotgames.com",
+        "www.blizzard.com", "www.playstation.com", "www.xbox.com"
+    ];
+
+    private static bool PublisherHost(Uri uri) => uri.Scheme == "https" &&
+        PlatformHosts.Any(host => uri.Host.Equals(host, StringComparison.OrdinalIgnoreCase) ||
+            uri.Host.EndsWith("." + host, StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsPublicHttps(Uri uri) =>
+        uri.Scheme == Uri.UriSchemeHttps &&
+        !uri.IsLoopback && !Uri.CheckHostName(uri.Host).Equals(UriHostNameType.Unknown) &&
+        !IPAddress.TryParse(uri.Host, out _);
+
+    private static async Task<string> DownloadPublisherHtmlAsync(Uri uri, CancellationToken ct)
+    {
+        if (!PublisherHost(uri)) throw new InvalidDataException("Not an approved publisher URL.");
+        using var response = await Http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength > 3_000_000)
+            return "";
+        var type = response.Content.Headers.ContentType?.MediaType ?? "";
+        if (!type.Contains("html", StringComparison.OrdinalIgnoreCase)) return "";
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var memory = new MemoryStream();
+        var block = new byte[32 * 1024];
+        int count;
+        while ((count = await stream.ReadAsync(block, ct)) > 0)
+        {
+            if (memory.Length + count > 3_000_000) return "";
+            await memory.WriteAsync(block.AsMemory(0, count), ct);
+        }
+        return System.Text.Encoding.UTF8.GetString(memory.ToArray());
+    }
+
+    private static IEnumerable<Uri> ExtractPublisherImages(string html, Uri page)
+    {
+        // OpenGraph/Twitter cards and first-party article illustrations.
+        foreach (Match meta in Regex.Matches(html,
+                     @"<meta\b[^>]{0,1200}>", RegexOptions.IgnoreCase))
+        {
+            var tag = meta.Value;
+            if (!Regex.IsMatch(tag, @"(?:og:image|twitter:image)", RegexOptions.IgnoreCase))
+                continue;
+            var value = Regex.Match(tag, @"content\s*=\s*[""'](?<v>[^""']+)[""']",
+                RegexOptions.IgnoreCase).Groups["v"].Value;
+            value = WebUtility.HtmlDecode(value);
+            if (Uri.TryCreate(page, value, out var image) && IsPublicHttps(image))
+                yield return image;
+        }
+        foreach (Match match in Regex.Matches(html,
+                     @"<img\b[^>]{0,1800}>", RegexOptions.IgnoreCase).Cast<Match>().Take(80))
+        {
+            var tag = match.Value;
+            var value = Regex.Match(tag,
+                @"(?:data-src|src)\s*=\s*[""'](?<v>[^""']+)[""']",
+                RegexOptions.IgnoreCase).Groups["v"].Value;
+            value = WebUtility.HtmlDecode(value);
+            if (Uri.TryCreate(page, value, out var image) && IsPublicHttps(image) &&
+                !Regex.IsMatch(image.AbsolutePath,
+                    @"(avatar|logo|icon|pixel|sprite|tracking|placeholder)",
+                    RegexOptions.IgnoreCase))
+                yield return image;
+        }
+    }
+
+    private static IEnumerable<(Uri Url, string Alt)> ExtractDescribedArticleImages(
+        string html, Uri article)
+    {
+        // Journalism sites often use CDN hashes, so GTA VI does not occur in
+        // the URL. Accept first-party article <img> whose own alt/title
+        // identifies GTA VI, but never infer identity merely from page URL.
+        foreach (Match match in Regex.Matches(html,
+                     @"<img\b[^>]{0,2500}>", RegexOptions.IgnoreCase).Cast<Match>().Take(150))
+        {
+            var tag = match.Value;
+            var alt = Regex.Match(tag,
+                @"(?:alt|title)\s*=\s*[""'](?<v>[^""']+)[""']",
+                RegexOptions.IgnoreCase).Groups["v"].Value;
+            alt = WebUtility.HtmlDecode(alt);
+            if (alt.Length < 4) continue;
+            var src = Regex.Match(tag,
+                @"(?:data-src|src)\s*=\s*[""'](?<v>[^""']+)[""']",
+                RegexOptions.IgnoreCase).Groups["v"].Value;
+            if (!Uri.TryCreate(article, WebUtility.HtmlDecode(src), out var image) ||
+                !IsPublicHttps(image) || RejectGenericGraphic(image, alt))
+                continue;
+            yield return (image, alt);
+        }
+    }
+
+    private static IEnumerable<Uri> ExtractLinkedGalleryImages(string html, Uri page)
+    {
+        // Rockstar and other publisher galleries often put the full-res JPG
+        // in an <a href>, not in <img src>; the original extractor missed all
+        // these actual screenshots and returned only thumbnails/branding.
+        foreach (Match match in Regex.Matches(html,
+            @"<a\b[^>]{0,1800}href\s*=\s*[""'](?<url>[^""']+)[""']",
+            RegexOptions.IgnoreCase).Cast<Match>().Take(400))
+        {
+            var raw = WebUtility.HtmlDecode(match.Groups["url"].Value);
+            if (!Uri.TryCreate(page, raw, out var image) ||
+                !IsPublicHttps(image) ||
+                !Regex.IsMatch(image.AbsolutePath, @"(?i)\.(?:jpg|jpeg|png)$"))
+                continue;
+            yield return image;
+        }
+    }
+
+    private static async Task<byte[]> DownloadPublisherImageAsync(
+        Uri image, Uri origin, CancellationToken ct)
+    {
+        // Official publisher pages sometimes serve images through their CDN,
+        // often on a different domain. Only take addresses literally found in
+        // first-party HTML; reject redirects, local hosts, nonimages and large responses.
+        if (!IsPublicHttps(image)) throw new InvalidDataException("Invalid image URL.");
+        using var response = await Http.GetAsync(image, HttpCompletionOption.ResponseHeadersRead, ct);
+        response.EnsureSuccessStatusCode();
+        var type = response.Content.Headers.ContentType?.MediaType ?? "";
+        if (!type.StartsWith("image/jpeg", StringComparison.OrdinalIgnoreCase) &&
+            !type.StartsWith("image/png", StringComparison.OrdinalIgnoreCase) &&
+            !type.StartsWith("image/webp", StringComparison.OrdinalIgnoreCase) &&
+            !type.StartsWith("image/avif", StringComparison.OrdinalIgnoreCase) &&
+            !type.StartsWith("application/octet-stream", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Media server returned non-image content: " + type);
+        if (response.Content.Headers.ContentLength > 12 * 1024 * 1024)
+            throw new InvalidDataException("Official image too large.");
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var memory = new MemoryStream();
+        var block = new byte[65536];
+        int count;
+        while ((count = await stream.ReadAsync(block, ct)) > 0)
+        {
+            if (memory.Length + count > 12 * 1024 * 1024)
+                throw new InvalidDataException("Official image too large.");
+            await memory.WriteAsync(block.AsMemory(0, count), ct);
+        }
+        return memory.ToArray();
+    }
+
+    private static readonly string[] JournalismHosts =
+    [
+        "www.pcgamer.com", "www.ign.com", "www.gamespot.com",
+        "www.gematsu.com", "www.eurogamer.net", "www.videogameschronicle.com",
+        "www.polygon.com", "www.theverge.com", "kotaku.com",
+        "www.destructoid.com", "www.rockpapershotgun.com",
+        "www.gamesradar.com", "www.pushsquare.com", "www.nintendolife.com",
+        "www.purexbox.com", "www.digitaltrends.com", "www.techradar.com",
+        "www.gamespress.com", "gamespress.com"
+    ];
+
+    private static bool JournalismHost(Uri uri) => uri.Scheme == "https" &&
+        JournalismHosts.Any(host => uri.Host.Equals(host, StringComparison.OrdinalIgnoreCase));
+
+    private static async Task<string> DownloadNewsHtmlAsync(Uri uri, CancellationToken ct)
+    {
+        if (!JournalismHost(uri)) return "";
+        using var response = await Http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength > 1_000_000)
+            return "";
+        var type = response.Content.Headers.ContentType?.MediaType ?? "";
+        if (!type.Contains("html", StringComparison.OrdinalIgnoreCase)) return "";
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var memory = new MemoryStream();
+        var block = new byte[32768];
+        int n;
+        while ((n = await stream.ReadAsync(block, ct)) > 0)
+        {
+            if (memory.Length + n > 1_000_000) return "";
+            await memory.WriteAsync(block.AsMemory(0, n), ct);
+        }
+        return System.Text.Encoding.UTF8.GetString(memory.ToArray());
+    }
+
+    // Follow only directly attributed official URLs quoted in the original
+    // gaming-news article. Never use arbitrary search images.
+    private static async Task<List<Uri>> LinkedOfficialPagesAsync(
+        VideoProject project, Action<string>? log, CancellationToken ct)
+    {
+        var results = new List<Uri>();
+        foreach (var source in project.Sources.Take(2))
+        {
+            if (!Uri.TryCreate(source, UriKind.Absolute, out var article) ||
+                !JournalismHost(article)) continue;
+            try
+            {
+                var html = await DownloadNewsHtmlAsync(article, ct);
+                foreach (Match match in Regex.Matches(html,
+                             @"<a\b[^>]{0,1500}href\s*=\s*[""'](?<u>[^""']+)[""']",
+                             RegexOptions.IgnoreCase).Cast<Match>().Take(350))
+                {
+                    var link = WebUtility.HtmlDecode(match.Groups["u"].Value);
+                    if (!Uri.TryCreate(article, link, out var target) || !PublisherHost(target))
+                        continue;
+                    if (results.All(x => x != target)) results.Add(target);
+                    if (results.Count >= 8) break;
+                }
+                log?.Invoke($"Gaming official source discovery: {results.Count} publisher links from {article.Host}.");
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("Original article source links unavailable: " + ex.Message); }
+        }
+        return results;
+    }
+
+    private static IEnumerable<Uri> PublisherPages(VideoProject project)
+    {
+        if (IsGtaSixStory(project.Title, ""))
+        {
+            // Exact publisher-hosted GTA VI galleries. These already contain
+            // dozens of actual screenshots, including Jason and Lucia.
+            yield return new Uri("https://www.rockstargames.com/VI/media/screenshots");
+            yield return new Uri("https://www.rockstargames.com/VI/media");
+            yield return new Uri("https://www.rockstargames.com/VI/launch-gallery");
+        }
+        var urls = project.Sources;
+        foreach (var url in urls)
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && PublisherHost(uri))
+                yield return uri;
+        }
+    }
+
+    // Search outside the original article. Bing's public RSS results are
+    // discovery only; selected pages MUST be from an allowlisted first-party
+    // publisher/platform host and are still checked for real media.
+    private static async Task<IReadOnlyList<Uri>> DiscoverIndependentPublisherPagesAsync(
+        VideoProject project, string focus, Action<string>? log, CancellationToken ct)
+    {
+        var pages = new List<Uri>();
+        var subject = CoreGameSubject(project, focus);
+        if (subject.Length > 120) subject = subject[..120];
+        if (subject.Length < 4) return pages;
+        var searches = new[]
+        {
+            "\"" + subject + "\" official screenshots game publisher",
+            "\"" + subject + "\" gameplay trailer press kit official"
+        };
+        foreach (var query in searches)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var uri = new Uri("https://www.bing.com/search?format=rss&q=" +
+                    Uri.EscapeDataString(query));
+                using var response = await Http.GetAsync(
+                    uri, HttpCompletionOption.ResponseHeadersRead, ct);
+                if (!response.IsSuccessStatusCode ||
+                    response.Content.Headers.ContentLength > 400_000) continue;
+                var xml = await response.Content.ReadAsStringAsync(ct);
+                if (xml.Length > 400_000) continue;
+                var document = XDocument.Parse(xml, LoadOptions.None);
+                foreach (var item in document.Descendants()
+                             .Where(x => x.Name.LocalName == "item").Take(20))
+                {
+                    var link = item.Elements().FirstOrDefault(
+                        x => x.Name.LocalName == "link")?.Value ?? "";
+                    if (!Uri.TryCreate(link, UriKind.Absolute, out var page) ||
+                        !PublisherHost(page)) continue;
+                    if (pages.All(x => x != page)) pages.Add(page);
+                    if (pages.Count >= 8) break;
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                log?.Invoke("Independent publisher search unavailable: " + ex.Message);
+            }
+        }
+        log?.Invoke($"Independent web search: {pages.Count} official publisher/platform pages.");
+        return pages;
+    }
+
+    // Broader public search across relevant gaming publishers and journalism
+    // sites. An RSS hit is only a candidate page: never use generic search
+    // result thumbnails or unverified third-party embeds as footage.
+    private static async Task<IReadOnlyList<Uri>> DiscoverGamingNewsMediaPagesAsync(
+        VideoProject project, string focus, Action<string>? log, CancellationToken ct)
+    {
+        var pages = new List<Uri>();
+        var subject = CoreGameSubject(project, focus);
+        if (subject.Length > 110) subject = subject[..110];
+        if (subject.Length < 4) return pages;
+        var searches = new[]
+        {
+            "\"" + subject + "\" site:ign.com gameplay screenshots",
+            "\"" + subject + "\" site:gamespot.com game footage",
+            "\"" + subject + "\" site:gamespress.com press kit screenshots trailer",
+            "\"" + subject + "\" site:gematsu.com screenshots trailers",
+            "\"" + subject + "\" gaming news screenshots"
+        };
+        foreach (var query in searches)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                using var response = await Http.GetAsync(
+                    new Uri("https://www.bing.com/search?format=rss&q=" +
+                        Uri.EscapeDataString(query)),
+                    HttpCompletionOption.ResponseHeadersRead, ct);
+                if (!response.IsSuccessStatusCode ||
+                    response.Content.Headers.ContentLength > 400_000) continue;
+                var xml = await response.Content.ReadAsStringAsync(ct);
+                if (xml.Length > 400_000) continue;
+                var document = XDocument.Parse(xml, LoadOptions.None);
+                foreach (var item in document.Descendants()
+                    .Where(x => x.Name.LocalName == "item").Take(30))
+                {
+                    var link = item.Elements().FirstOrDefault(
+                        x => x.Name.LocalName == "link")?.Value ?? "";
+                    var title = item.Elements().FirstOrDefault(
+                        x => x.Name.LocalName == "title")?.Value ?? "";
+                    var summary = item.Elements().FirstOrDefault(
+                        x => x.Name.LocalName == "description")?.Value ?? "";
+                    if (!Uri.TryCreate(link, UriKind.Absolute, out var page) ||
+                        !JournalismHost(page) || pages.Contains(page)) continue;
+                    // Search by the core game's full identity, not the
+                    // article headline. For GTA VI accept its edition aliases,
+                    // reject GTA V and unrelated games; subject boosters only
+                    // rank the results rather than restricting the entire search.
+                    var evidence = title + " " + summary + " " + page.AbsolutePath;
+                    if (IsGtaSixStory(project.Title, focus))
+                    {
+                        if (!IsGtaSix(evidence) || IsGtaFive(evidence)) continue;
+                    }
+                    else if (!Normalize(evidence).Contains(
+                        Normalize(subject), StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    pages.Add(page);
+                    if (pages.Count >= 10) break;
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                log?.Invoke("Independent news media search unavailable: " + ex.Message);
+            }
+        }
+        log?.Invoke($"Gaming media web search: {pages.Count} additional gaming journalism pages.");
+        return pages;
+    }
+
+    private sealed record YouTubeClipLead(string Url, string Title, string Channel);
+
+    private static string QuoteProcessArgument(string value) =>
+        "\"" + value.Replace("\"", "\\\"") + "\"";
+
+    private static string? FindYouTubeDownloader()
+    {
+        var local = Path.Combine(AppContext.BaseDirectory, "yt-dlp.exe");
+        if (File.Exists(local)) return local;
+        // Other installs may provide their own, but bundled exe is preferred.
+        var appData = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ZeroVideo", "bin", "yt-dlp.exe");
+        return File.Exists(appData) ? appData : null;
+    }
+
+    // Search result labels are not enough to establish official origin.
+    // Accept publisher/platform channels and established outlets publishing
+    // explicitly titled official trailers or gameplay. Reject unknown
+    // fan channels even if they use "official" in a video title.
+    private static bool IsTrustedOfficialGameVideo(
+        string channel, string title, string subject)
+    {
+        if (!MatchingGameplayTitle(title, subject)) return false;
+        if (!Regex.IsMatch(title,
+            @"(?i)\b(?:official\s+(?:gameplay|trailer|teaser|announcement|reveal)|gameplay\s+(?:trailer|preview|footage|demo)|(?:launch|reveal|announcement|story)\s+trailer|gameplay|trailer)\b"))
+            return false;
+        var normalizedChannel = Normalize(channel);
+        var knownChannels = new[]
+        {
+            "playstation", "xbox", "nintendo of america",
+            "nintendo", "rockstar games", "rockstar games official",
+            "ign", "gamespot", "sega", "sega america",
+            "ubisoft", "ubisoft north america", "electronic arts",
+            "ea", "ea star wars", "activision", "bethesda softworks",
+            "capcom", "bandai namco entertainment america",
+            "square enix", "warner bros games", "wb games",
+            "devolver digital", "embark studios", "cd projekt red",
+            "disney dreamlight valley", "gameloft", "marvel games",
+            "2k", "take two interactive"
+        };
+        return knownChannels.Any(x =>
+            normalizedChannel.Equals(x, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool MatchingGameplayTitle(string title, string mainSubject)
+    {
+        // Never take a different game, a reaction thumbnail, a random
+        // compilation or an unrelated listicle just because it mentions PS5.
+        var normalizedTitle = Normalize(title);
+        var normalizedSubject = Normalize(mainSubject);
+        if (normalizedSubject.Length < 3) return false;
+        var isGtaVi = IsGtaSix(mainSubject);
+        var isGtaV = IsGtaFive(mainSubject) && !isGtaVi;
+        var matchesGame = isGtaVi ? IsGtaSix(title) && !IsGtaFive(title) :
+            isGtaV ? IsGtaFive(title) && !IsGtaSix(title) :
+            normalizedTitle.Contains(normalizedSubject, StringComparison.Ordinal);
+        if (!matchesGame) return false;
+        if (Regex.IsMatch(title,
+            @"(?i)\b(?:reaction|reacts|top\s+\d+|all\s+games|best\s+games|fake\s+trailer|fan[\s-]*made|concept\s+trailer|rumor\s+compilation|leaked\s+fake)\b"))
+            return false;
+        return true;
+    }
+
+    private static string ErrorSummary(string value)
+    {
+        var last = value.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .TakeLast(4).Select(x => x.Trim());
+        var text = string.Join(" | ", last);
+        return text.Length > 430 ? text[^430..] : text;
+    }
+
+    private static async Task<List<OfficialAsset>> AcquireYouTubeGameplayAsync(
+        VideoProject project, string focus, ZeroVideoSettings settings,
+        string mediaDir, Action<string>? log, CancellationToken ct)
+    {
+        var result = new List<OfficialAsset>();
+        var downloader = FindYouTubeDownloader();
+        if (downloader is null)
+        {
+            log?.Invoke("YouTube: yt-dlp.exe not present beside ZeroVideo.exe. " +
+                "Skipping YouTube and retaining direct publisher MP4 sources.");
+            return result;
+        }
+        var subject = CoreGameSubject(project, focus);
+        if (subject.Length < 3) return result;
+        var queries = new[]
+        {
+            subject + " official trailer",
+            subject + " official gameplay",
+            subject + " gameplay trailer IGN GameSpot"
+        };
+        var runner = new ProcessRunner();
+        var bundledDeno = Path.Combine(AppContext.BaseDirectory, "deno.exe");
+        var jsArg = File.Exists(bundledDeno)
+            ? " --js-runtimes " + QuoteProcessArgument("deno:" + bundledDeno)
+            : "";
+        if (jsArg.Length == 0)
+            log?.Invoke("YouTube: bundled Deno runtime missing; format extraction " +
+                "may fail. Check for deno.exe next to ZeroVideo.exe.");
+        var searchCandidates = new List<YouTubeClipLead>();
+        foreach (var query in queries)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(55));
+                var arguments = "--ignore-config --flat-playlist " + jsArg +
+                    " --dump-single-json --no-warnings --playlist-end 10 " +
+                    QuoteProcessArgument("ytsearch10:" + query);
+                var response = await runner.RunAsync(downloader, arguments, ct: timeout.Token);
+                if (response.ExitCode != 0)
+                {
+                    log?.Invoke("YouTube search failed (" + query + "): " +
+                        ErrorSummary(response.StdErr));
+                    continue;
+                }
+                using var json = JsonDocument.Parse(response.StdOut);
+                if (!json.RootElement.TryGetProperty("entries", out var entries) ||
+                    entries.ValueKind != JsonValueKind.Array) continue;
+                var candidatesBefore = searchCandidates.Count;
+                foreach (var entry in entries.EnumerateArray())
+                {
+                    var title = entry.TryGetProperty("title", out var titleValue)
+                        ? titleValue.GetString() ?? "" : "";
+                    if (!MatchingGameplayTitle(title, subject)) continue;
+                    var id = entry.TryGetProperty("id", out var videoId)
+                        ? videoId.GetString() ?? "" : "";
+                    if (!Regex.IsMatch(id, @"^[A-Za-z0-9_-]{11}$")) continue;
+                    var channel = entry.TryGetProperty("channel", out var channelValue)
+                        ? channelValue.GetString() ?? "" : "";
+                    var url = "https://www.youtube.com/watch?v=" + id;
+                    if (!searchCandidates.Any(x => x.Url == url))
+                        searchCandidates.Add(new YouTubeClipLead(url, title, channel));
+                }
+                log?.Invoke("YouTube search '" + query + "': " +
+                    (searchCandidates.Count - candidatesBefore) +
+                    " game-matched candidate(s), pending full metadata.");
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                log?.Invoke("YouTube search timed out: " + query);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                log?.Invoke("YouTube search error (" + query + "): " + ex.Message);
+            }
+        }
+        if (searchCandidates.Count == 0)
+        {
+            log?.Invoke("YouTube: no game-matched search results for " + subject +
+                ". Direct MP4 sources remain available.");
+            return result;
+        }
+        // --flat-playlist does NOT reliably contain uploader/channel. Resolve
+        // full metadata for shortlisted videos before the trusted-origin check.
+        var verified = new List<(YouTubeClipLead Lead, double Duration)>();
+        foreach (var item in searchCandidates.Take(18))
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(35));
+                var args = "--ignore-config --no-playlist --skip-download " + jsArg +
+                    " --dump-single-json --no-warnings " + QuoteProcessArgument(item.Url);
+                var info = await runner.RunAsync(downloader, args, ct: timeout.Token);
+                if (info.ExitCode != 0)
+                {
+                    log?.Invoke("YouTube metadata unavailable: " +
+                        ErrorSummary(info.StdErr));
+                    continue;
+                }
+                using var metadata = JsonDocument.Parse(info.StdOut);
+                var root = metadata.RootElement;
+                var title = root.TryGetProperty("title", out var ti)
+                    ? ti.GetString() ?? item.Title : item.Title;
+                var channel = root.TryGetProperty("channel", out var ch)
+                    ? ch.GetString() ?? "" : "";
+                if (channel.Length == 0 && root.TryGetProperty("uploader", out var up))
+                    channel = up.GetString() ?? "";
+                var length = root.TryGetProperty("duration", out var du) &&
+                    du.ValueKind == JsonValueKind.Number ? du.GetDouble() : 0;
+                var live = root.TryGetProperty("is_live", out var liveValue) &&
+                    liveValue.ValueKind == JsonValueKind.True;
+                if (live || length < 15 || length > 1200)
+                    continue;
+                if (!IsTrustedOfficialGameVideo(channel, title, subject))
+                {
+                    log?.Invoke("YouTube excluded non-official/mismatched footage: " +
+                        title + " (" + channel + ")");
+                    continue;
+                }
+                verified.Add((new YouTubeClipLead(item.Url, title, channel), length));
+                if (verified.Count >= 6) break;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                log?.Invoke("YouTube metadata timed out: " + item.Title);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("YouTube metadata error: " + ex.Message); }
+        }
+        log?.Invoke("YouTube: " + verified.Count + " official gameplay/trailer " +
+            "video(s) verified; downloading full source before clipping.");
+        var seedBytes = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            project.Id + "|" + project.Title + "|" + string.Join("|", project.Sources)));
+        var random = new Random(BitConverter.ToInt32(seedBytes, 0));
+        verified = verified.OrderBy(_ => random.Next()).ToList();
+        var ffmpeg = string.IsNullOrWhiteSpace(settings.FfmpegPath)
+            ? "ffmpeg" : settings.FfmpegPath;
+        // One full video may supply several distinct excerpts; use a small
+        // local cache to avoid redownloading it for every one of 48 news posts.
+        var cache = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ZeroVideo", "gaming-news-video-cache");
+        Directory.CreateDirectory(cache);
+        foreach (var (lead, length) in verified.Take(5))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (result.Count >= 6) break;
+            var id = lead.Url[(lead.Url.LastIndexOf('=') + 1)..];
+            var cached = Directory.GetFiles(cache, id + ".*")
+                .FirstOrDefault(x => new[] { ".mp4", ".webm", ".mkv" }
+                    .Contains(Path.GetExtension(x), StringComparer.OrdinalIgnoreCase) &&
+                    new FileInfo(x).Length >= 50_000) ?? Path.Combine(cache, id + ".mp4");
+            if (!File.Exists(cached) || new FileInfo(cached).Length < 50_000)
+            {
+                try
+                {
+                    var rawTemplate = Path.Combine(cache, id + ".%(ext)s");
+                    var directory = Path.GetDirectoryName(ffmpeg);
+                    var ffmpegArg = directory is not null && Directory.Exists(directory)
+                        ? " --ffmpeg-location " + QuoteProcessArgument(directory)
+                        : "";
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    timeout.CancelAfter(TimeSpan.FromMinutes(3));
+                    // Download first; extracting a --download-sections excerpt
+                    // often fails when YouTube's segmented stream does not
+                    // expose suitable keyframes. Full local file is reliable.
+                    var args = "--ignore-config --no-playlist --no-progress " + jsArg +
+                        " --no-warnings --no-part --max-filesize 180M " +
+                        "-f " + QuoteProcessArgument(
+                            "bv*[height<=720]+ba/b[height<=720]/best[height<=720]") +
+                        " --merge-output-format mp4" + ffmpegArg +
+                        " -o " + QuoteProcessArgument(rawTemplate) + " " +
+                        QuoteProcessArgument(lead.Url);
+                    var download = await runner.RunAsync(downloader, args, ct: timeout.Token);
+                    if (download.ExitCode != 0)
+                    {
+                        log?.Invoke("YouTube source download failed (" + lead.Title +
+                            "): " + ErrorSummary(download.StdErr));
+                        continue;
+                    }
+                    var found = Directory.GetFiles(cache, id + ".*")
+                        .FirstOrDefault(x => new[] { ".mp4", ".webm", ".mkv" }
+                            .Contains(Path.GetExtension(x), StringComparer.OrdinalIgnoreCase) &&
+                            new FileInfo(x).Length >= 50_000);
+                    if (found is null)
+                    {
+                        log?.Invoke("YouTube source download finished but no video file was produced: " +
+                            lead.Title);
+                        continue;
+                    }
+                    // Keep source container as-is in cache; ffmpeg can decode
+                    // WEBM, MKV and MP4. Never rename a WEBM as MP4.
+                    cached = found;
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    log?.Invoke("YouTube download timeout: " + lead.Title);
+                    continue;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    log?.Invoke("YouTube source download error: " + ex.Message);
+                    continue;
+                }
+            }
+            // Each source may contribute two different 4-6 second clips.
+            // Do not bring over YouTube audio, only video behind our voiceover.
+            var maxStart = Math.Max(2, (int)Math.Floor(length - 8));
+            for (var excerpt = 0; excerpt < 2 && result.Count < 6; excerpt++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var start = Math.Min(maxStart, 5 + random.Next(Math.Max(1, maxStart - 4)));
+                var destination = Path.Combine(mediaDir,
+                    "youtube-gameplay-" + (result.Count + 1).ToString("00") + ".mp4");
+                try
+                {
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    timeout.CancelAfter(TimeSpan.FromSeconds(45));
+                    var args = "-hide_banner -loglevel error -y -ss " + start +
+                        " -i " + QuoteProcessArgument(cached) +
+                        " -t 6 -an -vf " + QuoteProcessArgument(
+                            "fps=30,scale=1280:720:force_original_aspect_ratio=decrease:flags=lanczos," +
+                            "pad=1280:720:(ow-iw)/2:(oh-ih)/2") +
+                        " -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p " +
+                        QuoteProcessArgument(destination);
+                    var clip = await runner.RunAsync(ffmpeg, args, ct: timeout.Token);
+                    if (clip.ExitCode != 0 || !File.Exists(destination) ||
+                        new FileInfo(destination).Length < 32_000)
+                    {
+                        log?.Invoke("YouTube excerpt extraction failed: " +
+                            ErrorSummary(clip.StdErr));
+                        continue;
+                    }
+                    result.Add(new OfficialAsset(destination, lead.Url, subject,
+                        lead.Url, lead.Channel + " gameplay/trailer video",
+                        "Six-second excerpt from official trailer/gameplay; channel and URL credited. Confirm reuse rights."));
+                    log?.Invoke("YouTube: extracted 6s gameplay from " +
+                        lead.Channel + " / " + lead.Title + " at " + start + "s.");
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    log?.Invoke("YouTube excerpt extraction timeout: " + lead.Title);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    log?.Invoke("YouTube excerpt extraction error: " + ex.Message);
+                }
+            }
+        }
+        log?.Invoke("Gaming News YouTube: " + result.Count +
+            " playable official gameplay/trailer clips for the mixed 24-shot edit.");
+        return result;
+    }
+
+    private sealed record VideoLead(string SourceName, string Channel, string Url,
+        string Title, bool VerifiedGameMatch);
+
+    // YouTube channels are discovery/catalog leads, not downloadable MP4
+    // endpoints. Record exact candidate URLs and titles. Video downloads
+    // require a platform-compliant authorized source.
+    private static readonly (string Name, string Channel)[] VideoChannels =
+    [
+        ("IGN YouTube", "IGN"),
+        ("GameSpot YouTube", "GameSpot"),
+        ("PlayStation YouTube", "PlayStation"),
+        ("Nintendo YouTube", "NintendoAmerica")
+    ];
+
+    private static async Task<IReadOnlyList<VideoLead>> DiscoverVideoChannelLeadsAsync(
+        VideoProject project, string focus, Action<string>? log, CancellationToken ct)
+    {
+        var subject = CoreGameSubject(project, focus);
+        if (subject.Length > 115) subject = subject[..115];
+        var leads = new List<VideoLead>();
+        foreach (var (sourceName, channel) in VideoChannels)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var query = "\"" + subject + "\" site:youtube.com " + channel +
+                    " official gameplay trailer";
+                var uri = new Uri("https://www.bing.com/search?format=rss&q=" +
+                    Uri.EscapeDataString(query));
+                using var response = await Http.GetAsync(
+                    uri, HttpCompletionOption.ResponseHeadersRead, ct);
+                if (!response.IsSuccessStatusCode ||
+                    response.Content.Headers.ContentLength > 350_000) continue;
+                var xml = await response.Content.ReadAsStringAsync(ct);
+                if (xml.Length > 350_000) continue;
+                var document = XDocument.Parse(xml, LoadOptions.None);
+                foreach (var item in document.Descendants()
+                    .Where(x => x.Name.LocalName == "item").Take(15))
+                {
+                    var link = item.Elements().FirstOrDefault(
+                        x => x.Name.LocalName == "link")?.Value ?? "";
+                    var title = item.Elements().FirstOrDefault(
+                        x => x.Name.LocalName == "title")?.Value ?? "";
+                    if (!Uri.TryCreate(link, UriKind.Absolute, out var candidate) ||
+                        candidate.Scheme != "https" ||
+                        !(candidate.Host == "www.youtube.com" ||
+                          candidate.Host == "youtube.com") ||
+                        !(candidate.AbsolutePath.StartsWith("/watch", StringComparison.Ordinal) ||
+                          candidate.AbsolutePath.StartsWith("/shorts/", StringComparison.Ordinal)) ||
+                        !title.Contains(subject, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    // A search result mentioning GTA VI is not evidence of
+                    // what a thumbnail actually shows. Treat as a lead only.
+                    if (IsGtaSixStory(project.Title, focus) && IsGtaFive(title))
+                        continue;
+                    if (leads.All(x => x.Url != candidate.ToString()))
+                        leads.Add(new VideoLead(sourceName, channel,
+                            candidate.ToString(), title, true));
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke(sourceName +
+                " search unavailable: " + ex.Message); }
+        }
+        log?.Invoke($"YouTube source discovery: {leads.Count} matching IGN, GameSpot, PlayStation and Nintendo video links. " +
+            "References only; no unlicensed download attempted.");
+        return leads;
+    }
+
+    // Identify the actual game, company, or person from the WHOLE article
+    // headline. Never use the first few words of an instructional headline
+    // as a Google Images query (e.g. "How to get to").
+    private static string ExtractMediaSubject(string headline, string focus)
+    {
+        var title = Regex.Replace(WebUtility.HtmlDecode(headline ?? ""),
+            @"\s+", " ").Trim();
+        var requested = (focus ?? "").Trim();
+        var combined = title + " " + requested;
+
+        // Exact game names take priority over generic consoles/platforms.
+        // These are common news examples, not a list restricting discovery.
+        var namedGames = new (string Pattern, string Name)[]
+        {
+            (@"\b(?:disney\s+)?dreamlight\s+valley\b", "Disney Dreamlight Valley"),
+            (@"\b(?:gta\s*(?:vi|6)|grand\s+theft\s+auto\s*(?:vi|6))\b", "GTA VI"),
+            (@"\b(?:gta\s*(?:v|5)|grand\s+theft\s+auto\s*(?:v|5))\b", "GTA V"),
+            (@"\b(?:the\s+legend\s+of\s+zelda|zelda)\b", "The Legend of Zelda"),
+            (@"\b(?:call\s+of\s+duty)\b", "Call of Duty"),
+            (@"\b(?:final\s+fantasy)\b", "Final Fantasy"),
+            (@"\b(?:monster\s+hunter)\b", "Monster Hunter"),
+            (@"\b(?:resident\s+evil)\b", "Resident Evil"),
+            (@"\b(?:assassin'?s?\s+creed)\b", "Assassin's Creed"),
+            (@"\b(?:hollow\s+knight)\b", "Hollow Knight"),
+            (@"\b(?:elden\s+ring)\b", "Elden Ring"),
+            (@"\b(?:minecraft)\b", "Minecraft"),
+            (@"\b(?:fortnite)\b", "Fortnite"),
+            (@"\b(?:roblox)\b", "Roblox"),
+            (@"\b(?:spyro)\b", "Spyro"),
+            (@"\b(?:pokemon|pokémon)\b", "Pokémon")
+        };
+        foreach (var (pattern, name) in namedGames)
+            if (Regex.IsMatch(combined, pattern, RegexOptions.IgnoreCase))
+                return name;
+
+        // Niche-specific mode should honor the user-defined topic, but not
+        // generic values like "all news" or a platform when a game is named.
+        bool realFocus = requested.Length is >= 3 and <= 65 &&
+            !Regex.IsMatch(requested,
+                @"(?i)^(?:all\s+)?(?:gaming|video\s+game)(?:\s+news)?$");
+        if (realFocus && !Regex.IsMatch(requested,
+                @"(?i)^(?:playstation|ps5|xbox|switch|pc|nintendo)$"))
+            return requested;
+
+        // Guides frequently put the main game's name AFTER a preposition:
+        // "How to get to The Keepsake Sea in Disney Dreamlight Valley".
+        // Capture the last named game-like phrase, not "How to get to".
+        var inGame = Regex.Match(title,
+            @"(?i)\b(?:in|for)\s+(?<name>(?:(?:Disney|Marvel|Star\s+Wars|The\s+Legend\s+of)\s+)?[A-Z][\w'’-]*(?:\s+(?:[A-Z][\w'’-]*|of|the|and)){1,5})(?=\s*(?:[?.!:;,]|$))");
+        if (inGame.Success)
+        {
+            var name = inGame.Groups["name"].Value.Trim();
+            if (!Regex.IsMatch(name, @"(?i)^(?:the\s+)?(?:year|game|world|video|news|game\s+awards)\b"))
+                return name;
+        }
+
+        // Often the headline starts with a true named character or company.
+        // Only use the first subject when it is an identifiable proper noun,
+        // not a stopword phrase like "How to get to" / "Everything you need".
+        var company = Regex.Match(combined,
+            @"(?i)\b(?:amd|nvidia|intel|activision|ubisoft|rockstar\s+games|electronic\s+arts|epic\s+games|microsoft|sony)\b");
+        if (company.Success)
+            return company.Value.ToUpperInvariant() switch
+            {
+                "AMD" => "AMD",
+                "NVIDIA" => "NVIDIA",
+                "INTEL" => "Intel",
+                _ => company.Value
+            };
+        var person = Regex.Match(title,
+            @"\b(?<name>[A-Z][a-z]+\s+[A-Z][a-z]+)\b");
+        if (person.Success &&
+            !Regex.IsMatch(person.Groups["name"].Value,
+                @"(?i)^(?:How To|What If|The New|This New|New Game|Game Awards|Video Game)$"))
+            return person.Groups["name"].Value;
+
+        // Platform is only a fallback when no named game/subject was found.
+        if (Regex.IsMatch(combined, @"(?i)\b(?:playstation|ps5)\b"))
+            return "PlayStation";
+        if (Regex.IsMatch(combined, @"(?i)\bnintendo\b"))
+            return "Nintendo";
+
+        // Remove generic instructional/news prefixes, but never truncate
+        // the ORIGINAL headline to its first three or four words.
+        var cleaned = Regex.Replace(title,
+            @"(?i)^(?:how\s+to|where\s+to|guide\s+to|everything\s+you\s+need\s+to\s+know\s+about|here'?s?\s+how\s+to)\s+",
+            "").Trim();
+        cleaned = cleaned.Split(':', '—', '|')[0].Trim();
+        if (cleaned.Length > 80)
+            cleaned = string.Join(" ", cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries).TakeLast(7));
+        return cleaned.Length > 2 ? cleaned : "gaming news";
+    }
+
+    private static string CoreGameSubject(VideoProject project, string focus)
+        => ExtractMediaSubject(project.Title + " " + project.Topic, focus);
+
+    private static IReadOnlyList<string> CoreMediaQueries(VideoProject project, string focus)
+    {
+        var core = CoreGameSubject(project, focus);
+        return [core, core + " screenshots", core + " gameplay",
+            core + " trailer"];
+    }
+
+    private static List<string> SimpleGoogleImageQueries(VideoProject project, string focus)
+    {
+        var core = CoreGameSubject(project, focus);
+        var suffix = Regex.IsMatch(core,
+            @"(?i)^(?:amd|nvidia|intel|activision|ubisoft|microsoft|sony|rockstar\s+games)$")
+            ? " news" : " screenshots";
+        return new[] { core + suffix, core }
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private static string GamingMediaSubject(VideoProject project, string focus)
+    {
+        if (IsGtaSixStory(project.Title, focus))
+            return "Grand Theft Auto VI";
+        if (!string.IsNullOrWhiteSpace(focus)) return focus.Trim();
+        // Avoid searching Commons for a whole headline and mistakenly using
+        // a generic gaming stock video. Query a short, exact subject only.
+        foreach (var scene in project.Chapters.SelectMany(x => x.Scenes))
+        {
+            var term = (scene.VisualQuery ?? "").Trim();
+            var pieces = term.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (pieces.Length is >= 2 and <= 4 &&
+                !Regex.IsMatch(term, @"\b(gaming|news|breaking|video|background|footage|trailer)\b",
+                    RegexOptions.IgnoreCase))
+                return term;
+        }
+        return "";
+    }
+
+    private static bool WikimediaStrictMatch(PixabayFlowClip file, string term)
+    {
+        var normalized = Normalize(term);
+        if (normalized.Length < 5) return false;
+        var indexed = Normalize(file.Tags + " " + file.SourcePage);
+        return indexed.Contains(normalized, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<(List<OfficialAsset> Photos, List<OfficialAsset> Videos)>
+        AcquireCommonsMediaAsync(VideoProject project, string focus,
+            string mediaDir, Action<string>? log, CancellationToken ct)
+    {
+        var photos = new List<OfficialAsset>();
+        var videos = new List<OfficialAsset>();
+        var term = GamingMediaSubject(project, focus);
+        if (term.Length < 5) return (photos, videos);
+        var scene = new PixabayFootageScene(1, term, term, "neutral");
+        try
+        {
+            var images = await new WikimediaCommonsImageService()
+                .FindImagesAsync(scene, 3, log, ct);
+            foreach (var image in images.Where(x => WikimediaStrictMatch(x, term)))
+            {
+                var ext = Path.GetExtension(image.FilePath);
+                var destination = Path.Combine(mediaDir, "commons-photo-" +
+                    (photos.Count + 1).ToString("00") + ext);
+                File.Copy(image.FilePath, destination, true);
+                photos.Add(new OfficialAsset(destination, image.SourcePage, term,
+                    image.SourcePage, "Wikimedia Commons / " + image.Attribution,
+                    image.License + " " + image.LicenseUrl));
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { log?.Invoke("Wikimedia image source skipped: " + ex.Message); }
+
+        try
+        {
+            var clips = await new WikimediaCommonsVideoService()
+                .FindVideosAsync(scene, 2, null, log, ct);
+            foreach (var clip in clips.Where(x => WikimediaStrictMatch(x, term)))
+            {
+                var ext = Path.GetExtension(clip.FilePath);
+                if (!ext.Equals(".webm", StringComparison.OrdinalIgnoreCase) &&
+                    !ext.Equals(".mp4", StringComparison.OrdinalIgnoreCase))
+                    continue; // Preserve compatible input formats for existing FFmpeg renderer.
+                var destination = Path.Combine(mediaDir, "commons-video-" +
+                    (videos.Count + 1).ToString("00") + ext);
+                File.Copy(clip.FilePath, destination, true);
+                videos.Add(new OfficialAsset(destination, clip.SourcePage, term,
+                    clip.SourcePage, "Wikimedia Commons / " + clip.Attribution,
+                    clip.License + " " + clip.LicenseUrl));
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { log?.Invoke("Wikimedia video source skipped: " + ex.Message); }
+
+        log?.Invoke($"Independent Wikimedia Commons for '{term}': " +
+            $"{photos.Count} relevant photos, {videos.Count} video clips.");
+        return (photos, videos);
+    }
+
+    private static string Normalize(string value) =>
+        Regex.Replace(WebUtility.HtmlDecode(value).ToLowerInvariant(), @"[^a-z0-9]+", " ").Trim();
+
+    // A title-prefix or generic "grand theft auto" match is insufficient:
+    // GTA V media must never be selected for GTA VI. Require a complete
+    // game identifier and reject conflicting edition identifiers.
+    internal static bool IsGtaSix(string value) => Regex.IsMatch(value,
+        @"(?i)\b(?:gta[\s_-]*(?:vi|6)|grand[\s_-]+theft[\s_-]+auto[\s_-]*(?:vi|6))\b");
+    internal static bool IsGtaFive(string value) => Regex.IsMatch(value,
+        @"(?i)\b(?:gta[\s_-]*(?:v|5)|grand[\s_-]+theft[\s_-]+auto[\s_-]*(?:v|5))\b");
+
+    private static bool IsGtaSixStory(string title, string focus)
+        => IsGtaSix(title) || IsGtaSix(focus);
+
+    private static bool RejectGenericGraphic(Uri asset, string metadata)
+    {
+        var path = Uri.UnescapeDataString(asset.AbsolutePath);
+        var name = Path.GetFileNameWithoutExtension(path);
+        var combined = name + " " + metadata;
+        // Branding, web controls, banners, spinner/loading graphics and
+        // tiny icons are not game screenshots.
+        return Regex.IsMatch(combined,
+            @"(?i)(?:^|[^a-z0-9])(logo|icon|sprite|placeholder|spinner|loading|avatar|default|badge|button|whitebar|loadingbar|progress|skeleton|thumb_default|generic)(?:$|[^a-z0-9])");
+    }
+
+    private static bool ExactGameEvidence(
+        string title, string focus, Uri sourcePage, Uri image, string metadata)
+    {
+        if (!IsGtaSixStory(title, focus)) return true;
+        var source = Uri.UnescapeDataString(sourcePage.AbsoluteUri);
+        var asset = Uri.UnescapeDataString(image.AbsoluteUri);
+        var evidence = source + " " + asset + " " + metadata;
+        // GTA 5 and GTA 6 are different games. If the asset or its media
+        // label explicitly identifies GTA V, reject regardless of article.
+        if (IsGtaFive(asset + " " + metadata)) return false;
+        if (RejectGenericGraphic(image, metadata)) return false;
+        var rockstarGallery = sourcePage.Host == "www.rockstargames.com" &&
+            sourcePage.AbsolutePath.StartsWith("/VI/media", StringComparison.OrdinalIgnoreCase) &&
+            image.Host == "www.rockstargames.com" &&
+            image.AbsolutePath.StartsWith("/VI/_next/static/media/", StringComparison.OrdinalIgnoreCase) &&
+            Regex.IsMatch(image.AbsolutePath, @"(?i)\.(?:jpe?g|png)$");
+        // A GTA VI-scoped publisher gallery explicitly identifies the game,
+        // even when its individual filename is Jason_Duval_01.jpg.
+        // Ordinary news article pages are NOT trustworthy game identity.
+        return rockstarGallery || IsGtaSix(asset + " " + metadata);
+    }
+
+    private static bool MatchStoreGame(string expectedStory, string focus, string game)
+    {
+        if (IsGtaSixStory(expectedStory, focus))
+            return IsGtaSix(game) && !IsGtaFive(game);
+        var gameWords = Normalize(game);
+        var story = Normalize(expectedStory + " " + focus);
+        return gameWords.Length > 5 &&
+            Regex.IsMatch(story, @"(?i)(?<![a-z0-9])" +
+                Regex.Escape(gameWords) + @"(?![a-z0-9])");
+    }
+
+    private static IEnumerable<string> Queries(VideoProject project, string focus)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var query in CoreMediaQueries(project, focus))
+            if (seen.Add(query)) yield return query;
+
+        // First scene visual queries usually name the exact game. Limit query
+        // size to avoid searching Steam for narrative descriptions.
+        foreach (var scene in project.Chapters.SelectMany(x => x.Scenes))
+        {
+            var words = Regex.Matches(scene.VisualQuery ?? "", @"[A-Za-z0-9]+")
+                .Select(x => x.Value)
+                .Where(x => x.Length >= 2).Take(5).ToArray();
+            for (var count = Math.Min(3, words.Length); count >= 2; count--)
+            {
+                for (var i = 0; i + count <= words.Length; i++)
+                {
+                    var q = string.Join(" ", words.Skip(i).Take(count));
+                    if (seen.Add(q)) yield return q;
+                }
+            }
+        }
+        foreach (var candidate in Regex.Split(project.Title, @"[,:—\-!?\(\)]")
+                     .Where(x => x.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length is >= 2 and <= 5))
+            if (seen.Add(candidate.Trim())) yield return candidate.Trim();
+    }
+
+    private static async Task<byte[]> GetSmallAsync(Uri uri, int maxBytes, CancellationToken ct)
+    {
+        if (!SteamHost(uri)) throw new InvalidDataException("Unexpected official-media host.");
+        using var response = await Http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct);
+        response.EnsureSuccessStatusCode(); // no redirects to arbitrary hosts
+        if (response.Content.Headers.ContentLength > maxBytes)
+            throw new InvalidDataException("Official image exceeds download size limit.");
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var buffer = new MemoryStream();
+        var chunk = new byte[64 * 1024];
+        int read;
+        while ((read = await stream.ReadAsync(chunk, ct)) > 0)
+        {
+            if (buffer.Length + read > maxBytes)
+                throw new InvalidDataException("Official image exceeds download size limit.");
+            await buffer.WriteAsync(chunk.AsMemory(0, read), ct);
+        }
+        return buffer.ToArray();
+    }
+
+    // Browser element screenshots can be only 180-400px wide even if the
+    // publisher hosts a true 1920px image. Never call them full-resolution.
+    // Validate the decoded original raster before selecting it for 1080p output.
+    private static bool HasFullResolution(string path, Action<string>? log)
+    {
+        try
+        {
+            using var stream = File.OpenRead(path);
+            var decoder = BitmapDecoder.Create(stream,
+                BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+            var frame = decoder.Frames[0];
+            // Gaming News uses a blurred canvas and contained foreground.
+            // A 360p-class source is usable; square 1024x1024 is absolutely
+            // acceptable. Other ZeroVideo tabs retain their own standards.
+            var shortest = Math.Min(frame.PixelWidth, frame.PixelHeight);
+            if (shortest >= 360) return true;
+            log?.Invoke($"Gaming quality: skipping {Path.GetFileName(path)} " +
+                $"({frame.PixelWidth}x{frame.PixelHeight}); shortest side below 360px.");
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke("Gaming quality: unreadable image " +
+                Path.GetFileName(path) + ": " + ex.Message);
+        }
+        return false;
+    }
+
+    private static bool IsJpeg(byte[] bytes) =>
+        bytes.Length > 2000 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff;
+    private static bool IsPng(byte[] bytes) =>
+        bytes.Length > 2000 && bytes[0] == 137 && bytes[1] == 80 &&
+        bytes[2] == 78 && bytes[3] == 71;
+    private static bool IsWebp(byte[] bytes) =>
+        bytes.Length > 20 &&
+        bytes[0] == (byte)'R' && bytes[1] == (byte)'I' &&
+        bytes[2] == (byte)'F' && bytes[3] == (byte)'F' &&
+        bytes[8] == (byte)'W' && bytes[9] == (byte)'E' &&
+        bytes[10] == (byte)'B' && bytes[11] == (byte)'P';
+    private static bool IsAvif(byte[] bytes) =>
+        bytes.Length >= 20 &&
+        bytes[4] == (byte)'f' && bytes[5] == (byte)'t' &&
+        bytes[6] == (byte)'y' && bytes[7] == (byte)'p' &&
+        (System.Text.Encoding.ASCII.GetString(bytes, 8, 4) is "avif" or "avis" ||
+         System.Text.Encoding.ASCII.GetString(bytes, 16, 4) is "avif" or "avis");
+
+    // Keep original JPG/PNG, but transcode modern WEBP/AVIF to PNG so that
+    // WPF dimensions and FFmpeg Shorts stitching work consistently. Conversion
+    // is ONLY in Gaming News; the other tabs and caption pipelines are untouched.
+    private static async Task<string?> SaveGamingPhotoAsync(
+        byte[] bytes, string basePath, string ffmpeg, Action<string>? log, CancellationToken ct)
+    {
+        if (IsJpeg(bytes) || IsPng(bytes))
+        {
+            var file = basePath + (IsJpeg(bytes) ? ".jpg" : ".png");
+            await File.WriteAllBytesAsync(file, bytes, ct);
+            return file;
+        }
+        if (!IsWebp(bytes) && !IsAvif(bytes)) return null;
+        var ext = IsWebp(bytes) ? ".webp" : ".avif";
+        var input = basePath + ext;
+        var output = basePath + ".png";
+        try
+        {
+            await File.WriteAllBytesAsync(input, bytes, ct);
+            var runner = new ProcessRunner();
+            var response = await runner.RunAsync(ffmpeg,
+                "-hide_banner -loglevel error -y -i \"" + input +
+                "\" -frames:v 1 -update 1 \"" + output + "\"", ct: ct);
+            if (response.ExitCode != 0 || !File.Exists(output) ||
+                new FileInfo(output).Length < 512)
+            {
+                log?.Invoke("Gaming News " + ext + " conversion failed: " + response.StdErr);
+                return null;
+            }
+            log?.Invoke("Gaming News: converted " + ext + " image to renderable PNG.");
+            return output;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            log?.Invoke("Gaming News image conversion unavailable: " + ex.Message);
+            return null;
+        }
+        finally
+        {
+            try { if (File.Exists(input)) File.Delete(input); } catch { }
+            if (File.Exists(output) && new FileInfo(output).Length < 512)
+                try { File.Delete(output); } catch { }
+        }
+    }
+
+    private static string MediaFingerprint(string file)
+    {
+        // Compare file contents, not just URLs: multiple news websites often
+        // serve the same picture under different CDN links and filenames.
+        using var stream = File.OpenRead(file);
+        return Convert.ToHexString(SHA256.HashData(stream));
+    }
+
+    private static bool IsMp4(byte[] bytes) =>
+        bytes.Length > 4096 && bytes[4] == (byte)'f' &&
+        bytes[5] == (byte)'t' && bytes[6] == (byte)'y' && bytes[7] == (byte)'p';
+
+    // Videos come from the verified Steam game's publisher-provided trailers
+    // and from direct MP4 sources embedded in genuine official news pages.
+    // Do not follow redirects to unrelated hosts.
+    private static IEnumerable<Uri> ExtractOfficialVideoUrls(string html, Uri page)
+    {
+        foreach (Match m in Regex.Matches(html,
+            @"<(?:video|source|meta)\b[^>]{0,2400}>",
+            RegexOptions.IgnoreCase).Cast<Match>().Take(90))
+        {
+            var tag = m.Value;
+            if (tag.StartsWith("<meta", StringComparison.OrdinalIgnoreCase) &&
+                !Regex.IsMatch(tag, @"(?:og:video|twitter:player:stream)",
+                    RegexOptions.IgnoreCase)) continue;
+            var match = Regex.Match(tag,
+                @"(?:src|content|data-src)\s*=\s*[""'](?<u>[^""']+)[""']",
+                RegexOptions.IgnoreCase);
+            var value = WebUtility.HtmlDecode(match.Groups["u"].Value);
+            if (!Uri.TryCreate(page, value, out var uri) ||
+                !IsPublicHttps(uri) || !uri.AbsolutePath.EndsWith(".mp4",
+                    StringComparison.OrdinalIgnoreCase)) continue;
+            yield return uri;
+        }
+    }
+
+    private static async Task<byte[]> GetVideoAsync(Uri uri, CancellationToken ct)
+    {
+        if (!IsPublicHttps(uri)) throw new InvalidDataException("Invalid video URL.");
+        const int maxSize = 120 * 1024 * 1024;
+        using var response = await Http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct);
+        response.EnsureSuccessStatusCode();
+        if (response.Content.Headers.ContentLength > maxSize)
+            throw new InvalidDataException("Gameplay clip too large.");
+        var type = response.Content.Headers.ContentType?.MediaType ?? "";
+        if (type.Length > 0 && !type.Contains("mp4", StringComparison.OrdinalIgnoreCase) &&
+            !type.Contains("octet-stream", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Not an MP4 video.");
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var memory = new MemoryStream();
+        var block = new byte[64 * 1024];
+        int length;
+        while ((length = await stream.ReadAsync(block, ct)) > 0)
+        {
+            if (memory.Length + length > maxSize)
+                throw new InvalidDataException("Gameplay video exceeds safe download cap.");
+            await memory.WriteAsync(block.AsMemory(0, length), ct);
+        }
+        return memory.ToArray();
+    }
+
+    public async Task<OfficialMediaResult> AcquireAsync(VideoProject project, string focus,
+        string articleSummary, BrowserSession browser, ZeroVideoSettings settings,
+        Action<string>? log, CancellationToken ct)
+    {
+        var mediaDir = Path.Combine(project.ProjectDirectory, "media");
+        Directory.CreateDirectory(mediaDir);
+        // Google Images is the PRIMARY source. Search for the core game
+        // itself before publisher/news/Steam fallbacks, and retrieve ORIGINAL
+        // JPEG/PNG files from diverse underlying websites.
+        var downloaded = await SearchGoogleImagesAsync(
+            project, focus, browser, settings, mediaDir, log, ct);
+        var unique = downloaded.Select(x => x.Url)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var context = Normalize(project.Title + " " + project.Topic + " " +
+            articleSummary + " " + focus + " " +
+            string.Join(" ", project.Chapters.SelectMany(x => x.Scenes)
+                .Select(x => x.Narration + " " + x.VisualQuery)));
+        var candidates = Queries(project, focus).Take(15).ToList();
+        var examined = new HashSet<int>();
+        var images = new List<(Uri Uri, string Game, string Store)>();
+        var movies = new List<(Uri Uri, string Game, string Page, string Source)>();
+        var movieSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Priority 1: images genuinely hosted/linked by the official publisher
+        // or platform article, when the news report itself comes from one.
+        var publisherImages = new List<(Uri Image, Uri Source)>();
+        var discoveredPerPublisher = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var linkedPublishers = await LinkedOfficialPagesAsync(project, log, ct);
+        var independentPublishers = await DiscoverIndependentPublisherPagesAsync(
+            project, focus, log, ct);
+        var independentNewsPages = await DiscoverGamingNewsMediaPagesAsync(
+            project, focus, log, ct);
+        var youtubeLeads = await DiscoverVideoChannelLeadsAsync(
+            project, focus, log, ct);
+        foreach (var sourcePage in PublisherPages(project)
+                     .Concat(linkedPublishers).Concat(independentPublishers)
+                     .Distinct().Take(14))
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var html = await DownloadPublisherHtmlAsync(sourcePage, ct);
+                if (html.Length < 100) continue;
+                foreach (var video in ExtractOfficialVideoUrls(html, sourcePage).Take(5))
+                {
+                    if (!ExactGameEvidence(project.Title, focus, sourcePage, video, ""))
+                    {
+                        log?.Invoke("Rejected publisher video without exact game evidence: " + video);
+                        continue;
+                    }
+                    if (movieSeen.Add(video.ToString()))
+                        movies.Add((video, project.Title, sourcePage.ToString(),
+                            sourcePage.Host + " official video"));
+                }
+                foreach (var img in ExtractLinkedGalleryImages(html, sourcePage)
+                    .Concat(ExtractPublisherImages(html, sourcePage)).Distinct().Take(90))
+                {
+                    if (publisherImages.Any(x => x.Image == img)) continue;
+                    if (!ExactGameEvidence(project.Title, focus, sourcePage, img, ""))
+                    {
+                        log?.Invoke("Rejected publisher image without exact game evidence: " + img);
+                        continue;
+                    }
+                    if (discoveredPerPublisher.GetValueOrDefault(sourcePage.Host) >= 14)
+                        break;
+                    publisherImages.Add((img, sourcePage));
+                    discoveredPerPublisher[sourcePage.Host] =
+                        discoveredPerPublisher.GetValueOrDefault(sourcePage.Host) + 1;
+                    if (publisherImages.Count >= 80) break;
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("Official publisher imagery unavailable: " + ex.Message); }
+        }
+        // Priority 2: media from multiple relevant gaming journalism pages.
+        // Candidate pages are discovered independently from the news article.
+        // Keep original page attribution for every downloaded asset.
+        // This is not described as a first-party official screenshot; label
+        // its actual publication in the credit manifest and on-screen source.
+        // Prefer this over generating an invented picture for news that does
+        // not have a Steam listing or a linked publisher newsroom.
+        var editorialImages = new List<(Uri Image, Uri Source)>();
+        // Always inspect independent journalism sources, even when Rockstar
+        // already supplied enough images. The original early-exit caused
+        // entire GTA VI batches to look like the same Rockstar slideshow.
+        {
+            foreach (var story in project.Sources
+                .Select(x => Uri.TryCreate(x, UriKind.Absolute, out var u) ? u : null)
+                .Where(x => x is not null && JournalismHost(x))
+                .Concat(independentNewsPages).Distinct().Take(12))
+            {
+                if (story is null) continue;
+                try
+                {
+                    var html = await DownloadNewsHtmlAsync(story, ct);
+                    foreach (var clip in ExtractOfficialVideoUrls(html, story).Take(3))
+                    {
+                        if (!ExactGameEvidence(project.Title, focus, story, clip, "")) continue;
+                        if (movieSeen.Add(clip.ToString()))
+                            movies.Add((clip, project.Title, story.ToString(),
+                                story.Host + " news article video"));
+                    }
+                    var described = ExtractDescribedArticleImages(html, story)
+                        .Where(x => ExactGameEvidence(project.Title, focus, story,
+                            x.Url, x.Alt)).Select(x => x.Url);
+                    foreach (var candidate in described.Concat(
+                        ExtractPublisherImages(html, story).Where(x =>
+                            ExactGameEvidence(project.Title, focus, story, x, "")))
+                        .Distinct().Take(32))
+                    {
+                        if (editorialImages.All(x => x.Image != candidate))
+                            editorialImages.Add((candidate, story));
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { log?.Invoke("Editorial article images unavailable: " + ex.Message); }
+            }
+        }
+        log?.Invoke($"Gaming media candidates: publisher images={publisherImages.Count}, " +
+            $"independent article images={editorialImages.Count}, " +
+            $"non-Steam videos={movies.Count}. Steam reserved for LAST fallback.");
+
+        var publisherCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (imageUri, sourcePage) in publisherImages)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (downloaded.Count >= 16) break;
+            var publisherKey = sourcePage.Host;
+            if (publisherCounts.GetValueOrDefault(publisherKey) >= 9) continue;
+            if (!unique.Add(imageUri.ToString())) continue;
+            try
+            {
+                var bytes = await DownloadPublisherImageAsync(imageUri, sourcePage, ct);
+                var basePath = Path.Combine(mediaDir, "official-" +
+                    (downloaded.Count + 1).ToString("00"));
+                var file = await SaveGamingPhotoAsync(
+                    bytes, basePath, settings.FfmpegPath, log, ct);
+                if (file is null) continue;
+                downloaded.Add(new OfficialAsset(file, imageUri.ToString(), project.Title,
+                    sourcePage.ToString(), sourcePage.Host + " official article image",
+                    "Platform or publisher owns or controls media; credit is not a license."));
+                publisherCounts[publisherKey] = publisherCounts.GetValueOrDefault(publisherKey) + 1;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("First-party image skipped: " + ex.Message); }
+        }
+        // A story's lead image is often a real publisher press screenshot.
+        // Keep its attribution exact instead of pretending it is official.
+        var journalismCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (imageUri, story) in editorialImages)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (downloaded.Count >= 34) break;
+            if (journalismCounts.GetValueOrDefault(story.Host) >= 7) continue;
+            if (!unique.Add(imageUri.ToString())) continue;
+            try
+            {
+                var bytes = await DownloadPublisherImageAsync(imageUri, story, ct);
+                var file = await SaveGamingPhotoAsync(bytes,
+                    Path.Combine(mediaDir, "official-" +
+                    (downloaded.Count + 1).ToString("00")),
+                    settings.FfmpegPath, log, ct);
+                if (file is null) continue;
+                downloaded.Add(new OfficialAsset(file, imageUri.ToString(), project.Title,
+                    story.ToString(), story.Host + " editorial article image",
+                    "Image sourced from credited article; license/press usage terms may apply."));
+                journalismCounts[story.Host] = journalismCounts.GetValueOrDefault(story.Host) + 1;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("Editorial image skipped: " + ex.Message); }
+        }
+        // Save actual playable clips, not synthetic motion or AI animation.
+        // A publisher gameplay trailer is trimmed and reframed by the existing
+        // FFmpeg Shorts renderer. Its original audio is discarded so narration
+        // and selected background music retain their levels.
+        var videos = new List<OfficialAsset>();
+        foreach (var (uri, game, store, source) in movies.Take(14))
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var bytes = await GetVideoAsync(uri, ct);
+                if (!IsMp4(bytes)) continue;
+                var file = Path.Combine(mediaDir, "official-video-" +
+                    (videos.Count + 1).ToString("00") + ".mp4");
+                await File.WriteAllBytesAsync(file, bytes, ct);
+                videos.Add(new OfficialAsset(file, uri.ToString(), game, store,
+                    source, "Source attribution recorded; observe publisher/editorial use terms."));
+                if (videos.Count >= 6) break;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("Official gameplay video skipped: " + ex.Message); }
+        }
+        // Collect short public YouTube gameplay/trailer clips as actual
+        // files, rather than counting YouTube search results as media.
+        // These are mixed with photos in the existing 24-shot sequence.
+        var youtubeClips = await AcquireYouTubeGameplayAsync(
+            project, focus, settings, mediaDir, log, ct);
+        videos.AddRange(youtubeClips);
+        // If the official gallery relies on client-side rendering, do not
+        // fall back to a single PC Gamer photo. Read genuine GTA VI gallery
+        // images through ZeroVideo's existing Edge browser instead.
+        if (IsGtaSixStory(project.Title, focus) && downloaded.Count < 32)
+        {
+            var gallery = await CaptureRockstarGalleryAsync(
+                browser, settings, mediaDir, log, ct);
+            foreach (var image in gallery)
+                if (downloaded.Count < 38 && unique.Add(image.Url))
+                    downloaded.Add(image);
+        }
+        // Do not accept a full Rockstar pool as "diversified". Independently
+        // collect GTA VI screenshots from GameSpot and Gematsu galleries.
+        if (IsGtaSixStory(project.Title, focus))
+        {
+            var independentGalleries = await CaptureIndependentGtaMediaAsync(
+                browser, settings, mediaDir, log, ct);
+            foreach (var image in independentGalleries)
+                if (unique.Add(image.Url)) downloaded.Add(image);
+        }
+        // Independent archive source (not the original PC Gamer article).
+        // Reuse ZeroVideo's existing licensed Commons image/video adapters.
+        // This also works when an official game's website blocks direct downloads.
+        var commons = await AcquireCommonsMediaAsync(
+            project, focus, mediaDir, log, ct);
+        foreach (var photo in commons.Photos.Take(Math.Max(0, 40 - downloaded.Count)))
+            downloaded.Add(photo);
+        foreach (var clip in commons.Videos.Take(Math.Max(0, 6 - videos.Count)))
+            videos.Add(clip);
+        if (downloaded.Count == 0 && videos.Count == 0)
+        {
+            log?.Invoke("Direct downloads unavailable. Trying the original article " +
+                "in Edge for a genuine article/game screenshot (no AI).");
+            var articleScreenshot = await CaptureSourceArticleAsync(
+                project, browser, settings, mediaDir, log, ct);
+            if (articleScreenshot is not null) downloaded.Add(articleScreenshot);
+        }
+        // LAST RESORT: only query Steam after publisher websites, gaming
+        // news sites, Wikimedia Commons and the original article have been
+        // tried. Never let Steam crowd out more relevant primary media.
+        if (downloaded.Count + videos.Count < 12)
+        {
+            log?.Invoke("Gaming media: primary sources insufficient; trying Steam LAST.");
+            // Exact-game Steam search is the final fallback.
+        foreach (var term in candidates)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (images.Count >= 8) break;
+            try
+            {
+                var searchUri = new Uri("https://store.steampowered.com/api/storesearch/?term=" +
+                    Uri.EscapeDataString(term) + "&l=english&cc=us");
+                using var search = JsonDocument.Parse(
+                    await GetSmallAsync(searchUri, 512 * 1024, ct));
+                if (!search.RootElement.TryGetProperty("items", out var list) ||
+                    list.ValueKind != JsonValueKind.Array) continue;
+
+                foreach (var item in list.EnumerateArray().Take(5))
+                {
+                    if (!item.TryGetProperty("id", out var app) ||
+                        !app.TryGetInt32(out var appid) || !examined.Add(appid))
+                        continue;
+                    var game = item.GetProperty("name").GetString() ?? "";
+                    var normalizedName = Normalize(game);
+                    if (normalizedName.Length < 5 ||
+                        !MatchStoreGame(project.Title, focus, game))
+                        continue;
+                    var detailUri = new Uri("https://store.steampowered.com/api/appdetails?appids=" +
+                        appid.ToString(CultureInfo.InvariantCulture) + "&l=english&cc=us");
+                    using var details = JsonDocument.Parse(
+                        await GetSmallAsync(detailUri, 1024 * 1024, ct));
+                    if (!details.RootElement.TryGetProperty(appid.ToString(CultureInfo.InvariantCulture),
+                        out var record) || !record.TryGetProperty("success", out var success) ||
+                        !success.GetBoolean() || !record.TryGetProperty("data", out var data) ||
+                        !data.TryGetProperty("screenshots", out var screenshots) ||
+                        screenshots.ValueKind != JsonValueKind.Array)
+                        continue;
+                    var canonicalName = data.TryGetProperty("name", out var title)
+                        ? title.GetString() ?? game : game;
+                    // Verify that the exact store title really occurs in the
+                    // story/script, not a coincidental two-word Steam result.
+                    if (!MatchStoreGame(project.Title, focus, canonicalName))
+                    {
+                        log?.Invoke("Rejected different game edition: " + canonicalName);
+                        continue;
+                    }
+                    if (data.TryGetProperty("movies", out var trailers) &&
+                        trailers.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var trailer in trailers.EnumerateArray().Take(4))
+                        {
+                            if (!trailer.TryGetProperty("mp4", out var mp4) ||
+                                !mp4.TryGetProperty("max", out var source)) continue;
+                            var url = source.GetString();
+                            if (!Uri.TryCreate(url, UriKind.Absolute, out var trailerUri) ||
+                                !SteamHost(trailerUri) ||
+                                !trailerUri.AbsolutePath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase))
+                                continue;
+                            if (movieSeen.Add(trailerUri.ToString()))
+                                movies.Add((trailerUri, canonicalName,
+                                    "https://store.steampowered.com/app/" + appid,
+                                    "Publisher gameplay trailer / Steam"));
+                        }
+                    }
+                    foreach (var screenshot in screenshots.EnumerateArray().Take(10))
+                    {
+                        var url = screenshot.TryGetProperty("path_full", out var full)
+                            ? full.GetString() : null;
+                        if (!Uri.TryCreate(url, UriKind.Absolute, out var imageUri) ||
+                            !SteamHost(imageUri)) continue;
+                        images.Add((imageUri, canonicalName,
+                            "https://store.steampowered.com/app/" + appid));
+                        if (images.Count >= 8) break;
+                    }
+                    if (images.Count >= 8) break;
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("Gaming official-media search skipped: " + ex.Message); }
+        }
+        // Steam is a fallback, and never used for a mismatched game title.
+        foreach (var (uri, game, store) in images)
+        {
+            if (downloaded.Count >= 40) break;
+            if (!unique.Add(uri.ToString())) continue;
+            try
+            {
+                var bytes = await GetSmallAsync(uri, 12 * 1024 * 1024, ct);
+                var file = await SaveGamingPhotoAsync(bytes,
+                    Path.Combine(mediaDir, "official-" +
+                    (downloaded.Count + 1).ToString("00")),
+                    settings.FfmpegPath, log, ct);
+                if (file is null) continue;
+                downloaded.Add(new OfficialAsset(file, uri.ToString(), game, store,
+                    "Publisher-supplied Steam store screenshot",
+                    "Publisher owns or controls media. Source credit does not grant permission; " +
+                    "republication depends on relevant publisher permissions or applicable editorial use."));
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log?.Invoke("Official screenshot download skipped: " + ex.Message); }
+        }
+            // Trailer assets are retrieved only when non-Steam sources
+            // supplied fewer than four usable media items.
+            foreach (var (uri, game, store, source) in movies
+                .Where(x => x.Source.Contains("Steam", StringComparison.OrdinalIgnoreCase))
+                .Take(3 - Math.Min(3, videos.Count)))
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    var bytes = await GetVideoAsync(uri, ct);
+                    if (!IsMp4(bytes)) continue;
+                    var file = Path.Combine(mediaDir, "official-video-" +
+                        (videos.Count + 1).ToString("00") + ".mp4");
+                    await File.WriteAllBytesAsync(file, bytes, ct);
+                    videos.Add(new OfficialAsset(file, uri.ToString(), game, store,
+                        source, "Publisher gameplay video from Steam; source recorded."));
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { log?.Invoke("Last-resort Steam trailer unavailable: " + ex.Message); }
+            }
+        }
+        if (downloaded.Count == 0 && videos.Count == 0)
+            throw new InvalidDataException(
+                "All official, article, Steam and Edge media options failed. " +
+                "Source article may block images or require a login. " +
+                "Skipped without any generated imagery; see source diagnostics.");
+
+        // 24 visual shots, not 24 narrated chapters: three real-media shots
+        // per each of eight spoken news beats. xfade transitions are controlled
+        // by this Gaming News project's Crossfade option only.
+        // Refuse one-image static videos; do not manufacture visual variety.
+        downloaded = downloaded.Where(x => HasFullResolution(x.LocalPath, log)).ToList();
+        var seenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var uniqueAssets = downloaded.Concat(videos)
+            .Where(x => seenFiles.Add(MediaFingerprint(x.LocalPath)))
+            .ToList();
+        downloaded = uniqueAssets.Where(x =>
+            !new[] { ".mp4", ".webm", ".mov", ".mkv", ".avi" }
+                .Contains(Path.GetExtension(x.LocalPath), StringComparer.OrdinalIgnoreCase))
+            .ToList();
+        videos = uniqueAssets.Where(x =>
+            new[] { ".mp4", ".webm", ".mov", ".mkv", ".avi" }
+                .Contains(Path.GetExtension(x.LocalPath), StringComparer.OrdinalIgnoreCase))
+            .ToList();
+        // Don't refuse a valid video just because Google supplied fewer than
+        // twenty photos. Use all available distinct images across 24 cuts.
+        var requiredDistinct = 3;
+        if (uniqueAssets.Count < requiredDistinct)
+            throw new InvalidDataException(
+                $"Gaming News found only {uniqueAssets.Count}/{requiredDistinct} distinct matching game assets. " +
+                "At least three relevant photos or clips are needed; " +
+                "24 smooth visual shots can reuse those assets with varied ordering.");
+
+        if (uniqueAssets.Count < 6)
+            log?.Invoke($"Gaming News: only {uniqueAssets.Count} unique assets; " +
+                "continuing with 24 smoothly transitioned shots and controlled reuse.");
+        var history = ReadMediaHistory(log);
+        var selectedShots = SelectDiverseShots(project, uniqueAssets, history, log);
+        if (selectedShots.Count != 24)
+            throw new InvalidDataException("Gaming News could not select 24 authentic shots.");
+        var chapter = project.Chapters.Single();
+        for (var i = 0; i < chapter.Scenes.Count; i++)
+        {
+            var photos = selectedShots.Skip(i * 3).Take(3).ToList();
+            chapter.Scenes[i].MediaPath = photos[0].LocalPath;
+            chapter.Scenes[i].MediaPaths = photos.Skip(1)
+                .Select(x => x.LocalPath).ToList();
+        }
+        var shotSequence = selectedShots.Select(x => x.LocalPath).ToList();
+        log?.Invoke("Gaming News: 24 shuffled visual shots from multiple " +
+            "sites where available, with smooth crossfades.");
+
+        if (videos.Count > 0)
+            log?.Invoke($"Gaming media mix: {downloaded.Count} real screenshots + " +
+                $"{videos.Count} real gameplay trailer clips across 8 visual beats.");
+        else
+            log?.Invoke("No downloadable official MP4 clips were available; " +
+                "rendering authentic screenshots only (never AI imagery).");
+        var sourceNames = selectedShots.Select(MediaSourceHost)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var youtubeSources = selectedShots.Where(x => x.Url.Contains("youtube.com/watch",
+                StringComparison.OrdinalIgnoreCase)).Select(MediaSourceHost)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        // A YouTube clip's publisher/channel must appear in the small credit,
+        // not disappear after three unrelated image source websites.
+        var displayedSources = youtubeSources.Concat(sourceNames)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var label = "Media: " + string.Join(" / ", displayedSources.Take(3)) +
+            (displayedSources.Count > 3 ? " +" + (displayedSources.Count - 3) : "");
+        var manifest = Path.Combine(project.ProjectDirectory, "official-media-credits.json");
+        await File.WriteAllTextAsync(manifest, JsonSerializer.Serialize(new
+        {
+            project = project.Title, credit = label,
+            legalNote = "Attribution is not a license. Confirm publisher's use rules or applicable news/editorial exception.",
+            assets = downloaded.Concat(videos).ToList(),
+            selectedShotOrder = selectedShots.Select(x => new
+            {
+                x.Url, x.Source, sourceHost = MediaSourceHost(x),
+                fingerprint = MediaFingerprint(x.LocalPath)
+            }).ToList(),
+            youtubeReferenceLeads = youtubeLeads,
+            providerPriority = new[]
+            {
+                "Official publisher / game website",
+                "IGN, GameSpot, Games Press, Gematsu",
+                "Other relevant gaming publications",
+                "Wikimedia Commons",
+                "Original article screenshot",
+                "Steam (last resort)"
+            },
+            youtubeVideoSources = new[]
+            {
+                "IGN YouTube", "GameSpot YouTube",
+                "PlayStation YouTube", "Nintendo YouTube"
+            },
+            rumorPolicy = "Reddit GamingLeaksAndRumours is unverified: never treat rumors as established fact."
+        }, new JsonSerializerOptions { WriteIndented = true }), ct);
+        log?.Invoke($"Gaming News: {downloaded.Count} screenshots and " +
+            $"{videos.Count} real video clip(s); no ComfyUI/AI images. Manifest: " + manifest);
+        // Persist the selected visuals across batch videos so the next video
+        // prefers fresh photos, even when the article covers the same game.
+        foreach (var used in selectedShots.DistinctBy(x => MediaFingerprint(x.LocalPath)))
+            history.Add(new MediaUse
+            {
+                Fingerprint = MediaFingerprint(used.LocalPath),
+                Url = used.Url,
+                VideoId = project.Id,
+                UsedUtc = DateTime.UtcNow
+            });
+        await SaveMediaHistoryAsync(history, log, ct);
+        return new OfficialMediaResult(label, downloaded.Concat(videos).ToList());
+    }
+
+    // Known GTA VI-specific galleries on independent publishers. These are
+    // separate source websites, not mirrors counted as new artwork.
+    private static readonly (string Publisher, string Url)[] GtaSixThirdPartyGalleries =
+    [
+        ("GameSpot", "https://www.gamespot.com/gallery/gta-6-screenshots-images/2900-6525/"),
+        ("Gematsu", "https://www.gematsu.com/2026/11/grand-theft-auto-vi-launch-screenshots"),
+        ("Gematsu", "https://www.gematsu.com/gallery/grand-theft-auto-vi/november-5-2026"),
+        ("Gematsu", "https://www.gematsu.com/gallery/grand-theft-auto-vi/june-24-2026")
+    ];
+
+    private static async Task<List<OfficialAsset>> CaptureIndependentGtaMediaAsync(
+        BrowserSession browser, ZeroVideoSettings settings, string mediaDir,
+        Action<string>? log, CancellationToken ct)
+    {
+        var found = new List<OfficialAsset>();
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (publisher, url) in GtaSixThirdPartyGalleries)
+        {
+            ct.ThrowIfCancellationRequested();
+            Microsoft.Playwright.IPage? page = null;
+            var countForSite = found.Count(x => x.Source.Equals(publisher, StringComparison.OrdinalIgnoreCase));
+            if (countForSite >= 10) continue;
+            try
+            {
+                await browser.EnsureStartedAsync(settings);
+                page = await browser.Context.NewPageAsync();
+                await page.GotoAsync(url, new Microsoft.Playwright.PageGotoOptions
+                {
+                    WaitUntil = Microsoft.Playwright.WaitUntilState.DOMContentLoaded,
+                    Timeout = 25000
+                });
+                var imageNodes = page.Locator("article img, main img, figure img, .gallery img");
+                var count = Math.Min(await imageNodes.CountAsync(), 260);
+                for (var i = 0; i < count && countForSite < 10; i++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    try
+                    {
+                        var node = imageNodes.Nth(i);
+                        var alt = await node.GetAttributeAsync("alt") ?? "";
+                        var src = await node.GetAttributeAsync("src") ?? "";
+                        var lazy = await node.GetAttributeAsync("data-src") ?? "";
+                        var srcset = await node.GetAttributeAsync("srcset") ?? "";
+                        var urls = new List<string>();
+                        if (!string.IsNullOrWhiteSpace(srcset))
+                        {
+                            urls.AddRange(srcset.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                .Select(x => x.Trim().Split(' ')[0])
+                                .Reverse());
+                        }
+                        urls.Add(lazy);
+                        urls.Add(src);
+                        foreach (var value in urls)
+                        {
+                            if (string.IsNullOrWhiteSpace(value) ||
+                                !Uri.TryCreate(new Uri(url), WebUtility.HtmlDecode(value),
+                                    out var uri) || !IsPublicHttps(uri) ||
+                                RejectGenericGraphic(uri, alt) ||
+                                IsGtaFive(alt + " " + uri.AbsolutePath) ||
+                                !visited.Add(uri.ToString()))
+                                continue;
+                            // A dedicated, exact-game screenshot gallery and
+                            // an in-article image are stronger evidence than
+                            // an arbitrary search thumbnail, but never accept
+                            // tiny graphics or sidebar avatars.
+                            var fileBase = Path.Combine(mediaDir,
+                                "independent-gta6-" + (found.Count + 1).ToString("000"));
+                            try
+                            {
+                                var bytes = await DownloadPublisherImageAsync(
+                                    uri, new Uri(url), ct);
+                                var file = await SaveGamingPhotoAsync(
+                                    bytes, fileBase, settings.FfmpegPath, log, ct);
+                                if (file is null) continue;
+                                if (!HasFullResolution(file, log))
+                                {
+                                    File.Delete(file);
+                                    continue;
+                                }
+                                found.Add(new OfficialAsset(file, uri.ToString(),
+                                    "Grand Theft Auto VI", url, publisher,
+                                    "Source gallery shows GTA VI images; provenance recorded."));
+                                countForSite++;
+                                break;
+                            }
+                            catch (OperationCanceledException) { throw; }
+                            catch (Exception ex)
+                            {
+                                log?.Invoke(publisher + " gallery image skipped: " + ex.Message);
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        log?.Invoke(publisher + " image node skipped: " + ex.Message);
+                    }
+                }
+                log?.Invoke($"Gaming News {publisher} verified gallery: {countForSite} full-resolution images.");
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                log?.Invoke(publisher + " gallery browsing unavailable: " + ex.Message);
+            }
+            finally
+            {
+                if (page is not null)
+                    try { await page.CloseAsync(); } catch { }
+            }
+        }
+        return found;
+    }
+
+    private sealed record GoogleImageCandidate(
+        string ImageUrl, string PageUrl, string Description);
+
+    private static async Task<List<OfficialAsset>> SearchGoogleImagesAsync(
+        VideoProject project, string focus, BrowserSession browser,
+        ZeroVideoSettings settings, string mediaDir, Action<string>? log,
+        CancellationToken ct)
+    {
+        var collected = new List<OfficialAsset>();
+        var urlsSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var contentSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var perHost = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var searchTerms = SimpleGoogleImageQueries(project, focus);
+        // Rotate the equally relevant simple queries per video so 48 batch
+        // videos don't always start with identical Google result pages.
+        var seedBytes = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            project.Id + "|" + project.Title + "|" + string.Join("|", project.Sources)));
+        var random = new Random(BitConverter.ToInt32(seedBytes, 0));
+        searchTerms = searchTerms.OrderBy(_ => random.Next()).ToList();
+        log?.Invoke("Gaming News Google Images: using plain searches: " +
+            string.Join(" | ", searchTerms) +
+            ". Downloading originals from varied results, not Google thumbnails.");
+        foreach (var term in searchTerms)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (collected.Count >= 48 || (collected.Count >= 36 && perHost.Count >= 4)) break;
+            Microsoft.Playwright.IPage? page = null;
+            try
+            {
+                await browser.EnsureStartedAsync(settings);
+                page = await browser.Context.NewPageAsync();
+                var target = "https://www.google.com/search?tbm=isch&hl=en&safe=active&tbs=isz:l&q=" +
+                    Uri.EscapeDataString(term);
+                await page.GotoAsync(target, new Microsoft.Playwright.PageGotoOptions
+                {
+                    WaitUntil = Microsoft.Playwright.WaitUntilState.DOMContentLoaded,
+                    Timeout = 25000
+                });
+                var title = await page.TitleAsync();
+                if (Regex.IsMatch(title, @"(?i)(consent|unusual traffic|captcha|verify you are human)"))
+                {
+                    log?.Invoke("Google Images requires consent/verification; moving to other media sources.");
+                    continue;
+                }
+                // Google results can expose originals in imgres links,
+                // data-iurl or in linked-image metadata. Never download the
+                // Google-hosted 200px thumbnails as source photographs.
+                var candidates = new List<GoogleImageCandidate>();
+                var html = await page.ContentAsync();
+                var anchors = await page.Locator("a[href*='imgurl='],a[href*='/imgres?']")
+                    .AllAsync();
+                foreach (var node in anchors.Take(180))
+                {
+                    var href = await node.GetAttributeAsync("href") ?? "";
+                    if (!Uri.TryCreate(new Uri("https://www.google.com"), href, out var link))
+                        continue;
+                    var query = link.Query.TrimStart('?').Split('&');
+                    static string? Param(string[] parts, string name)
+                    {
+                        foreach (var part in parts)
+                            if (part.StartsWith(name + "=", StringComparison.OrdinalIgnoreCase))
+                                return Uri.UnescapeDataString(part[(name.Length + 1)..].Replace("+", " "));
+                        return null;
+                    }
+                    var imageUrl = Param(query, "imgurl");
+                    var refUrl = Param(query, "imgrefurl");
+                    var description = (await node.GetAttributeAsync("aria-label") ?? "") + " " +
+                        (await node.GetAttributeAsync("title") ?? "");
+                    if (!string.IsNullOrWhiteSpace(imageUrl))
+                        candidates.Add(new GoogleImageCandidate(imageUrl, refUrl ?? "", description));
+                }
+                // Some Google result layouts store the original URL directly
+                // on image cards instead of classic /imgres links.
+                var cards = await page.Locator("img[data-iurl],img[data-src]")
+                    .AllAsync();
+                foreach (var img in cards.Take(160))
+                {
+                    var url = await img.GetAttributeAsync("data-iurl") ?? "";
+                    if (url.Length == 0) continue;
+                    var alt = await img.GetAttributeAsync("alt") ?? "";
+                    candidates.Add(new GoogleImageCandidate(url, "", alt));
+                }
+                // Modern Google Images often hides original URLs until a
+                // result is expanded. Open a few relevant result cards (within
+                // the user's own normal Edge session), then inspect the real
+                // image URLs it reveals; never use Google thumbnail bytes.
+                if (candidates.Count < 18)
+                {
+                    var resultCards = await page.Locator("img[alt]").AllAsync();
+                    var expanded = 0;
+                    foreach (var tile in resultCards.Take(75))
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        if (expanded >= 22 || candidates.Count >= 55) break;
+                        try
+                        {
+                            var alt = await tile.GetAttributeAsync("alt") ?? "";
+                            if (alt.Length < 5 ||
+                                (IsGtaSixStory(project.Title, focus) &&
+                                 (!IsGtaSix(alt) || IsGtaFive(alt)))) continue;
+                            var bounds = await tile.BoundingBoxAsync();
+                            if (bounds is null || bounds.Width < 80 || bounds.Height < 60)
+                                continue;
+                            await tile.ClickAsync(new Microsoft.Playwright.LocatorClickOptions
+                            {
+                                Timeout = 2500
+                            });
+                            expanded++;
+                            var expandedImages = await page.Locator("img[src^='https://']")
+                                .AllAsync();
+                            foreach (var shown in expandedImages.TakeLast(55))
+                            {
+                                var url = await shown.GetAttributeAsync("src") ?? "";
+                                if (!Uri.TryCreate(url, UriKind.Absolute, out var external) ||
+                                    !IsPublicHttps(external) ||
+                                    external.Host.Contains("google", StringComparison.OrdinalIgnoreCase) ||
+                                    external.Host.Contains("gstatic", StringComparison.OrdinalIgnoreCase))
+                                    continue;
+                                var width = await shown.EvaluateAsync<int>(
+                                    "el => el.naturalWidth || 0");
+                                if (width < 900) continue;
+                                candidates.Add(new GoogleImageCandidate(
+                                    url, "", alt));
+                            }
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception ex)
+                        {
+                            log?.Invoke("Google Images result preview unavailable: " + ex.Message);
+                        }
+                    }
+                }
+                // HTML fallback for Google's legacy image-result markup.
+                foreach (Match match in Regex.Matches(html,
+                    @"(?:imgurl=|[\\u0022""']ou[\\u0022""']\s*:\s*[\\u0022""'])(?<url>https?[^&\s""'<>{}]+)",
+                    RegexOptions.IgnoreCase).Cast<Match>().Take(100))
+                {
+                    var imageUrl = WebUtility.HtmlDecode(match.Groups["url"].Value);
+                    candidates.Add(new GoogleImageCandidate(imageUrl, "", ""));
+                }
+                log?.Invoke($"Google Images '{term}': {candidates.Count} original-image URL candidates.");
+                // Pick from the whole page, not just Google's first results.
+                // Shuffling is per-video so sequential news clips get different imagery.
+                candidates = candidates.OrderBy(_ => random.Next()).ToList();
+                foreach (var candidate in candidates)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (collected.Count >= 48 || (collected.Count >= 36 && perHost.Count >= 4)) break;
+                    if (!Uri.TryCreate(candidate.ImageUrl, UriKind.Absolute, out var image) ||
+                        !IsPublicHttps(image) ||
+                        image.Host.EndsWith("google.com", StringComparison.OrdinalIgnoreCase) ||
+                        image.Host.EndsWith("gstatic.com", StringComparison.OrdinalIgnoreCase) ||
+                        RejectGenericGraphic(image, candidate.Description) ||
+                        !urlsSeen.Add(image.ToString()))
+                        continue;
+                    Uri.TryCreate(candidate.PageUrl, UriKind.Absolute, out var referringPage);
+                    if (IsGtaSixStory(project.Title, focus))
+                    {
+                        var evidence = candidate.Description + " " + image.AbsoluteUri +
+                            " " + (referringPage?.AbsoluteUri ?? "");
+                        if (!IsGtaSix(evidence) || IsGtaFive(evidence))
+                            continue; // Never use GTA V or an unidentified image.
+                    }
+                    var actualHost = referringPage is not null &&
+                        IsPublicHttps(referringPage) ? referringPage.Host : image.Host;
+                    if (perHost.GetValueOrDefault(actualHost) >= 10)
+                        continue;
+                    try
+                    {
+                        var bytes = await DownloadPublisherImageAsync(
+                            image, referringPage ?? image, ct);
+                        var destination = await SaveGamingPhotoAsync(bytes,
+                            Path.Combine(mediaDir, "google-original-" +
+                                (collected.Count + 1).ToString("000")),
+                            settings.FfmpegPath, log, ct);
+                        if (destination is null) continue;
+                        if (!HasFullResolution(destination, log))
+                        {
+                            File.Delete(destination);
+                            continue;
+                        }
+                        var hash = MediaFingerprint(destination);
+                        if (!contentSeen.Add(hash))
+                        {
+                            File.Delete(destination);
+                            continue;
+                        }
+                        perHost[actualHost] = perHost.GetValueOrDefault(actualHost) + 1;
+                        collected.Add(new OfficialAsset(destination, image.ToString(),
+                            CoreGameSubject(project, focus),
+                            referringPage?.ToString() ?? image.GetLeftPart(UriPartial.Authority),
+                            "Google Images result / " + actualHost,
+                            "Original image from credited source website; Google Images is a discovery index, not a license."));
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        log?.Invoke("Google original image download skipped (" +
+                            actualHost + "): " + ex.Message);
+                    }
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                log?.Invoke("Google Images search skipped for '" + term + "': " + ex.Message);
+            }
+            finally
+            {
+                if (page is not null)
+                    try { await page.CloseAsync(); } catch { }
+            }
+        }
+        log?.Invoke("Google Images primary source completed: " +
+            collected.Count + " full-size, game-matched unique images from " +
+            perHost.Count + " source websites.");
+        return collected;
+    }
+
+    private static async Task<List<OfficialAsset>> CaptureRockstarGalleryAsync(
+        BrowserSession browser, ZeroVideoSettings settings, string mediaDir,
+        Action<string>? log, CancellationToken ct)
+    {
+        var result = new List<OfficialAsset>();
+        Microsoft.Playwright.IPage? page = null;
+        const string source = "https://www.rockstargames.com/VI/media/screenshots";
+        try
+        {
+            await browser.EnsureStartedAsync(settings);
+            page = await browser.Context.NewPageAsync();
+            await page.GotoAsync(source, new Microsoft.Playwright.PageGotoOptions
+            {
+                WaitUntil = Microsoft.Playwright.WaitUntilState.DOMContentLoaded,
+                Timeout = 30000
+            });
+            var gallery = page.Locator("img");
+            var count = Math.Min(await gallery.CountAsync(), 200);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < count && result.Count < 24; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    var image = gallery.Nth(i);
+                    var path = await image.GetAttributeAsync("src") ?? "";
+                    var alt = await image.GetAttributeAsync("alt") ?? "";
+                    var combined = path + " " + alt;
+                    if (!path.Contains("/VI/", StringComparison.OrdinalIgnoreCase) ||
+                        !(path.Contains("media", StringComparison.OrdinalIgnoreCase) ||
+                          IsGtaSix(combined)) ||
+                        IsGtaFive(combined) ||
+                        !seen.Add(path))
+                        continue;
+                    var box = await image.BoundingBoxAsync();
+                    if (box is null || box.Width < 180 || box.Height < 110) continue;
+                    var filename = Path.Combine(mediaDir,
+                        "rockstar-gallery-" + (result.Count + 1).ToString("00") + ".png");
+                    var imageUrl = Uri.TryCreate(new Uri(source), path, out var resolved)
+                        ? resolved.ToString() : source;
+                    var saved = false;
+                    if (resolved is not null && IsPublicHttps(resolved))
+                    {
+                        try
+                        {
+                            var fullImage = await DownloadPublisherImageAsync(
+                                resolved, new Uri(source), ct);
+                            var basePath = Path.Combine(mediaDir,
+                                "rockstar-gallery-" + (result.Count + 1).ToString("00"));
+                            var converted = await SaveGamingPhotoAsync(
+                                fullImage, basePath, settings.FfmpegPath, log, ct);
+                            if (converted is not null)
+                            {
+                                filename = converted;
+                                saved = HasFullResolution(filename, log);
+                            }
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception ex)
+                        {
+                            log?.Invoke("Rockstar original-res download unavailable: " +
+                                ex.Message);
+                        }
+                    }
+                    if (!saved)
+                    {
+                        // Never replace the original with a tiny on-screen
+                        // thumbnail: this caused the user's pixelated video.
+                        if (File.Exists(filename)) File.Delete(filename);
+                        continue;
+                    }
+                    result.Add(new OfficialAsset(filename, imageUrl,
+                        "Grand Theft Auto VI", source, "Rockstar Games / GTA VI official gallery",
+                        "Official game screenshot captured from publisher's public media page."));
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    log?.Invoke("Rockstar gallery photo skipped: " + ex.Message);
+                }
+            }
+            log?.Invoke($"Rockstar browser gallery recovered {result.Count} genuine GTA VI screenshots.");
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            log?.Invoke("Rockstar browser gallery unavailable: " + ex.Message);
+        }
+        finally
+        {
+            if (page is not null)
+                try { await page.CloseAsync(); } catch { }
+        }
+        return result;
+    }
+
+    private static async Task<OfficialAsset?> CaptureSourceArticleAsync(
+        VideoProject project, BrowserSession browser, ZeroVideoSettings settings,
+        string mediaDir, Action<string>? log, CancellationToken ct)
+    {
+        // The screenshot is genuinely from the cited original report, not
+        // an invented image. Prefer an actual displayed photo, then the
+        // headline/article view. Never capture login/blocked/error pages.
+        foreach (var raw in project.Sources.Take(2))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!Uri.TryCreate(raw, UriKind.Absolute, out var article) ||
+                !(JournalismHost(article) || PublisherHost(article))) continue;
+            Microsoft.Playwright.IPage? page = null;
+            try
+            {
+                await browser.EnsureStartedAsync(settings);
+                page = await browser.Context.NewPageAsync();
+                await page.GotoAsync(article.ToString(),
+                    new Microsoft.Playwright.PageGotoOptions
+                    {
+                        WaitUntil = Microsoft.Playwright.WaitUntilState.DOMContentLoaded,
+                        Timeout = 25000
+                    });
+                await page.WaitForTimeoutAsync(1100);
+                var pageTitle = await page.TitleAsync();
+                var body = await page.Locator("body").InnerTextAsync(
+                    new Microsoft.Playwright.LocatorInnerTextOptions { Timeout = 5000 });
+                if (body.Length < 150 ||
+                    System.Text.RegularExpressions.Regex.IsMatch(
+                        (pageTitle + " " + body[..Math.Min(body.Length, 1200)]),
+                        @"\b(access denied|403 forbidden|captcha|checking your browser|verify you are human|404 not found)\b",
+                        RegexOptions.IgnoreCase))
+                    continue;
+                // Prefer the genuine article photo if loaded; omit tiny icons,
+                // profile photos and decorative SVGs.
+                var candidates = page.Locator(
+                    "article img, main img, img[src*='image'], img[src*='media']");
+                var n = Math.Min(await candidates.CountAsync(), 22);
+                for (var i = 0; i < n; i++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    try
+                    {
+                        var node = candidates.Nth(i);
+                        if (IsGtaSixStory(project.Title, ""))
+                        {
+                            var src = await node.GetAttributeAsync("src") ?? "";
+                            var alt = await node.GetAttributeAsync("alt") ?? "";
+                            var title = await node.GetAttributeAsync("title") ?? "";
+                            if (!IsGtaSix(src + " " + alt + " " + title) ||
+                                IsGtaFive(src + " " + alt + " " + title))
+                                continue;
+                        }
+                        var bounds = await node.BoundingBoxAsync();
+                        if (bounds is null || bounds.Width < 500 || bounds.Height < 220)
+                            continue;
+                        var file = Path.Combine(mediaDir, "article-real-image.png");
+                        await node.ScreenshotAsync(new Microsoft.Playwright.LocatorScreenshotOptions
+                        {
+                            Path = file,
+                            Timeout = 8000
+                        });
+                        if (File.Exists(file) && new FileInfo(file).Length > 12000)
+                        {
+                            log?.Invoke("Real news-article image captured from " + article.Host);
+                            return new OfficialAsset(file, article.ToString(), project.Title,
+                                article.ToString(), article.Host + " article photo",
+                                "Actual source article image; attribution does not establish permission.");
+                        }
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        log?.Invoke("Article image candidate failed: " + ex.Message);
+                    }
+                }
+                // An article-page capture is allowed for general industry
+                // news. For GTA VI, a full-page screenshot can contain GTA V
+                // artwork or unrelated thumbnails, so skip that fallback.
+                if (IsGtaSixStory(project.Title, "")) continue;
+                var screenshot = Path.Combine(mediaDir, "article-page.png");
+                await page.ScreenshotAsync(new Microsoft.Playwright.PageScreenshotOptions
+                {
+                    Path = screenshot, FullPage = false, Timeout = 10000
+                });
+                if (!File.Exists(screenshot) ||
+                    new FileInfo(screenshot).Length < 15000) continue;
+                log?.Invoke("Using actual article page screenshot from " + article.Host);
+                return new OfficialAsset(screenshot, article.ToString(), project.Title,
+                    article.ToString(), article.Host + " original report",
+                    "Actual article screenshot; use according to applicable editorial rights.");
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                log?.Invoke("Edge article screenshot fallback failed for " +
+                    article.Host + ": " + ex.Message);
+            }
+            finally
+            {
+                if (page is not null)
+                    try { await page.CloseAsync(); } catch { }
+            }
+        }
+        return null;
+    }
+
+    public async Task BurnSmallCreditAsync(string video, string credit,
+        ZeroVideoSettings settings, ProcessRunner runner, Action<string>? log, CancellationToken ct)
+    {
+        var text = Regex.Replace(credit, @"[^A-Za-z0-9 ./_-]", "").Trim();
+        if (text.Length > 68) text = text[..68];
+        if (text.Length == 0) throw new InvalidDataException("Official image credit missing.");
+        var tmp = Path.Combine(Path.GetDirectoryName(video)!, "official-credit-render.mp4");
+        var font = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "arial.ttf")
+            .Replace('\\', '/').Replace(":", "\\:");
+        var filter = "drawtext=fontfile='" + font + "':text='" + text +
+                     "':fontsize=24:fontcolor=white@0.88:box=1:boxcolor=black@0.48:" +
+                     "boxborderw=8:x=24:y=32";
+        var args = "-hide_banner -loglevel error -y -i \"" + video +
+            "\" -vf \"" + filter + "\" -map 0:v:0 -map 0:a:0 " +
+            "-c:v libx264 -preset medium -crf 16 -pix_fmt yuv420p " +
+            "-c:a copy -movflags +faststart \"" + tmp + "\"";
+        var result = await runner.RunAsync(settings.FfmpegPath, args, ct: ct);
+        if (result.ExitCode != 0 || !File.Exists(tmp) || new FileInfo(tmp).Length < 8192)
+            throw new InvalidOperationException("Could not burn official media credit: " + result.StdErr);
+        File.Move(tmp, video, true);
+        log?.Invoke("Small on-screen official source credit burned into MP4.");
+    }
+    /// <summary>
+    /// Only Gaming News uses this final MP4 timing pass. Keep a visible first
+    /// frame before speech, hold the last frame after the final word, and delay
+    /// existing captions so they remain aligned with the narration.
+    /// </summary>
+    public async Task AddNarrationBreathingRoomAsync(
+        string video, ZeroVideoSettings settings, ProcessRunner runner,
+        Action<string>? log, CancellationToken ct)
+    {
+        const double leadSeconds = 1.5;
+        const double tailSeconds = 1.5;
+        if (!File.Exists(video))
+            throw new FileNotFoundException("Gaming News MP4 missing.", video);
+
+        var output = Path.Combine(Path.GetDirectoryName(video)!,
+            "gaming-news-padded-" + Guid.NewGuid().ToString("N") + ".mp4");
+        var args = "-hide_banner -loglevel error -y -i \"" + video +
+            "\" -filter_complex \"[0:v]tpad=start_mode=clone:stop_mode=clone:" +
+            "start_duration=1.5:stop_duration=1.5,format=yuv420p[v];" +
+            "[0:a]adelay=1500:all=1,apad=pad_dur=1.5[a]\"" +
+            " -map \"[v]\" -map \"[a]\" -c:v libx264 -preset medium -crf 16" +
+            " -c:a aac -b:a 192k -movflags +faststart -shortest \"" + output + "\"";
+        try
+        {
+            var result = await runner.RunAsync(settings.FfmpegPath, args, ct: ct);
+            if (result.ExitCode != 0 || !File.Exists(output) ||
+                new FileInfo(output).Length < 8192)
+                throw new InvalidOperationException(
+                    "Could not add Gaming News narration padding: " + result.StdErr);
+
+            // Retain the SRT for editors and keep it synchronized after the
+            // 1.5 second silent video lead-in. The burnt-in captions themselves
+            // are shifted together with the original first frame by tpad.
+            var srt = Path.ChangeExtension(video, ".srt");
+            if (File.Exists(srt))
+            {
+                var original = await File.ReadAllTextAsync(srt, ct);
+                var shifted = System.Text.RegularExpressions.Regex.Replace(
+                    original,
+                    @"(?<start>\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(?<end>\d{2}:\d{2}:\d{2},\d{3})",
+                    m =>
+                    {
+                        static string Add(string stamp)
+                        {
+                            var value = TimeSpan.ParseExact(stamp, @"hh\:mm\:ss\,fff",
+                                CultureInfo.InvariantCulture).Add(TimeSpan.FromMilliseconds(1500));
+                            return value.ToString(@"hh\:mm\:ss\,fff", CultureInfo.InvariantCulture);
+                        }
+                        return Add(m.Groups["start"].Value) + " --> " +
+                            Add(m.Groups["end"].Value);
+                    });
+                await File.WriteAllTextAsync(srt, shifted, ct);
+            }
+            File.Move(output, video, true);
+            log?.Invoke("Gaming News timing: 1.5s visual lead-in before voiceover " +
+                "and 1.5s last-frame hold after voiceover. Captions remain aligned.");
+        }
+        finally
+        {
+            if (File.Exists(output))
+                try { File.Delete(output); } catch { }
+        }
+    }
+
+}
