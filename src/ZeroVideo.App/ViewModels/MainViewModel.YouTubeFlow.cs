@@ -778,7 +778,7 @@ public sealed partial class MainViewModel
                 CancellationToken cancellation)
             {
                 if (source == YouTubeFlowSourceRouter.YouTube)
-                    return await new YouTubeFlowClipService(_runner).AcquireAsync(scene, maximum, folder, Settings.FfmpegPath, Log, cancellation);
+                    return await new YouTubeFlowClipService(_runner).AcquireAsync(scene, maximum, folder, Settings.FfmpegPath, YouTubeFlowTitle, Log, cancellation);
                 if (source == YouTubeFlowSourceRouter.CommonsVideo)
                     return await commonsVideos.FindVideosAsync(
                         scene, maximum,
