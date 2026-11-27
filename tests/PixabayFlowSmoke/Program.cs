@@ -30,7 +30,8 @@ try
     VerifyHistoricalVideoContextFiltering();
     await VerifyCommonsVideosInNarrationSequence();
     await VerifyUserSourcePriorityAndDisabledSources();
-VerifyYouTubeTopicRelevance();
+    VerifyYouTubeTopicRelevance();
+    VerifyFreshIdeaHistory();
     await VerifyPixabayNarrationTopicFiltering();
     VerifyRightsReviewedScreencapImport();
     await VerifyChatGptArtworkMixedIntoChronologicalScenes();
@@ -518,6 +519,30 @@ async Task RescueEmptySceneWithAiImage()
         images[0].Id == rescue.Id && service.SceneFootageShortfall == 4,
         "One truthful scene-specific image should rescue five shot slots.");
     Console.WriteLine("PASS: zero-coverage scene rescued with original image instead of hard stop");
+}
+
+void VerifyFreshIdeaHistory()
+{
+    var folder = Path.Combine(baseDir, "idea-history");
+    var history = new VideoIdeaHistory(folder);
+    var first = new VideoIdeaHistory.Entry("Banned Cartoons",
+        "Why the Pokemon Porygon Episode Was Banned",
+        "The Porygon episode caused a broadcast controversy in Japan.");
+    history.Add(first);
+    history.Save();
+    var reopened = new VideoIdeaHistory(folder);
+    Check(reopened.Contains(first), "Exact duplicate must survive application restart.");
+    Check(reopened.Contains(new("More Banned Cartoons new ideas",
+        "The Banned Pokemon Porygon Episode",
+        "Japan's Porygon episode caused a broadcast controversy.")),
+        "Reworded titles and niche variants must match stored history.");
+    Check(!reopened.Contains(new("Banned Cartoons",
+        "Why the Peppa Pig Spider Episode Was Withdrawn",
+        "Australian broadcasters declined an episode about spiders.")),
+        "Different cartoon incidents must remain eligible.");
+    Check(reopened.ForNiche("More Banned Cartoons new ideas").Count == 1,
+        "Prior topics must be included in the exclusion prompt for niche variants.");
+    Console.WriteLine("PASS: persistent idea history, niche variants, repeated topics and distinct incidents");
 }
 
 void VerifyYouTubeTopicRelevance()
