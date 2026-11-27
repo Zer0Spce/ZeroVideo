@@ -287,20 +287,56 @@ copyrighted photograph.
         }
     }
 
-    public Task<string> GenerateVideoIdeasAsync(string niche, int count, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
+    public async Task<string> GenerateVideoIdeasAsync(string niche, int count, ZeroVideoSettings settings, Action<string>? log = null, CancellationToken ct = default)
     {
-        // Use the same JSON capture pipeline as working outline generation.
-        // A marker prevents accidental acceptance of unrelated JSON in the conversation.
-        var prompt = $"Generate exactly {count} distinct, factual and compelling video ideas for the niche: {niche}. " +
-            "Use curiosity-driven YouTube/TikTok titles and specific opening hooks that deliver on the title. " +
-            "Avoid repetition, invented facts, misleading clickbait and guaranteed-view claims. " +
-            "IMPORTANT: Return one complete valid JSON object inside a fenced json code block, with no other commentary. " +
-            "Required JSON schema: " +
-            """ 
-            {"response_type":"zerovideo_ideas_v1","niche":"the requested niche","ideas":[{"title":"Specific video title","hook":"Compelling opening hook"}]}
-            """ +
-            $" The ideas array must contain exactly {count} entries. Every title and hook must be nonempty.";
-        return GenerateTextAsync(new VideoProject { Title = $"Ideas: {niche}", Topic = niche }, settings, prompt, log, ct);
+        var history = new VideoIdeaHistory(AppPaths.DataDirectory);
+        var accepted = new List<VideoIdeaHistory.Entry>();
+        var project = new VideoProject { Title = $"Ideas: {niche}", Topic = niche };
+        for (var attempt = 0; attempt < 4 && accepted.Count < count; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var remaining = count - accepted.Count;
+            var previous = history.ForNiche(niche);
+            var prompt = $"Generate exactly {remaining} NEW distinct, factual and compelling video ideas for the niche: {niche}. " +
+                "Use curiosity-driven YouTube/TikTok titles and specific opening hooks that deliver on the title. " +
+                "Explore lesser-known documented examples, different entities, events, countries, eras and specific incidents. " +
+                "Do not recycle the same incident, episode, controversy or premise with a changed title or hook. " +
+                "Only choose topics you can support factually; do not invent facts, bans, censorship or guarantees of views. " +
+                "Use the following previous ideas only as an EXCLUSION LIST, not as inspiration to rephrase. " +
+                "Do not repeat their underlying subjects. If researching cartoons, distinguish actual bans from edits, withdrawals and rumors.\n" +
+                JsonSerializer.Serialize(previous.Select(x => new { x.Title, x.Hook })) +
+                "\nReturn ONLY one valid JSON object inside a fenced json code block, with no other commentary. " +
+                "Required schema: {\"response_type\":\"zerovideo_ideas_v1\",\"niche\":\"the requested niche\",\"ideas\":[{\"title\":\"Specific video title\",\"hook\":\"Compelling opening hook\"}]}. " +
+                $"The ideas array must contain exactly {remaining} entries. Every title and hook must be nonempty.";
+            log?.Invoke($"Fresh ideas: attempt {attempt + 1}, excluding {previous.Count} previously generated topics.");
+            var raw = await GenerateTextAsync(project, settings, prompt, log, ct);
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("response_type", out var type) || type.GetString() != "zerovideo_ideas_v1" ||
+                !root.TryGetProperty("ideas", out var ideas) || ideas.ValueKind != JsonValueKind.Array)
+                throw new InvalidDataException("Invalid video idea response.");
+            foreach (var item in ideas.EnumerateArray())
+            {
+                if (accepted.Count >= count) break;
+                if (item.ValueKind != JsonValueKind.Object ||
+                    !item.TryGetProperty("title", out var t) || t.ValueKind != JsonValueKind.String ||
+                    !item.TryGetProperty("hook", out var h) || h.ValueKind != JsonValueKind.String) continue;
+                var title = t.GetString()?.Trim() ?? "";
+                var hook = h.GetString()?.Trim() ?? "";
+                if (title.Length == 0 || hook.Length == 0) continue;
+                var entry = new VideoIdeaHistory.Entry(niche, title, hook);
+                if (history.Contains(entry)) { log?.Invoke("Rejected repeated topic: " + title); continue; }
+                history.Add(entry);
+                accepted.Add(entry);
+            }
+            history.Save();
+        }
+        if (accepted.Count == 0)
+            throw new InvalidDataException("No fresh factual topics were returned after four attempts. Try a narrower or different niche.");
+        if (accepted.Count < count)
+            log?.Invoke($"Only {accepted.Count}/{count} distinct ideas passed the history filter; no duplicates were added.");
+        return JsonSerializer.Serialize(new { response_type = "zerovideo_ideas_v1", niche,
+            ideas = accepted.Select(x => new { title = x.Title, hook = x.Hook }) });
     }
 
     public Task OpenAsync(ZeroVideoSettings settings)
